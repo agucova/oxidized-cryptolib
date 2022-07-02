@@ -1,5 +1,5 @@
-use scrypt::ScryptParams::scrypt;
-use unicode_normalization::is_nfc;
+use scrypt::{scrypt, Params};
+use unicode_normalization::{is_nfc, UnicodeNormalization};
 use ring::{hmac};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as};
@@ -29,8 +29,8 @@ pub struct MasterKeyFile {
 }
 
 impl MasterKeyFile {
-    fn deriveKey(passphrase: &str) -> Vec<u8> {
-        if (!is_nfc(passphrase)) {
+    fn deriveKey(&self, passphrase: &str) -> Vec<u8> {
+        if !is_nfc(passphrase) {
             // We use NFC normalization on the passphrase
             passphrase = passphrase.nfc().collect::<String>().as_str();
         }
@@ -39,7 +39,7 @@ impl MasterKeyFile {
         let r: u32 = self.scrypt_block_size as u32;
         let p: u32 = 1;
 
-        let scrypt_params = ScryptParams::new(log2_N, r, p);
+        let scrypt_params = Params::new(log2_n, r, p).unwrap();
 
         // Initialize kek to an empty vector
         // TODO: Check size
@@ -60,7 +60,7 @@ impl MasterKeyFile {
 
     pub fn unlock(&self, passphrase: String) -> MasterKey {
         let kek = self.deriveKey(&passphrase);
-        unlock_with_kek(&kek)
+        self.unlock_with_kek(&kek)
     }
 
     fn unlock_with_kek(&self, kek: Vec<u8>) -> MasterKey {
@@ -76,10 +76,10 @@ impl MasterKeyFile {
 
     }
 
-    fn check_vault_version(macKey: &Vec<u8>) -> bool {
+    fn check_vault_version(&self, macKey: &Vec<u8>) {
         let key = hmac::Key::new(hmac::HMAC_SHA256, &macKey);
 
-        hmac::verify(&key, &self.version, &self.version_mac).unwrap()
+        hmac::verify(&key, &self.version, &self.version_mac)?;
     }
 
     fn unwrap_key(&self, wrapped_key: &Vec<u8>, kek: &Vec<u8>) -> Vec<u8> {

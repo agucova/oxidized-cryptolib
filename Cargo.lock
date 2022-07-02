@@ -300,6 +300,7 @@ name = "oxidized-cryptolib"
 version = "0.1.0"
 dependencies = [
  "jsonwebtoken",
+ "ring",
  "scrypt",
  "serde",
  "serde_json",
