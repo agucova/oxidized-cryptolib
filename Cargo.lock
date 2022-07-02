@@ -3,16 +3,6 @@
 version = 3
 
 [[package]]
-name = "aes-keywrap-rs"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0179d260398111b7879868cabc56bc4045ad8111f0b4e5f656ba7f87d616e2fd"
-dependencies = [
- "crypto2",
- "hex",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -85,12 +75,6 @@ dependencies = [
  "generic-array",
  "typenum",
 ]
-
-[[package]]
-name = "crypto2"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a161713d9e77a76b166714fc1efd2a7d0a6830e8be57eb727b215076fb62e7a4"
 
 [[package]]
 name = "darling"
@@ -174,12 +158,6 @@ dependencies = [
  "libc",
  "wasi",
 ]
-
-[[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hmac"
@@ -321,7 +299,6 @@ checksum = "7709cef83f0c1f58f666e746a08b21e0085f7440fa6a29cc194d68aac97a4225"
 name = "oxidized-cryptolib"
 version = "0.1.0"
 dependencies = [
- "aes-keywrap-rs",
  "jsonwebtoken",
  "scrypt",
  "serde",

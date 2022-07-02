@@ -1,9 +1,10 @@
-use aes_keywrap_rs::aes_unwrap_key;
 use scrypt::ScryptParams::scrypt;
 use unicode_normalization::is_nfc;
 use ring::{hmac};
-use serde::{Deserialize, Serialize, serde};
+use serde::{Deserialize, Serialize};
 use serde_with::{serde_as};
+
+use master_key::MasterKey;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,10 +60,10 @@ impl MasterKeyFile {
 
     pub fn unlock(&self, passphrase: String) -> MasterKey {
         let kek = self.deriveKey(&passphrase);
-        unlock(&kek)
+        unlock_with_kek(&kek)
     }
 
-    fn unlock(&self, kek: Vec<u8>) -> MasterKey {
+    fn unlock_with_kek(&self, kek: Vec<u8>) -> MasterKey {
         // Unwrap the primary master key
         let aes_key = self.unwrap_key(&self.primary_master_key, &kek);
         // Unwrap the Hmac key
@@ -82,7 +83,8 @@ impl MasterKeyFile {
     }
 
     fn unwrap_key(&self, wrapped_key: &Vec<u8>, kek: &Vec<u8>) -> Vec<u8> {
-        aes_unwrap_key(kek, wrapped_key).unwrap()
+        // TODO: Key unwrapping
+        wrapped_key.to_vec()
     }
 }
 
