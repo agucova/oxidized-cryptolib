@@ -1,22 +1,27 @@
-use jsonwebtoken::{
-    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
-};
+#![forbid(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use url::Url;
 
-#[derive(Debug, Serialize, Deserialize)]
+mod lib;
+
+use lib::{
+    master_key_file::MasterKeyFile,
+    rfc_3394::{wrap_key}
+    // master_key::MasterKey,
+};
+
+
 #[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize, Deserialize)]
 struct VaultConfigurationClaims {
     format: i32,
     shortening_threshold: i32,
     jti: String,
     cipher_combo: String,
 }
-
-mod master_key_file;
-use master_key_file::MasterKeyFile;
 
 fn main() {
     // Path to the vault
@@ -27,7 +32,7 @@ fn main() {
     // Read the vault configuration file
     let vault_config = fs::read_to_string(&vault_config_path).unwrap();
     // Read the header from JWT in the config file
-    let header = decode_header(&vault_config).unwrap();
+    let header = jsonwebtoken::decode_header(&vault_config).unwrap();
     // Get the kid to retrieve the masterkey from the given URI
     let kid = header.kid.unwrap();
     // Get the masterkey path from the URI given in the kid
@@ -38,5 +43,4 @@ fn main() {
     let master_key_data_json = fs::read_to_string(&master_key_path).unwrap();
     // Decode the master key configuration JSON to a struct
     let master_key_data: MasterKeyFile = serde_json::from_str(&master_key_data_json).unwrap();
-    //
 }
