@@ -8,8 +8,7 @@ use url::Url;
 mod lib;
 
 use lib::{
-    master_key_file::MasterKeyFile,
-    rfc_3394::{wrap_key}
+    master_key_file::MasterKeyFile
     // master_key::MasterKey,
 };
 
@@ -42,5 +41,5 @@ fn main() {
     // Read the master key configuration JSON from the masterkey path
     let master_key_data_json = fs::read_to_string(&master_key_path).unwrap();
     // Decode the master key configuration JSON to a struct
-    let master_key_data: MasterKeyFile = serde_json::from_str(&master_key_data_json).unwrap();
+    let _master_key_data: MasterKeyFile = serde_json::from_str(&master_key_data_json).unwrap();
 }

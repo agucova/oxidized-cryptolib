@@ -48,7 +48,7 @@ pub fn wrap_key(plaintext: &[u8], kek: &[u8; 32]) -> Vec<u8> {
 
     // 1) Initialize variables
     // The 64-bit integrity check register (A)
-    let mut integrity_check: U8x8 = U8x8::from(IV_3394.clone());
+    let mut integrity_check: U8x8 = U8x8::from(IV_3394);
     // Number of blocks in plaintext (n)
     let n_blocks = plaintext.len() / 8;
     // An array of 64-bit registers of length n (R)
@@ -71,7 +71,7 @@ pub fn wrap_key(plaintext: &[u8], kek: &[u8; 32]) -> Vec<u8> {
             // MSB(j, W): Return the most significant j bits of W
             // LSB(j, W): Return the least significant j bits of W
             // A = MSB(64, B) ^ t where t = (n*j)+i
-            let a = &mut iv_block.clone()[0..8];
+            let a = &mut iv_block[0..8];
             xor_in_place(a, &mut t.to_be_bytes());
             integrity_check = *U8x8::from_slice(a);
 

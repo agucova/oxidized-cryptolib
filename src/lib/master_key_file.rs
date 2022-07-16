@@ -6,7 +6,7 @@ use serde_with::serde_as;
 use serde_with::base64::Base64;
 use unicode_normalization::{UnicodeNormalization};
 
-use super::master_key::MasterKey;
+
 
 #[serde(rename_all = "camelCase")]
 #[serde_as]
@@ -83,7 +83,7 @@ impl MasterKeyFile {
     // }
 
     fn check_vault_version(&self, mac_key: &Vec<u8>) {
-        let key = hmac::Key::new(hmac::HMAC_SHA256, &mac_key);
+        let key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
 
         hmac::verify(&key, &self.version.to_be_bytes(), &self.version_mac).expect("HMAC check failed");
     }
