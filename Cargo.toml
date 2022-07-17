@@ -7,6 +7,8 @@ version = "0.1.0"
 
 [dependencies]
 aes = "0.8.1"
+aes-siv = "0.6.2"
+ctr = "0.9.1"
 generic-array = "0.14.5"
 hex = "0.4.3"
 jsonwebtoken = "8.1.1"
@@ -15,10 +17,10 @@ scrypt = "0.10.0"
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1.0.82"
 serde_with = {version = "1.14.0", features = ["base64"]}
+thiserror = "1.0.31"
 unicode-normalization = "0.1.21"
 url = "2.2.2"
-zeroize = "1.5.6"
-thiserror = "1.0.31"
+zeroize = "=1.3"
 
 [dev-dependencies]
 hex-literal = "0.3.4"

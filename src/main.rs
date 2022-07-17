@@ -42,7 +42,10 @@ fn main() {
     let master_key_data_json = fs::read_to_string(&master_key_path).unwrap();
     // Decode the master key configuration JSON to a struct
     let master_key_data: MasterKeyFile = serde_json::from_str(&master_key_data_json).unwrap();
-    // Derive the KEK from the passphrase using scrypt
-    let kek = master_key_data.derive_key("123456789");
-    dbg!(kek.len());
+    // Unwrap the AES and MAC keys from the master key
+    let master_key = master_key_data.unlock("123456789");
+    dbg!(&master_key);
+    // Generate raw key
+    let raw_key = master_key.raw_key();
+    dbg!(&raw_key);
 }

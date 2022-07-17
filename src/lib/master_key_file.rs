@@ -6,6 +6,9 @@ use serde_with::serde_as;
 use serde_with::base64::Base64;
 use unicode_normalization::UnicodeNormalization;
 
+use super::master_key::MasterKey;
+use super::rfc_3394;
+
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +32,6 @@ pub struct MasterKeyFile {
 }
 
 impl MasterKeyFile {
-    #![allow(dead_code)]
     pub fn derive_key(&self, passphrase: &str) -> [u8; 32] {
         // We use NFC normalization on the passphrase
         let normalized_passphrase = passphrase.nfc().collect::<String>();
@@ -56,27 +58,28 @@ impl MasterKeyFile {
         kek
     }
 
-    // pub fn unlock(&self, passphrase: String) -> MasterKey {
-    //     let kek = self.derive_key(&passphrase);
-    //     self.unlock_with_kek(kek)
-    // }
+    pub fn unlock(&self, passphrase: &str) -> MasterKey {
+        let kek = self.derive_key(&passphrase);
+        self.unlock_with_kek(&kek)
+    }
 
-    // fn unlock_with_kek(&self, kek: Vec<u8>) -> MasterKey {
-    //     // Unwrap the primary master key
-    //     let aes_key = self.unwrap_key(&self.primary_master_key, &kek);
-    //     // Unwrap the Hmac key
-    //     let hmac_key = self.unwrap_key(&self.hmac_master_key, &kek);
+    fn unlock_with_kek(&self, kek: &[u8; 32]) -> MasterKey {
+        // Unwrap the primary master key
+        let aes_key =  rfc_3394::unwrap_key(&self.primary_master_key, &kek).unwrap();
+        let aes_key: [u8; 32] = aes_key.try_into().unwrap();
+        // Unwrap the Hmac key
+        let hmac_key = rfc_3394::unwrap_key(&self.hmac_master_key, &kek).unwrap();
+        let hmac_key: [u8; 32] = hmac_key.try_into().unwrap();
 
-    //     // Cross-reference versions
+        // Cross-reference versions
+        self.check_vault_version(&hmac_key);
 
-    //     self.check_vault_version(&hmac_key);
-
-    //     // Construct key
-    //     MasterKey {
-    //         aes_master_key: aes_key,
-    //         mac_master_key: hmac_key,
-    //     }
-    // }
+        // Construct key
+        MasterKey {
+            aes_master_key: aes_key,
+            mac_master_key: hmac_key,
+        }
+    }
 
     fn check_vault_version(&self, mac_key: &[u8]) {
         let key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
@@ -85,11 +88,6 @@ impl MasterKeyFile {
             .expect("HMAC check failed");
     }
 
-    // #[allow(unused_variables)]
-    // fn unwrap_key(&self, wrapped_key: &Vec<u8>, kek: &Vec<u8>) -> Vec<u8> {
-    //     // TODO: Key unwrapping
-    //     wrapped_key
-    // }
 }
 
 // From: https://users.rust-lang.org/t/logarithm-of-integers/8506/5

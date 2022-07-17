@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+#[derive(Debug)]
 pub struct MasterKey {
     pub aes_master_key: [u8; 32],
     pub mac_master_key: [u8; 32],
