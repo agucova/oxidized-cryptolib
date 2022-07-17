@@ -1,11 +1,8 @@
 #![forbid(unsafe_code)]
 
-use generic_array::{GenericArray, typenum::U32};
-
-
 pub struct MasterKey {
-    pub aes_master_key: GenericArray<u8, U32>,
-    pub mac_master_key: GenericArray<u8, U32>,
+    pub aes_master_key: [u8; 32],
+    pub mac_master_key: [u8; 32],
 }
 
 impl MasterKey {

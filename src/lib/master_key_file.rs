@@ -4,13 +4,11 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::base64::Base64;
-use unicode_normalization::{UnicodeNormalization};
+use unicode_normalization::UnicodeNormalization;
 
-
-
-#[serde(rename_all = "camelCase")]
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MasterKeyFile {
     // Deprecated
     version: u32,
@@ -32,7 +30,7 @@ pub struct MasterKeyFile {
 
 impl MasterKeyFile {
     #![allow(dead_code)]
-    fn derive_key(&self, passphrase: &str) -> Vec<u8> {
+    pub fn derive_key(&self, passphrase: &str) -> [u8; 32] {
         // We use NFC normalization on the passphrase
         let normalized_passphrase = passphrase.nfc().collect::<String>();
 
@@ -43,10 +41,8 @@ impl MasterKeyFile {
 
         let scrypt_params = scrypt::Params::new(log2_n, r, p).unwrap();
 
-        // Initialize kek to an empty vector
-        // TODO: Check size
-        let k_cckey_size_aes256 = 32;
-        let mut kek = vec![0; k_cckey_size_aes256];
+        // Initialize kek to 256-bit empty array
+        let mut kek = [0u8; 32];
 
         // Derive the kek from the normalized passphrase
         scrypt::scrypt(
@@ -82,10 +78,11 @@ impl MasterKeyFile {
     //     }
     // }
 
-    fn check_vault_version(&self, mac_key: &Vec<u8>) {
+    fn check_vault_version(&self, mac_key: &[u8]) {
         let key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
 
-        hmac::verify(&key, &self.version.to_be_bytes(), &self.version_mac).expect("HMAC check failed");
+        hmac::verify(&key, &self.version.to_be_bytes(), &self.version_mac)
+            .expect("HMAC check failed");
     }
 
     // #[allow(unused_variables)]

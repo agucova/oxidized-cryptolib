@@ -7,24 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Launch",
-            "program": "${workspaceFolder}/src/lib/rfc_3394.rs",
-            "args": [],
-            "cwd": "${workspaceFolder}"
+            "name": "Cargo launch",
+            "cargo": {
+                "args": [
+                    "build",
+                ]
+            },
+            "program": "${cargo:program}",
+            "args": []
         },
-    {
-        "type": "lldb",
-        "request": "launch",
-        "name": "Cargo launch",
-        "cargo": {
-            "args": [
-                "build",
-                "--lib"
-            ]
-        },
-        "program": "${cargo:program}",
-        "args": []
-    },
         {
             "type": "lldb",
             "request": "launch",
@@ -38,6 +29,5 @@
             "program": "${cargo:program}",
             "args": []
         }
-
     ]
 }
