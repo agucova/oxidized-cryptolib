@@ -332,6 +332,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "thiserror",
  "unicode-normalization",
  "url",
  "zeroize",
