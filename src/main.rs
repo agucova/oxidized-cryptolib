@@ -8,10 +8,7 @@ use url::Url;
 
 mod lib;
 
-use lib::{
-    master_key_file::MasterKeyFile
-};
-
+use lib::master_key_file::MasterKeyFile;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

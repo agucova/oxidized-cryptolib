@@ -2,8 +2,8 @@
 
 use ring::hmac;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use serde_with::base64::Base64;
+use serde_with::serde_as;
 use unicode_normalization::UnicodeNormalization;
 
 use super::master_key::MasterKey;
@@ -41,7 +41,8 @@ impl MasterKeyFile {
         let r: u32 = self.scrypt_block_size as u32;
         let p: u32 = 1;
 
-        let scrypt_params = scrypt::Params::new(log2_n, r, p).unwrap();
+        let scrypt_params =
+            scrypt::Params::new(log2_n, r, p).expect("Failed to create scrypt parameters");
 
         // Initialize kek to 256-bit empty array
         let mut kek = [0u8; 32];
@@ -53,7 +54,7 @@ impl MasterKeyFile {
             &scrypt_params,
             &mut kek,
         )
-        .unwrap();
+        .expect("Failed to derive kek");
 
         kek
     }
@@ -65,11 +66,12 @@ impl MasterKeyFile {
 
     fn unlock_with_kek(&self, kek: &[u8; 32]) -> MasterKey {
         // Unwrap the primary master key
-        let aes_key =  rfc_3394::unwrap_key(&self.primary_master_key, &kek).unwrap();
+        let aes_key = rfc_3394::unwrap_key(&self.primary_master_key, &kek)
+            .expect("Failed to unwrap AES key.");
         let aes_key: [u8; 32] = aes_key.try_into().unwrap();
         // Unwrap the Hmac key
         let hmac_key = rfc_3394::unwrap_key(&self.hmac_master_key, &kek).unwrap();
-        let hmac_key: [u8; 32] = hmac_key.try_into().unwrap();
+        let hmac_key: [u8; 32] = hmac_key.try_into().expect("Failed to unwrap HMAC key.");
 
         // Cross-reference versions
         self.check_vault_version(&hmac_key);
@@ -87,7 +89,6 @@ impl MasterKeyFile {
         hmac::verify(&key, &self.version.to_be_bytes(), &self.version_mac)
             .expect("HMAC check failed");
     }
-
 }
 
 // From: https://users.rust-lang.org/t/logarithm-of-integers/8506/5
