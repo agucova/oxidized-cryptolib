@@ -1,14 +1,12 @@
 #![forbid(unsafe_code)]
-#![feature(test)]
 
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use url::Url;
 
-mod lib;
 
-use lib::master_key_file::MasterKeyFile;
+use cryptolib::master_key_file::MasterKeyFile;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
