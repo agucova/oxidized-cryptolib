@@ -1,15 +1,33 @@
 #![forbid(unsafe_code)]
 
+use aes::{cipher::{BlockDecrypt, KeyInit}, Aes256};
+use rand_core::{OsRng, RngCore};
+
 #[derive(Debug)]
 pub struct MasterKey {
     pub aes_master_key: [u8; 32],
     pub mac_master_key: [u8; 32],
 }
 
+use generic_array::{typenum::U64, GenericArray};
+
 impl MasterKey {
-    #![allow(dead_code)]
-    pub fn raw_key(&self) -> Vec<u8>{
+    pub fn random() -> Self {
+        let mut aes_master_key = [0u8; 32];
+        let mut mac_master_key = [0u8; 32];
+        OsRng.fill_bytes(&mut aes_master_key);
+        OsRng.fill_bytes(&mut mac_master_key);
+        MasterKey {
+            aes_master_key,
+            mac_master_key,
+        }
+    }
+
+    pub fn raw_key(&self) -> GenericArray<u8, U64> {
         // Combine the AES and MAC keys into a single key through copying
-        [self.aes_master_key, self.mac_master_key].concat()
+        let mut key = GenericArray::default();
+        key[..32].copy_from_slice(&self.aes_master_key);
+        key[32..].copy_from_slice(&self.mac_master_key);
+        key
     }
 }

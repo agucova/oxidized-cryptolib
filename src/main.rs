@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
 
+use generic_array::{typenum::U16, GenericArray};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use url::Url;
 
-
 use cryptolib::master_key_file::MasterKeyFile;
+use cryptolib::names::decrypt_filename;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +20,7 @@ struct VaultConfigurationClaims {
 
 fn main() {
     // Path to the vault
-    let vault_path = Path::new("vault");
+    let vault_path = Path::new("test_vault");
     // Path to the vault's configuration file (vault.cryptomator)
     let vault_config_path = vault_path.join("vault.cryptomator");
 
@@ -43,4 +44,25 @@ fn main() {
     // Generate raw key
     let raw_key = master_key.raw_key();
     dbg!(&raw_key);
+
+    // Test decryption of README
+    let folder_path = vault_path.join("d").join("IM").join("WKTPKIODILK3E2NMJRS7A3TOUXSZ2E");
+    // Read the dirid.c9r
+    let dirid_path = folder_path.join("dirid.c9r");
+    let mut dirid: GenericArray<u8, U16> = GenericArray::default();
+    let dirid_data = fs::read(&dirid_path).unwrap();
+    dirid.copy_from_slice(&dirid_data);
+
+    // Read other files in the folder (skipping dirid.c9r)
+    let mut files = fs::read_dir(&folder_path).unwrap();
+    while let Some(file) = files.next() {
+        let file = file.unwrap();
+        let file_path = file.path();
+        if file_path.file_name().unwrap() == "dirid.c9r" {
+            continue;
+        }
+        let file_name = file_path.file_name().unwrap().to_str().unwrap();
+        let decrypted_name = decrypt_filename(file_name, dirid, &master_key);
+        dbg!(&decrypted_name);
+    }
 }
