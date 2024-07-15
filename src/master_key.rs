@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-use aes::{cipher::{BlockDecrypt, KeyInit}, Aes256};
 use rand_core::{OsRng, RngCore};
 
 #[derive(Debug)]
