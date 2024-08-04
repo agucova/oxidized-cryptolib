@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
+
 /*!
     This is a pure Rust implementation of the AES key wrapping algorithm
     as defined in [IETF RFC3394](https://datatracker.ietf.org/doc/html/rfc3394).
@@ -27,7 +28,6 @@ type Block = GenericArray<u8, U16>;
 type KeyData = GenericArray<u8, U32>;
 
 extern crate hex;
-extern crate test;
 
 /**
     IV from RFC3394 Section 2.2.3.1
@@ -180,13 +180,14 @@ pub fn unwrap_key(ciphertext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, UnwrapEr
 #[cfg(test)]
 mod tests {
     //! Test vectors
+    extern crate test;
 
     use super::*;
     use test::Bencher;
     use hex_literal::hex;
 
     #[test]
-    #[should_panic(expected = "InvalidPlaintextLength")]
+    #[should_panic(expected = "InvalidPlaintextLength")] 
     fn test_wrap_invalid_key_256_kek() {
         let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         let key_data = hex!("00112233445566778899AABBCCDDEEFFF123");

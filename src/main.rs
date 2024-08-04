@@ -1,14 +1,12 @@
 #![forbid(unsafe_code)]
-#![feature(test)]
 
+use cryptolib::tree::print_decrypted_vault_tree;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use url::Url;
 
-mod lib;
-
-use lib::master_key_file::MasterKeyFile;
+use cryptolib::master_key_file::MasterKeyFile;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +19,7 @@ struct VaultConfigurationClaims {
 
 fn main() {
     // Path to the vault
-    let vault_path = Path::new("vault");
+    let vault_path = Path::new("test_vault");
     // Path to the vault's configuration file (vault.cryptomator)
     let vault_config_path = vault_path.join("vault.cryptomator");
 
@@ -45,4 +43,7 @@ fn main() {
     // Generate raw key
     let raw_key = master_key.raw_key();
     dbg!(&raw_key);
+
+    // Test decryption of tree
+    print_decrypted_vault_tree(vault_path, &master_key);
 }
