@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(dead_code)]
 
 use cryptolib::tree::print_decrypted_vault_tree;
 use serde::{Deserialize, Serialize};
@@ -39,10 +40,6 @@ fn main() {
     let master_key_data: MasterKeyFile = serde_json::from_str(&master_key_data_json).unwrap();
     // Unwrap the AES and MAC keys from the master key
     let master_key = master_key_data.unlock("123456789");
-    dbg!(&master_key);
-    // Generate raw key
-    let raw_key = master_key.raw_key();
-    dbg!(&raw_key);
 
     // Test decryption of tree
     print_decrypted_vault_tree(vault_path, &master_key);

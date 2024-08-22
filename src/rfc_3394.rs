@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
-
 /*!
     This is a pure Rust implementation of the AES key wrapping algorithm
     as defined in [IETF RFC3394](https://datatracker.ietf.org/doc/html/rfc3394).
@@ -11,22 +10,20 @@
     This crate has NOT been audited and it's provided as-is.
 */
 
-use aes::cipher::{BlockEncrypt, KeyInit, BlockDecrypt};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes256;
-use zeroize::Zeroize;
+use secrecy::{ExposeSecret, Secret, Zeroize};
 use thiserror::Error;
 
 // We should eventually ditch generic arrays and start using const generics.
 use generic_array::{
     sequence::Concat,
-    typenum::{U16, U32, U8},
+    typenum::{U16, U8},
     GenericArray,
 };
 
 type U8x8 = GenericArray<u8, U8>;
 type Block = GenericArray<u8, U16>;
-type KeyData = GenericArray<u8, U32>;
-
 extern crate hex;
 
 /**
@@ -45,16 +42,15 @@ pub enum WrapError {
 /// The key (plaintext) is wrapped using the key encryption key (KEK)
 /// through successive rounds of AES encryption.
 /// For now this function only supports AES-256.
-pub fn wrap_key(plaintext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, WrapError> {
-
+#[allow(clippy::needless_range_loop)]
+pub fn wrap_key(plaintext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, WrapError> {
     // Ensure that the plaintext is a multiple of 64 bits
-    if plaintext.len() % 8 != 0 {
+    if !plaintext.len().is_multiple_of(8) {
         return Err(WrapError::InvalidPlaintextLength);
     }
 
     // Acquire ownership through copying
     let plaintext = plaintext.to_owned();
-    let mut kek = KeyData::from(kek.to_owned());
 
     // 1) Initialize variables
     let n_blocks = plaintext.len() / 8;
@@ -64,7 +60,7 @@ pub fn wrap_key(plaintext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, WrapError> 
     let mut registers = plaintext;
 
     // 2) Calculate intermediate values
-    let cipher = Aes256::new(&kek);
+    let cipher = Aes256::new(GenericArray::from_slice(kek.expose_secret()));
 
     // Wrap the key in 6 * n_blocks steps
     for j in 0..6 {
@@ -97,8 +93,7 @@ pub fn wrap_key(plaintext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, WrapError> 
     let mut ciphertext = integrity_check.to_vec();
     ciphertext.extend(registers);
 
-    // Zero out the kek buffer
-    kek.zeroize();
+    integrity_check.zeroize();
 
     Ok(ciphertext)
 }
@@ -117,14 +112,11 @@ pub enum UnwrapError {
 ///
 /// In the case that the given kek is not the correct key,
 /// it is expected that the integrity check will fail (`InvalidIntegrityCheck`).
-pub fn unwrap_key(ciphertext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, UnwrapError> {
+pub fn unwrap_key(ciphertext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, UnwrapError> {
     // Ensure that the ciphertext is a multiple of 64 bits
     if ciphertext.len() % 8 != 0 {
         return Err(UnwrapError::InvalidCiphertextLength);
     }
-
-    // Acquire ownership through copying
-    let mut kek = KeyData::from(kek.to_owned());
 
     // 1) Initialize variables
     // We need to substract the IV block
@@ -135,7 +127,7 @@ pub fn unwrap_key(ciphertext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, UnwrapEr
     let mut registers = ciphertext[8..].to_owned();
 
     // 2) Calculate intermediate values
-    let cipher = Aes256::new(&kek);
+    let cipher = Aes256::new(GenericArray::from_slice(kek.expose_secret()));
 
     // Unwrap the key in 6 * n_blocks steps
     for j in (0..6).rev() {
@@ -163,19 +155,16 @@ pub fn unwrap_key(ciphertext: &[u8], kek: &[u8; 32]) -> Result<Vec<u8>, UnwrapEr
 
     // 3) Output the results
 
-    // Zero out the kek buffer
-    kek.zeroize();
-
     // Check if the integrity check register matches the IV
     if !integrity_check.eq(&U8x8::from(IV_3394)) {
         return Err(UnwrapError::InvalidIntegrityCheck);
     }
 
+    integrity_check.zeroize();
+
     // Get the plaintext from the registers
     Ok(registers)
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -183,13 +172,15 @@ mod tests {
     extern crate test;
 
     use super::*;
-    use test::Bencher;
     use hex_literal::hex;
+    use test::Bencher;
 
     #[test]
-    #[should_panic(expected = "InvalidPlaintextLength")] 
+    #[should_panic(expected = "InvalidPlaintextLength")]
     fn test_wrap_invalid_key_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFFF123");
 
         // Wrap
@@ -198,7 +189,9 @@ mod tests {
 
     #[test]
     fn test_wrap_128_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF");
         let ciphertext = hex!("64E8C3F9CE0F5BA2 63E9777905818A2A 93C8191E7D6E8AE7");
 
@@ -209,7 +202,9 @@ mod tests {
 
     #[test]
     fn test_unwrap_128_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF");
         let ciphertext = hex!("64E8C3F9CE0F5BA2 63E9777905818A2A 93C8191E7D6E8AE7");
 
@@ -220,9 +215,12 @@ mod tests {
 
     #[test]
     fn test_wrap_192_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
-        let ciphertext = hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
+        let ciphertext =
+            hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
 
         // Wrap
         let wrapped_key = wrap_key(&key_data, &kek).unwrap();
@@ -232,7 +230,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "InvalidCiphertextLength")]
     fn test_unwrap_invalid_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
         let ciphertext = hex!("A8F9BC1612C68B3F F6E6F4FBE30E");
 
@@ -244,21 +244,26 @@ mod tests {
     #[test]
     #[should_panic(expected = "InvalidIntegrityCheck")]
     fn test_unwrap_192_key_with_wrong_kek() {
-        let kek = hex!("36b0144a13d0b5c1950c435762ff47789ab64258763f6f980f66dc00c11697cd");
+        let kek = Secret::new(hex!(
+            "36b0144a13d0b5c1950c435762ff47789ab64258763f6f980f66dc00c11697cd"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
-        let ciphertext = hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
+        let ciphertext =
+            hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
 
         // Unwrap
         let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
         assert_eq!(&key_data, &unwrapped_key.as_slice());
     }
 
-
     #[test]
     fn test_unwrap_192_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
-        let ciphertext = hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
+        let ciphertext =
+            hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
 
         // Unwrap
         let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
@@ -267,9 +272,13 @@ mod tests {
 
     #[test]
     fn test_wrap_256_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
-        let ciphertext = hex!("28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21");
+        let ciphertext = hex!(
+            "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21"
+        );
 
         let wrapped_key = wrap_key(&key_data, &kek).unwrap();
         assert_eq!(&ciphertext, &wrapped_key.as_slice());
@@ -277,9 +286,13 @@ mod tests {
 
     #[test]
     fn test_unwrap_256_key_with_256_kek() {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
-        let ciphertext = hex!("28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21");
+        let ciphertext = hex!(
+            "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21"
+        );
 
         let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
         assert_eq!(&key_data, &unwrapped_key.as_slice());
@@ -287,11 +300,11 @@ mod tests {
 
     #[bench]
     fn bench_wrap_256_key_with_256_kek(b: &mut Bencher) {
-        let kek = hex!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        let kek = Secret::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        ));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
 
         b.iter(|| wrap_key(&key_data, &kek).unwrap());
     }
-
-
 }

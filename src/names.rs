@@ -1,20 +1,18 @@
 #![allow(dead_code)]
 
-use aes_siv::{
-    aead::{Aead, NewAead},
-    Aes256SivAead, Nonce,
-};
+use aead::Aead;
+use aes_siv::{Aes256SivAead, KeyInit, Nonce};
+use base64::{engine::general_purpose, Engine as _};
+use generic_array::GenericArray;
+use secrecy::Zeroize;
 
 use crate::master_key::MasterKey;
 
-use data_encoding::BASE32;
+use data_encoding::{BASE32, BASE64URL, BASE64URL_NOPAD};
 
 use ring::digest;
 
-use generic_array::{
-    typenum::{U16, U20},
-    GenericArray,
-};
+use generic_array::typenum::{U16, U20};
 
 // Module for encrypting and decrypting file and directory names
 // according to the Cryptomator protocol using AES-SIV
@@ -33,12 +31,12 @@ pub fn encrypt_filename(
     parent_dir_id: GenericArray<u8, U16>,
     master_key: &MasterKey,
 ) -> String {
-    // ciphertextName := base32(aesSiv(cleartextName, parentDirId, encryptionMasterKey, macMasterKey))
-    let key = master_key.raw_key();
-    let nonce = Nonce::from(parent_dir_id);
-    let cipher = Aes256SivAead::new(&key);
-    let encrypted = cipher.encrypt(&nonce, name.as_bytes()).unwrap();
-    BASE32.encode(&encrypted)
+    let cipher = Aes256SivAead::new(&master_key.raw_key());
+    let nonce = Nonce::from_slice(&parent_dir_id);
+    let encrypted = cipher
+        .encrypt(nonce, name.as_bytes())
+        .expect("Encryption failed");
+    general_purpose::URL_SAFE_NO_PAD.encode(&encrypted) + ".c9r"
 }
 
 pub fn decrypt_filename(
@@ -46,11 +44,28 @@ pub fn decrypt_filename(
     parent_dir_id: GenericArray<u8, U16>,
     master_key: &MasterKey,
 ) -> String {
-    let key = master_key.raw_key();
+    println!("Decrypting filename: {}", name);
+    let mut key = master_key.raw_key();
     let nonce = Nonce::from(parent_dir_id);
     let cipher = Aes256SivAead::new(&key);
-    let decoded = BASE32.decode(name.as_bytes()).unwrap();
+    let name_without_extension = name.trim_end_matches(".c9r");
+    println!("Name without extension: {}", name_without_extension);
+
+    let decoded = BASE64URL.decode(name_without_extension.as_bytes());
+
+    if decoded.is_err() {
+        println!("Decoding failed: {:?}", decoded);
+        return String::from("Decoding failed");
+    }
+
+    let decoded = decoded.unwrap();
+
+    println!("Decoded (hex): {}", hex::encode(&decoded));
+
     let decrypted = cipher.decrypt(&nonce, &*decoded).unwrap();
+    key.zeroize();
+    println!("Decrypted (hex): {}", hex::encode(&decrypted));
+    println!("Decrypted (utf-8): {}", String::from_utf8_lossy(&decrypted));
     String::from_utf8(decrypted).unwrap()
 }
 
