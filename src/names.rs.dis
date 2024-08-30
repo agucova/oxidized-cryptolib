@@ -8,7 +8,7 @@ use secrecy::Zeroize;
 
 use crate::master_key::MasterKey;
 
-use data_encoding::{BASE32, BASE64URL, BASE64URL_NOPAD};
+use data_encoding::BASE64URL;
 
 use ring::digest;
 

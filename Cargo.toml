@@ -16,8 +16,10 @@ data-encoding = "2.6.0"
 generic-array = "0.14.5"
 hex = "0.4.3"
 jsonwebtoken = "8.1.1"
+rand = "0.8.5"
 rand_core = "0.6.4"
 ring = "0.16.20"
+rng = "0.1.0"
 scrypt = "0.10.0"
 secrecy = {version = "0.8.0", features = ["alloc", "serde"]}
 serde = {version = "1.0", features = ["derive"]}
@@ -27,6 +29,8 @@ thiserror = "1.0.31"
 unicode-normalization = "0.1.21"
 url = "2.2.2"
 uuid = { version = "1.10.0", features = ["v4"] }
+walkdir = "2.5.0"
 
 [dev-dependencies]
 hex-literal = "0.3.4"
+proptest = "1.5.0"
