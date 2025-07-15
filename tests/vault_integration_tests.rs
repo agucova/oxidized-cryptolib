@@ -146,6 +146,7 @@ fn test_very_long_filenames() {
     
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
+    
     // Both files should be readable despite filename length
     let decrypted = vault_ops.read_file("", &long_name).unwrap();
     assert_file_content(&decrypted, b"Long filename content");

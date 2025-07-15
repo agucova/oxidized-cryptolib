@@ -46,6 +46,12 @@ expression: file_metadata
         is_shortened: false,
     },
     FileMetadata {
+        decrypted_name: "very_long_filename_that_might_exceed_normal_limits_and_cause_shortening_to_c9s_format_because_cryptomator_has_a_220_character_limit_for_encrypted_filenames_so_this_should_definitely_trigger_that_behavior_when_encrypted.txt",
+        encrypted_name: "QZIOTQA.c9s",
+        size: 116,
+        is_shortened: true,
+    },
+    FileMetadata {
         decrypted_name: ".hidden",
         encrypted_name: "gNN66mROQo9tDoevg5Tkth7aM4XXMDY=.c9r.c9r",
         size: 110,

@@ -352,4 +352,5 @@ mod tests {
         let decoded = general_purpose::URL_SAFE.decode(base64_part.as_bytes());
         assert!(decoded.is_ok(), "Base64 part should be valid base64");
     }
+
 }

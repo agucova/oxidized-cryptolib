@@ -108,8 +108,18 @@ impl VaultOperations {
             let path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
             
-            // Skip directories and special files
-            if path.is_dir() || file_name == "dirid.c9r" {
+            // Skip special files
+            if file_name == "dirid.c9r" {
+                continue;
+            }
+            
+            // Skip .c9r directories (these are handled by list_directories)
+            if path.is_dir() && file_name.ends_with(".c9r") {
+                continue;
+            }
+            
+            // Skip other directories that aren't .c9s 
+            if path.is_dir() && !file_name.ends_with(".c9s") {
                 continue;
             }
             
