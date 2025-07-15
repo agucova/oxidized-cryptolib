@@ -1,38 +1,60 @@
 [package]
-edition = "2021"
-name = "cryptolib"
-version = "0.2.0"
+name = "oxidized-cryptolib"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.90"
+authors = ["Aggustin Covarrubias <gh@agucova.dev>"]
+description = "A Rust implementation for decrypting and exploring Cryptomator vaults"
+license = "GPL-3.0"
+repository = "https://github.com/agucova/oxidized-cryptolib"
+keywords = ["cryptomator", "encryption", "vault", "aes", "cryptography"]
+categories = ["cryptography", "filesystem"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 aead = "0.5.2"
-aes = "0.8.1"
+aes = "0.8.4"
 aes-gcm = "0.10.3"
 aes-siv = "0.7.0"
 base64 = "0.22.1"
-ctr = "0.9.1"
-data-encoding = "2.6.0"
-generic-array = "0.14.5"
+data-encoding = "2.9.0"
+generic-array = "0.14.7"
 hex = "0.4.3"
-jsonwebtoken = "8.1.1"
+jsonwebtoken = "9.3.0"
 rand = "0.8.5"
 rand_core = "0.6.4"
-ring = "0.16.20"
-rng = "0.1.0"
-scrypt = "0.10.0"
+ring = "0.17.14"
+scrypt = "0.11.0"
 secrecy = { version = "0.8.0", features = ["alloc", "serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0.82"
-serde_with = { version = "1.14.0", features = ["base64"] }
-thiserror = "1.0.31"
-unicode-normalization = "0.1.21"
-url = "2.2.2"
-uuid = { version = "1.10.0", features = ["v4"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.135"
+serde_with = { version = "3.11.0", features = ["base64"] }
+thiserror = "2.0.10"
+unicode-normalization = "0.1.24"
+url = "2.5.4"
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
 walkdir = "2.5.0"
-zeroize = "1.8.1"
+zeroize = { version = "1.8.1", features = ["std"] }
 
 [dev-dependencies]
-hex-literal = "0.3.4"
-proptest = "1.5.0"
-tempfile = "3.8.0"
+hex-literal = "0.4.1"
+proptest = "1.7.0"
+tempfile = "3.13.0"
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+
+[profile.test]
+opt-level = 2
+
+[[bin]]
+name = "oxidized-cryptolib"
+path = "src/main.rs"

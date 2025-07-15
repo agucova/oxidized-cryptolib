@@ -55,7 +55,7 @@ impl MasterKey {
     /// # Example
     ///
     /// ```
-    /// # use cryptolib::master_key::MasterKey;
+    /// # use oxidized_cryptolib::crypto::keys::MasterKey;
     /// let master_key = MasterKey::random();
     ///
     /// let result = master_key.with_raw_key(|key_bytes| {
@@ -112,7 +112,7 @@ impl MasterKey {
     /// # Example
     ///
     /// ```
-    /// # use cryptolib::master_key::MasterKey;
+    /// # use oxidized_cryptolib::crypto::keys::MasterKey;
     /// # use aes_gcm::{Aes256Gcm, Key, KeyInit};
     /// let master_key = MasterKey::random();
     ///
@@ -151,7 +151,7 @@ impl MasterKey {
     /// # Example
     ///
     /// ```no_run
-    /// # use cryptolib::master_key::MasterKey;
+    /// # use oxidized_cryptolib::crypto::keys::MasterKey;
     /// # use aes_siv::{siv::Aes256Siv, KeyInit};
     /// let master_key = MasterKey::random();
     ///
@@ -187,7 +187,7 @@ impl MasterKey {
     /// # Example
     ///
     /// ```
-    /// # use cryptolib::master_key::MasterKey;
+    /// # use oxidized_cryptolib::crypto::keys::MasterKey;
     /// let master_key = MasterKey::random();
     /// let mut cipher = master_key.create_name_cipher();
     ///
@@ -219,7 +219,7 @@ impl MasterKey {
     /// # Example
     ///
     /// ```
-    /// # use cryptolib::master_key::MasterKey;
+    /// # use oxidized_cryptolib::crypto::keys::MasterKey;
     /// # use jsonwebtoken::{encode, decode, Header, Validation, Algorithm};
     /// # #[derive(serde::Deserialize, serde::Serialize)]
     /// # struct Claims { sub: String }
@@ -260,7 +260,7 @@ impl MasterKey {
     /// # Example
     ///
     /// ```
-    /// # use cryptolib::master_key::MasterKey;
+    /// # use oxidized_cryptolib::crypto::keys::MasterKey;
     /// # use jsonwebtoken::{encode, Header, Algorithm};
     /// # #[derive(serde::Serialize)]
     /// # struct Claims { sub: String }

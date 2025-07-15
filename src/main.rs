@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
-use cryptolib::fs::directory::{print_tree, VaultExplorer};
-use cryptolib::fs::name::hash_dir_id;
-use cryptolib::vault::config::{extract_master_key, validate_vault_claims};
-use cryptolib::vault::operations::{debug_read_files_in_tree, VaultOperations};
+use oxidized_cryptolib::fs::directory::{print_tree, VaultExplorer};
+use oxidized_cryptolib::fs::name::hash_dir_id;
+use oxidized_cryptolib::vault::config::{extract_master_key, validate_vault_claims};
+use oxidized_cryptolib::vault::operations::{debug_read_files_in_tree, VaultOperations};
 use std::fs;
 use std::path::Path;
 

@@ -45,7 +45,7 @@ impl MasterKeyFile {
         let p: u32 = 1;
 
         let scrypt_params =
-            scrypt::Params::new(log2_n, r, p).expect("Failed to create scrypt parameters");
+            scrypt::Params::new(log2_n, r, p, 32).expect("Failed to create scrypt parameters");
 
         // Initialize kek to 256-bit empty array
         let mut kek = Zeroizing::new([0u8; 32]);

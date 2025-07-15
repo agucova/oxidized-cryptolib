@@ -165,11 +165,10 @@ impl VaultOperations {
                 }
             } else if path.is_dir() && file_name.ends_with(".c9s") {
                 // This might be a shortened directory
-                if path.join("dir.c9r").exists() {
-                    if let Ok(dir_info) = self.read_shortened_directory_info(&path, directory_id) {
+                if path.join("dir.c9r").exists()
+                    && let Ok(dir_info) = self.read_shortened_directory_info(&path, directory_id) {
                         directories.push(dir_info);
                     }
-                }
             }
         }
         
