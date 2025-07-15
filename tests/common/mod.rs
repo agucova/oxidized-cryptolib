@@ -1,6 +1,5 @@
 use oxidized_cryptolib::crypto::keys::MasterKey;
 use secrecy::Secret;
-use std::path::Path;
 
 pub mod vault_builder;
 pub mod test_data;
@@ -16,29 +15,10 @@ pub fn create_test_master_key() -> MasterKey {
     }
 }
 
-/// Create a MasterKey from a seed value for deterministic testing
-pub fn create_seeded_master_key(seed: u8) -> MasterKey {
-    let mut aes_key = [seed; 32];
-    let mut mac_key = [seed + 1; 32];
-    
-    // Make keys more unique while still deterministic
-    for i in 0..32 {
-        aes_key[i] = aes_key[i].wrapping_add(i as u8);
-        mac_key[i] = mac_key[i].wrapping_add(i as u8 * 2);
-    }
-    
-    MasterKey {
-        aes_master_key: Secret::new(aes_key),
-        mac_master_key: Secret::new(mac_key),
-    }
-}
 
 
 /// Standard test file contents  
 pub mod test_files {
-    pub const EMPTY_FILE: &[u8] = b"";
-    pub const SMALL_TEXT: &[u8] = b"Hello, World!";
-    pub const LOREM_IPSUM: &[u8] = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
     
     /// Create content of exactly the specified size
     pub fn create_sized_content(size: usize) -> Vec<u8> {
@@ -53,17 +33,20 @@ pub mod test_files {
     }
     
     /// File content with special characters
+    #[allow(dead_code)] // Used in vault_integration_tests
     pub fn create_special_char_content() -> Vec<u8> {
         "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings".as_bytes().to_vec()
     }
     
     /// Create content that will test chunk boundaries (32KB chunks)
+    #[allow(dead_code)] // Used in vault_integration_tests
     pub fn create_chunk_boundary_content() -> Vec<u8> {
         create_sized_content(65537) // 2 chunks + 1 byte
     }
 }
 
 /// Standard test filenames
+#[allow(dead_code)] // Used in snapshot_tests
 pub mod test_filenames {
     pub const NORMAL_FILES: &[&str] = &[
         "test.txt",
@@ -167,12 +150,11 @@ pub mod test_structures {
 }
 
 /// Utility functions for assertions
-#[allow(dead_code)]
 pub mod assertions {
-    use super::*;
-    use oxidized_cryptolib::fs::file::{decrypt_file, DecryptedFile};
+    use oxidized_cryptolib::fs::file::DecryptedFile;
     
     /// Assert that a decrypted file matches expected content
+    #[allow(dead_code)] // Used in vault_integration_tests
     pub fn assert_file_content(decrypted: &DecryptedFile, expected: &[u8]) {
         assert_eq!(
             decrypted.content, expected,
@@ -182,25 +164,4 @@ pub mod assertions {
         );
     }
     
-    /// Assert that a file can be decrypted and matches expected content
-    pub fn assert_file_decrypts_to(
-        encrypted_path: &Path,
-        master_key: &MasterKey,
-        expected_content: &[u8],
-    ) {
-        let decrypted = decrypt_file(encrypted_path, master_key)
-            .expect("Failed to decrypt file");
-        assert_file_content(&decrypted, expected_content);
-    }
-    
-    /// Assert vault structure contains expected directories
-    pub fn assert_vault_has_directories(vault_path: &Path, expected_dirs: &[&str]) {
-        for dir in expected_dirs {
-            let path = vault_path.join(dir);
-            assert!(
-                path.exists() && path.is_dir(),
-                "Expected directory {dir} to exist"
-            );
-        }
-    }
 }

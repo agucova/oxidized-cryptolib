@@ -42,11 +42,6 @@ impl VaultBuilder {
         }
     }
     
-    /// Set a custom master key
-    pub fn with_master_key(mut self, master_key: MasterKey) -> Self {
-        self.master_key = master_key;
-        self
-    }
     
     /// Use a specific RNG seed for deterministic content keys
     pub fn with_rng_seed(mut self, seed: u64) -> Self {
@@ -55,6 +50,7 @@ impl VaultBuilder {
     }
     
     /// Add a directory (without files)
+    #[allow(dead_code)] // Used in vault_integration_tests
     pub fn add_directory(mut self, path: impl Into<String>) -> Self {
         self.directories.push(path.into());
         self
@@ -270,24 +266,11 @@ impl Default for VaultBuilder {
 }
 
 /// Quick helper to create a vault with test files
+#[allow(dead_code)] // Used in vault_integration_tests
 pub fn create_test_vault_with_files(files: Vec<(&str, &[u8])>) -> (PathBuf, MasterKey) {
     let mut builder = VaultBuilder::new();
     for (path, content) in files {
         builder = builder.add_file(path, content);
     }
     builder.build()
-}
-
-/// Create a standard test vault with various file types
-pub fn create_standard_test_vault() -> (PathBuf, MasterKey) {
-    VaultBuilder::new()
-        .add_file_structure(super::test_structures::nested_structure())
-        .build()
-}
-
-/// Create a vault for testing edge cases
-pub fn create_edge_case_vault() -> (PathBuf, MasterKey) {
-    VaultBuilder::new()
-        .add_file_structure(super::test_structures::edge_case_structure())
-        .build()
 }

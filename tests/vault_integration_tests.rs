@@ -6,7 +6,8 @@ use oxidized_cryptolib::{
 use common::{
     vault_builder::{VaultBuilder, create_test_vault_with_files},
     test_files, test_structures,
-    assertions::*,
+    assertions::assert_file_content,
+    test_data::{sizes::{CHUNK_SIZE, CHUNK_MINUS_ONE, CHUNK_PLUS_ONE, TWO_CHUNKS, TWO_CHUNKS_PLUS_ONE, LARGE}, patterns},
 };
 
 #[test]
@@ -104,7 +105,6 @@ fn test_special_characters_in_content() {
 
 #[test]
 fn test_chunk_boundary_files() {
-    use common::test_data::sizes::*;
     
     let test_cases = vec![
         ("chunk_minus_one.bin", test_files::create_sized_content(CHUNK_MINUS_ONE)),
@@ -214,9 +214,8 @@ fn test_directory_listing() {
 
 #[test]
 fn test_large_files() {
-    use common::test_data::{sizes, patterns};
     
-    let large_content = patterns::pseudo_random_data(sizes::LARGE, 42);
+    let large_content = patterns::pseudo_random_data(LARGE, 42);
     let (vault_path, master_key) = create_test_vault_with_files(vec![
         ("large.bin", &large_content),
     ]);
@@ -224,13 +223,12 @@ fn test_large_files() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     let decrypted = vault_ops.read_file("", "large.bin").unwrap();
-    assert_eq!(decrypted.content.len(), sizes::LARGE);
+    assert_eq!(decrypted.content.len(), LARGE);
     assert_file_content(&decrypted, &large_content);
 }
 
 #[test]
 fn test_binary_file_patterns() {
-    use common::test_data::patterns;
     
     let all_bytes = patterns::all_bytes_pattern();
     let repeating = patterns::repeating_pattern(b"DEADBEEF", 1024);

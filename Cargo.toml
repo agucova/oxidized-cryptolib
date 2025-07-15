@@ -46,6 +46,7 @@ hex-literal = "0.4.1"
 insta = "1.40.0"
 md5 = "0.7.0"
 proptest = "1.7.0"
+rand_chacha = "0.3"
 tempfile = "3.13.0"
 [profile.release]
 lto = true
@@ -64,5 +65,17 @@ name = "oxidized-cryptolib"
 path = "src/main.rs"
 
 [[bench]]
-name = "crypto_operations"
+name = "directory_operations"
+harness = false
+
+[[bench]]
+name = "file_operations"
+harness = false
+
+[[bench]]
+name = "vault_operations"
+harness = false
+
+[[bench]]
+name = "workflows"
 harness = false

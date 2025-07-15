@@ -5,7 +5,8 @@ use oxidized_cryptolib::vault::operations::VaultOperations;
 use common::{
     vault_builder::VaultBuilder,
     test_structures::{nested_structure, edge_case_structure},
-    test_data::patterns,
+    test_data::{patterns, sizes::{CHUNK_SIZE, CHUNK_PLUS_ONE}},
+    test_filenames::{NORMAL_FILES, SPECIAL_CHAR_FILES, HIDDEN_FILES},
 };
 
 #[test]
@@ -51,7 +52,6 @@ fn test_edge_case_vault_snapshot() {
 
 #[test]
 fn test_file_content_patterns_snapshot() {
-    use common::test_data::sizes::*;
     
     // Test various content patterns for regression
     let patterns_data = vec![
@@ -94,7 +94,6 @@ fn test_file_content_patterns_snapshot() {
 
 #[test]
 fn test_filename_encryption_snapshot() {
-    use common::test_filenames::*;
     
     let mut files = Vec::new();
     
@@ -142,7 +141,7 @@ struct VaultStructure {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields are used in Debug output for snapshots
 struct DirectoryInfo {
     path: String,
     name: String,
@@ -150,7 +149,7 @@ struct DirectoryInfo {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields are used in Debug output for snapshots
 struct FileInfo {
     path: String,
     name: String,
@@ -159,7 +158,7 @@ struct FileInfo {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields are used in Debug output for snapshots
 struct FileSummary {
     name: String,
     size: usize,
@@ -168,7 +167,7 @@ struct FileSummary {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields are used in Debug output for snapshots
 struct FileMetadata {
     decrypted_name: String,
     encrypted_name: String,
