@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
-use cryptolib::directory::{print_tree, VaultExplorer};
-use cryptolib::names::hash_dir_id;
-use cryptolib::vault::{extract_master_key, validate_vault_claims};
-use cryptolib::vault_ops::{debug_read_files_in_tree, VaultOperations};
+use cryptolib::fs::directory::{print_tree, VaultExplorer};
+use cryptolib::fs::name::hash_dir_id;
+use cryptolib::vault::config::{extract_master_key, validate_vault_claims};
+use cryptolib::vault::operations::{debug_read_files_in_tree, VaultOperations};
 use std::fs;
 use std::path::Path;
 
@@ -21,12 +21,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vault_config = fs::read_to_string(vault_path.join("vault.cryptomator"))?;
     let claims = validate_vault_claims(&vault_config, &master_key)?;
 
-    println!("Validated claims: {:?}", claims);
+    println!("Validated claims: {claims:?}");
 
     // Calculate where the root directory's contents should be
     println!("\n[DEBUG] Calculating root directory location");
     let root_dir_hash = hash_dir_id("", &master_key);
-    println!("[DEBUG] Root directory hash: {}", root_dir_hash);
+    println!("[DEBUG] Root directory hash: {root_dir_hash}");
 
     // Build and print the directory tree
     let explorer = VaultExplorer::new(vault_path);
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let preview = String::from_utf8_lossy(&decrypted.content[..200.min(decrypted.content.len())]);
             println!("   Preview: {}", preview.lines().take(3).collect::<Vec<_>>().join("\n            "));
         }
-        Err(e) => println!("   Error: {}", e),
+        Err(e) => println!("   Error: {e}"),
     }
     
     // 4. Resolve a path
@@ -73,10 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match vault_ops.resolve_path("test_folder/a.txt") {
         Ok((id, is_dir)) => {
             println!("   Path 'test_folder/a.txt' resolves to:");
-            println!("   - Directory ID: {}", id);
-            println!("   - Is directory: {}", is_dir);
+            println!("   - Directory ID: {id}");
+            println!("   - Is directory: {is_dir}");
         }
-        Err(e) => println!("   Error: {}", e),
+        Err(e) => println!("   Error: {e}"),
     }
     
     // 5. Debug helper: Read all files in tree

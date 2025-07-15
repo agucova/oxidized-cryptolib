@@ -9,8 +9,7 @@ use serde_with::base64::Base64;
 use serde_with::serde_as;
 use unicode_normalization::UnicodeNormalization;
 
-use super::master_key::MasterKey;
-use super::rfc_3394;
+use crate::crypto::{keys::MasterKey, rfc3394};
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,17 +63,17 @@ impl MasterKeyFile {
     }
 
     pub fn unlock(&self, passphrase: &str) -> MasterKey {
-        let kek = self.derive_key(&passphrase);
+        let kek = self.derive_key(passphrase);
         self.unlock_with_kek(&kek)
     }
 
     fn unlock_with_kek(&self, kek: &Secret<[u8; 32]>) -> MasterKey {
         // Unwrap the primary master key
         let aes_key =
-            rfc_3394::unwrap_key(&self.primary_master_key, kek).expect("Failed to unwrap AES key.");
+            rfc3394::unwrap_key(&self.primary_master_key, kek).expect("Failed to unwrap AES key.");
         let aes_key: [u8; 32] = aes_key.try_into().unwrap();
         // Unwrap the Hmac key
-        let hmac_key = rfc_3394::unwrap_key(&self.hmac_master_key, kek).unwrap();
+        let hmac_key = rfc3394::unwrap_key(&self.hmac_master_key, kek).unwrap();
         let hmac_key: Secret<[u8; 32]> =
             Secret::new(hmac_key.try_into().expect("Failed to unwrap HMAC key."));
 

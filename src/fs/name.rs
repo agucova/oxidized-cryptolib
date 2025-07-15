@@ -5,7 +5,7 @@ use base64::{engine::general_purpose, Engine as _};
 use data_encoding::BASE32;
 use ring::digest;
 
-use crate::master_key::MasterKey;
+use crate::crypto::keys::MasterKey;
 
 pub fn hash_dir_id(dir_id: &str, master_key: &MasterKey) -> String {
     master_key.with_siv_key(|key| {
@@ -48,7 +48,7 @@ pub fn decrypt_filename(
     // Try to decode - use URL_SAFE which handles padding
     let decoded = general_purpose::URL_SAFE
         .decode(name_without_extension.as_bytes())
-        .map_err(|e| format!("Base64 decode error: {}", e))?;
+        .map_err(|e| format!("Base64 decode error: {e}"))?;
 
     master_key.with_siv_key(|key| {
         let mut cipher = Aes256Siv::new(key);
@@ -57,10 +57,10 @@ pub fn decrypt_filename(
         let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
         let decrypted = cipher
             .decrypt(associated_data, &decoded)
-            .map_err(|e| format!("Decryption failed: {:?}", e))?;
+            .map_err(|e| format!("Decryption failed: {e:?}"))?;
 
         let result =
-            String::from_utf8(decrypted.to_vec()).map_err(|e| format!("UTF-8 decode error: {}", e))?;
+            String::from_utf8(decrypted.to_vec()).map_err(|e| format!("UTF-8 decode error: {e}"))?;
 
         Ok(result)
     })
@@ -69,7 +69,7 @@ pub fn decrypt_filename(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::master_key::MasterKey;
+    use crate::crypto::keys::MasterKey;
 
     fn create_test_master_key() -> MasterKey {
         // Create a deterministic master key for testing

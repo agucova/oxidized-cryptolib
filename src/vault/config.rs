@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 use url::Url;
 
-use crate::{master_key::MasterKey, master_key_file::MasterKeyFile};
+use crate::{crypto::keys::MasterKey, vault::master_key::MasterKeyFile};
 
 use jsonwebtoken::{Algorithm, Validation};
 use serde::{Deserialize, Serialize};

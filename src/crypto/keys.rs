@@ -200,7 +200,7 @@ impl MasterKey {
     pub fn create_name_cipher(&self) -> aes_siv::siv::Aes256Siv {
         self.with_siv_key(|key| {
             use aes_siv::KeyInit;
-            aes_siv::siv::Aes256Siv::new(key.into())
+            aes_siv::siv::Aes256Siv::new(key)
         })
     }
 
@@ -242,7 +242,7 @@ impl MasterKey {
     /// assert_eq!(token_data.claims.sub, "user123");
     /// ```
     pub fn create_jwt_decoding_key(&self) -> jsonwebtoken::DecodingKey {
-        self.with_raw_key(|key_bytes| jsonwebtoken::DecodingKey::from_secret(key_bytes))
+        self.with_raw_key(jsonwebtoken::DecodingKey::from_secret)
     }
 
     /// Create a JWT encoding key for token signing.
@@ -276,7 +276,7 @@ impl MasterKey {
     /// assert!(!token.is_empty());
     /// ```
     pub fn create_jwt_encoding_key(&self) -> jsonwebtoken::EncodingKey {
-        self.with_raw_key(|key_bytes| jsonwebtoken::EncodingKey::from_secret(key_bytes))
+        self.with_raw_key(jsonwebtoken::EncodingKey::from_secret)
     }
 
     /// Validate and decode a JWT using the master key.
@@ -321,7 +321,7 @@ impl MasterKey {
         note = "Use scoped access methods like with_raw_key() instead"
     )]
     pub fn raw_key(&self) -> GenericArray<u8, U64> {
-        self.with_raw_key_array(|key| key.clone())
+        self.with_raw_key_array(|key| *key)
     }
 }
 

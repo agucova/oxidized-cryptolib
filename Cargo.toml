@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "cryptolib"
-version = "0.1.0"
+version = "0.2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -21,10 +21,10 @@ rand_core = "0.6.4"
 ring = "0.16.20"
 rng = "0.1.0"
 scrypt = "0.10.0"
-secrecy = {version = "0.8.0", features = ["alloc", "serde"]}
-serde = {version = "1.0", features = ["derive"]}
+secrecy = { version = "0.8.0", features = ["alloc", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.82"
-serde_with = {version = "1.14.0", features = ["base64"]}
+serde_with = { version = "1.14.0", features = ["base64"] }
 thiserror = "1.0.31"
 unicode-normalization = "0.1.21"
 url = "2.2.2"

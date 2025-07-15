@@ -8,7 +8,7 @@ use aes_gcm::{
 use rand::{rngs::OsRng, RngCore};
 use thiserror::Error;
 
-use crate::master_key::MasterKey;
+use crate::crypto::keys::MasterKey;
 
 #[derive(Error, Debug)]
 pub enum FileError {
@@ -50,8 +50,8 @@ pub struct FileHeader {
 impl fmt::Debug for FileHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FileHeader")
-            .field("content_key", &hex::encode(&self.content_key))
-            .field("tag", &hex::encode(&self.tag))
+            .field("content_key", &hex::encode(self.content_key))
+            .field("tag", &hex::encode(self.tag))
             .finish()
     }
 }
@@ -81,7 +81,7 @@ pub fn decrypt_file_header(
             .decrypt(nonce, ciphertext_with_tag.as_ref())
             .map_err(|e| FileDecryptionError::HeaderDecryption(e.to_string()))?;
 
-        if decrypted.len() != 40 || &decrypted[0..8] != &[0xFF; 8] {
+        if decrypted.len() != 40 || decrypted[0..8] != [0xFF; 8] {
             return Err(FileDecryptionError::InvalidHeader(
                 "Decrypted header has incorrect format".to_string(),
             ));
@@ -100,12 +100,10 @@ pub fn decrypt_file_content(
     header_nonce: &[u8],
 ) -> Result<Vec<u8>, FileDecryptionError> {
     let key = Key::<Aes256Gcm>::from_slice(content_key);
-    let cipher = Aes256Gcm::new(&key);
+    let cipher = Aes256Gcm::new(key);
 
     let mut decrypted_content = Vec::new();
-    let mut chunk_number = 0u64;
-
-    for chunk in encrypted_content.chunks(32768 + 28) {
+    for (chunk_number, chunk) in encrypted_content.chunks(32768 + 28).enumerate() {
         if chunk.len() < 28 {
             return Err(FileDecryptionError::ContentDecryption(
                 "Incomplete chunk".to_string(),
@@ -116,7 +114,7 @@ pub fn decrypt_file_content(
         let ciphertext = &chunk[12..];
 
         let mut aad = Vec::new();
-        aad.extend_from_slice(&chunk_number.to_be_bytes());
+        aad.extend_from_slice(&(chunk_number as u64).to_be_bytes());
         aad.extend_from_slice(header_nonce);
 
         let payload = Payload {
@@ -129,7 +127,6 @@ pub fn decrypt_file_content(
             .map_err(|e| FileDecryptionError::ContentDecryption(e.to_string()))?;
 
         decrypted_content.extend_from_slice(&decrypted_chunk);
-        chunk_number += 1;
     }
 
     Ok(decrypted_content)
@@ -167,7 +164,7 @@ pub fn encrypt_file_content(
     header_nonce: &[u8; 12],
 ) -> Result<Vec<u8>, FileEncryptionError> {
     let key = Key::<Aes256Gcm>::from_slice(content_key);
-    let cipher = Aes256Gcm::new(&key);
+    let cipher = Aes256Gcm::new(key);
 
     let mut encrypted_content = Vec::new();
     let chunk_size = 32 * 1024; // 32 KiB
@@ -217,7 +214,7 @@ impl fmt::Debug for DecryptedFile {
             String::from_utf8_lossy(&self.content[0..snippet_len])
         );
         let content_str = if snippet_len < self.content.len() {
-            format!("{}...", content)
+            format!("{content}...")
         } else {
             content
         };
@@ -235,7 +232,7 @@ pub fn decrypt_file(path: &Path, master_key: &MasterKey) -> Result<DecryptedFile
         )));
     }
 
-    let encrypted = fs::read(path).map_err(|e| FileError::Io(e))?;
+    let encrypted = fs::read(path).map_err(FileError::Io)?;
     let header = decrypt_file_header(&encrypted[0..68], master_key)?;
     let content = decrypt_file_content(&encrypted[68..], &header.content_key, &encrypted[0..12])?;
 

@@ -4,9 +4,9 @@
 //! that will be useful for FUSE filesystem implementation and debugging.
 
 use crate::{
-    files::{decrypt_file, DecryptedFile},
-    master_key::MasterKey,
-    names::{decrypt_filename, hash_dir_id},
+    fs::file::{decrypt_file, DecryptedFile},
+    crypto::keys::MasterKey,
+    fs::name::{decrypt_filename, hash_dir_id},
 };
 use std::{
     fs,
@@ -20,7 +20,7 @@ pub enum VaultOperationError {
     Io(#[from] std::io::Error),
     
     #[error("File decryption error: {0}")]
-    FileDecryption(#[from] crate::files::FileError),
+    FileDecryption(#[from] crate::fs::file::FileError),
     
     #[error("Filename decryption error: {0}")]
     FilenameDecryption(String),
@@ -126,7 +126,7 @@ impl VaultOperations {
                         });
                     }
                     Err(e) => {
-                        eprintln!("Warning: Failed to decrypt filename {}: {}", file_name, e);
+                        eprintln!("Warning: Failed to decrypt filename {file_name}: {e}");
                     }
                 }
             } else if file_name.ends_with(".c9s") && path.is_dir() {
@@ -190,7 +190,7 @@ impl VaultOperations {
             .ok_or_else(|| {
                 VaultOperationError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("File '{}' not found in directory", filename),
+                    format!("File '{filename}' not found in directory"),
                 ))
             })?;
         
@@ -216,7 +216,7 @@ impl VaultOperations {
             if is_last {
                 // Check if it's a file or directory
                 let files = self.list_files(&current_dir_id)?;
-                if let Some(_) = files.iter().find(|f| f.name == *component) {
+                if files.iter().any(|f| f.name == *component) {
                     is_directory = false;
                     break;
                 }
@@ -248,13 +248,13 @@ impl VaultOperations {
         let dir_id_file = dir_path.join("dir.c9r");
         let dir_id = fs::read_to_string(&dir_id_file)
             .map_err(|e| VaultOperationError::InvalidVaultStructure(
-                format!("Failed to read directory ID: {}", e)
+                format!("Failed to read directory ID: {e}")
             ))?
             .trim()
             .to_string();
         
         let decrypted_name = decrypt_filename(encrypted_name, parent_dir_id, &self.master_key)
-            .map_err(|e| VaultOperationError::FilenameDecryption(e))?;
+            .map_err(VaultOperationError::FilenameDecryption)?;
         
         Ok(VaultDirectoryInfo {
             name: decrypted_name,
@@ -272,7 +272,7 @@ impl VaultOperations {
         let name_file = dir_path.join("name.c9s");
         let original_name = fs::read_to_string(&name_file)
             .map_err(|e| VaultOperationError::InvalidVaultStructure(
-                format!("Failed to read shortened name: {}", e)
+                format!("Failed to read shortened name: {e}")
             ))?
             .trim()
             .to_string();
@@ -280,13 +280,13 @@ impl VaultOperations {
         let dir_id_file = dir_path.join("dir.c9r");
         let dir_id = fs::read_to_string(&dir_id_file)
             .map_err(|e| VaultOperationError::InvalidVaultStructure(
-                format!("Failed to read directory ID: {}", e)
+                format!("Failed to read directory ID: {e}")
             ))?
             .trim()
             .to_string();
         
         let decrypted_name = decrypt_filename(&original_name, parent_dir_id, &self.master_key)
-            .map_err(|e| VaultOperationError::FilenameDecryption(e))?;
+            .map_err(VaultOperationError::FilenameDecryption)?;
         
         Ok(VaultDirectoryInfo {
             name: decrypted_name,
@@ -304,13 +304,13 @@ impl VaultOperations {
         let name_file = dir_path.join("name.c9s");
         let original_name = fs::read_to_string(&name_file)
             .map_err(|e| VaultOperationError::InvalidVaultStructure(
-                format!("Failed to read shortened name: {}", e)
+                format!("Failed to read shortened name: {e}")
             ))?
             .trim()
             .to_string();
         
         let decrypted_name = decrypt_filename(&original_name, parent_dir_id, &self.master_key)
-            .map_err(|e| VaultOperationError::FilenameDecryption(e))?;
+            .map_err(VaultOperationError::FilenameDecryption)?;
         
         let contents_file = dir_path.join("contents.c9r");
         let metadata = fs::metadata(&contents_file)?;
@@ -361,16 +361,16 @@ pub fn debug_read_files_in_tree(
                         }
                     };
                     
-                    println!("{}   Content preview:", indent);
+                    println!("{indent}   Content preview:");
                     for line in content_str.lines().take(5) {
-                        println!("{}   | {}", indent, line);
+                        println!("{indent}   | {line}");
                     }
                     if decrypted.content.len() > 200 {
-                        println!("{}   | ... (truncated)", indent);
+                        println!("{indent}   | ... (truncated)");
                     }
                 }
                 Err(e) => {
-                    println!("{}   ❌ Failed to decrypt: {}", indent, e);
+                    println!("{indent}   ❌ Failed to decrypt: {e}");
                 }
             }
         }

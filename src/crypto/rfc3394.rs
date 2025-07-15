@@ -114,7 +114,7 @@ pub enum UnwrapError {
 /// it is expected that the integrity check will fail (`InvalidIntegrityCheck`).
 pub fn unwrap_key(ciphertext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, UnwrapError> {
     // Ensure that the ciphertext is a multiple of 64 bits
-    if ciphertext.len() % 8 != 0 {
+    if !ciphertext.len().is_multiple_of(8) {
         return Err(UnwrapError::InvalidCiphertextLength);
     }
 

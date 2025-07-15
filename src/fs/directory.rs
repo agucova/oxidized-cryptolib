@@ -1,5 +1,5 @@
-use crate::master_key::MasterKey;
-use crate::names::{decrypt_filename, hash_dir_id};
+use crate::crypto::keys::MasterKey;
+use crate::fs::name::{decrypt_filename, hash_dir_id};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -62,7 +62,7 @@ impl VaultExplorer {
                         // Note: dirid.c9r files are encrypted, not plain text
                         // We'll skip the directory mapping for now and rely on dir.c9r files
                         let hash_name = hash_path.file_name().unwrap().to_string_lossy().to_string();
-                        println!("[DEBUG] Found directory: {}", hash_name);
+                        println!("[DEBUG] Found directory: {hash_name}");
                         // For now, just note that this directory exists
                         dir_map.insert(hash_name, "unknown".to_string());
                     }
@@ -89,7 +89,7 @@ impl VaultExplorer {
 
         // Calculate storage path for this directory
         let storage_path = self.calculate_directory_path(&parent_dir_id, master_key);
-        println!("[DEBUG] Storage path: {:?}", storage_path);
+        println!("[DEBUG] Storage path: {storage_path:?}");
 
         if !storage_path.exists() {
             println!("[DEBUG] Storage path doesn't exist, directory is empty");
@@ -115,10 +115,9 @@ impl VaultExplorer {
         master_key: &MasterKey,
         dir_map: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n[DEBUG] Processing items in directory: {:?}", dir_path);
+        println!("\n[DEBUG] Processing items in directory: {dir_path:?}");
         println!(
-            "[DEBUG] Parent directory ID for decryption: '{}'",
-            parent_dir_id
+            "[DEBUG] Parent directory ID for decryption: '{parent_dir_id}'"
         );
 
         let mut item_count = 0;
@@ -156,7 +155,7 @@ impl VaultExplorer {
             }
         }
 
-        println!("[DEBUG] Processed {} items in directory", item_count);
+        println!("[DEBUG] Processed {item_count} items in directory");
 
         // Sort children by name for consistent output
         parent_entry.children.sort_by(|a, b| a.name.cmp(&b.name));
@@ -173,15 +172,15 @@ impl VaultExplorer {
         parent_entry: &mut DirectoryEntry,
         dir_map: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("[DEBUG] Processing directory: {}", file_name);
+        println!("[DEBUG] Processing directory: {file_name}");
 
         match self.read_directory_id(path) {
             Ok(dir_id) => {
-                println!("[DEBUG] Directory ID: '{}'", dir_id);
+                println!("[DEBUG] Directory ID: '{dir_id}'");
 
                 match decrypt_filename(file_name, parent_dir_id, master_key) {
                     Ok(decrypted_name) => {
-                        println!("[DEBUG] Decrypted directory name: {}", decrypted_name);
+                        println!("[DEBUG] Decrypted directory name: {decrypted_name}");
 
                         let mut dir_entry = DirectoryEntry {
                             name: decrypted_name,
@@ -197,8 +196,7 @@ impl VaultExplorer {
                     }
                     Err(e) => {
                         println!(
-                            "[ERROR] Failed to decrypt directory name {}: {}",
-                            file_name, e
+                            "[ERROR] Failed to decrypt directory name {file_name}: {e}"
                         );
                     }
                 }
@@ -223,11 +221,11 @@ impl VaultExplorer {
         master_key: &MasterKey,
         parent_entry: &mut DirectoryEntry,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("[DEBUG] Processing file: {}", file_name);
+        println!("[DEBUG] Processing file: {file_name}");
 
         match decrypt_filename(file_name, parent_dir_id, master_key) {
             Ok(decrypted_name) => {
-                println!("[DEBUG] Decrypted file name: {}", decrypted_name);
+                println!("[DEBUG] Decrypted file name: {decrypted_name}");
 
                 parent_entry.children.push(DirectoryEntry {
                     name: decrypted_name,
@@ -238,7 +236,7 @@ impl VaultExplorer {
                 });
             }
             Err(e) => {
-                println!("[ERROR] Failed to decrypt file name {}: {}", file_name, e);
+                println!("[ERROR] Failed to decrypt file name {file_name}: {e}");
             }
         }
 
@@ -254,15 +252,15 @@ impl VaultExplorer {
         parent_entry: &mut DirectoryEntry,
         dir_map: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("[DEBUG] Processing shortened name: {}", file_name);
+        println!("[DEBUG] Processing shortened name: {file_name}");
 
         match self.read_shortened_name(path) {
             Ok(original_name) => {
-                println!("[DEBUG] Original encrypted name: {}", original_name);
+                println!("[DEBUG] Original encrypted name: {original_name}");
 
                 match decrypt_filename(&original_name, parent_dir_id, master_key) {
                     Ok(decrypted_name) => {
-                        println!("[DEBUG] Decrypted shortened name: {}", decrypted_name);
+                        println!("[DEBUG] Decrypted shortened name: {decrypted_name}");
 
                         let is_dir = path.join("dir.c9r").exists();
 
@@ -281,7 +279,7 @@ impl VaultExplorer {
                                     parent_entry.children.push(dir_entry);
                                 }
                                 Err(e) => {
-                                    println!("[ERROR] Failed to read directory ID from shortened dir: {}", e);
+                                    println!("[ERROR] Failed to read directory ID from shortened dir: {e}");
                                 }
                             }
                         } else {
@@ -295,12 +293,12 @@ impl VaultExplorer {
                         }
                     }
                     Err(e) => {
-                        println!("[ERROR] Failed to decrypt shortened name: {}", e);
+                        println!("[ERROR] Failed to decrypt shortened name: {e}");
                     }
                 }
             }
             Err(e) => {
-                println!("[ERROR] Failed to read shortened name: {}", e);
+                println!("[ERROR] Failed to read shortened name: {e}");
             }
         }
 
@@ -308,10 +306,10 @@ impl VaultExplorer {
     }
 
     fn calculate_directory_path(&self, dir_id: &str, master_key: &MasterKey) -> PathBuf {
-        println!("[DEBUG] Calculating directory path for ID: '{}'", dir_id);
+        println!("[DEBUG] Calculating directory path for ID: '{dir_id}'");
 
         let hashed = hash_dir_id(dir_id, master_key);
-        println!("[DEBUG] Hashed directory ID: {}", hashed);
+        println!("[DEBUG] Hashed directory ID: {hashed}");
 
         assert!(
             hashed.len() >= 32,
@@ -325,7 +323,7 @@ impl VaultExplorer {
         let remaining: String = hash_chars[2..32].iter().collect();
 
         let path = self.vault_path.join("d").join(&first_two).join(&remaining);
-        println!("[DEBUG] Calculated path: {:?}", path);
+        println!("[DEBUG] Calculated path: {path:?}");
 
         path
     }
@@ -335,16 +333,14 @@ impl VaultExplorer {
 
         assert!(
             dir_file.exists(),
-            "dir.c9r doesn't exist at: {:?}",
-            dir_file
+            "dir.c9r doesn't exist at: {dir_file:?}"
         );
 
         let content = fs::read_to_string(&dir_file)?;
         let trimmed = content.trim().to_string();
 
         println!(
-            "[DEBUG] Read directory ID from {:?}: '{}'",
-            dir_file, trimmed
+            "[DEBUG] Read directory ID from {dir_file:?}: '{trimmed}'"
         );
 
         Ok(trimmed)
@@ -355,16 +351,14 @@ impl VaultExplorer {
 
         assert!(
             name_file.exists(),
-            "name.c9s doesn't exist at: {:?}",
-            name_file
+            "name.c9s doesn't exist at: {name_file:?}"
         );
 
         let content = fs::read_to_string(&name_file)?;
         let trimmed = content.trim().to_string();
 
         println!(
-            "[DEBUG] Read shortened name from {:?}: '{}'",
-            name_file, trimmed
+            "[DEBUG] Read shortened name from {name_file:?}: '{trimmed}'"
         );
 
         Ok(trimmed)
@@ -385,8 +379,8 @@ pub fn print_tree(entry: &DirectoryEntry, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::master_key::MasterKey;
-    use crate::names::{encrypt_filename, hash_dir_id};
+    use crate::crypto::keys::MasterKey;
+    use crate::fs::name::{encrypt_filename, hash_dir_id};
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
