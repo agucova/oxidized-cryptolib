@@ -3,7 +3,7 @@
 use generic_array::{typenum::U64, GenericArray};
 use rand_core::{OsRng, RngCore};
 use secrecy::{ExposeSecret, Secret};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Master key pair for Cryptomator vault operations.
 ///
@@ -70,18 +70,10 @@ impl MasterKey {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        struct ZeroizeOnDrop([u8; 64]);
-
-        impl Drop for ZeroizeOnDrop {
-            fn drop(&mut self) {
-                self.0.zeroize();
-            }
-        }
-
-        let mut key = ZeroizeOnDrop([0u8; 64]);
-        key.0[..32].copy_from_slice(self.aes_master_key.expose_secret());
-        key.0[32..].copy_from_slice(self.mac_master_key.expose_secret());
-        f(&key.0)
+        let mut key = Zeroizing::new([0u8; 64]);
+        key.as_mut()[..32].copy_from_slice(self.aes_master_key.expose_secret());
+        key.as_mut()[32..].copy_from_slice(self.mac_master_key.expose_secret());
+        f(key.as_ref())
     }
 
     /// Execute a function with access to the raw 512-bit combined key as a GenericArray.
@@ -97,14 +89,15 @@ impl MasterKey {
     where
         F: FnOnce(&GenericArray<u8, U64>) -> R,
     {
+        // Custom wrapper since GenericArray doesn't implement DefaultIsZeroes
         struct ZeroizeOnDrop(GenericArray<u8, U64>);
-
+        
         impl Drop for ZeroizeOnDrop {
             fn drop(&mut self) {
                 self.0.zeroize();
             }
         }
-
+        
         let mut key = ZeroizeOnDrop(GenericArray::<u8, U64>::default());
         key.0[..32].copy_from_slice(self.aes_master_key.expose_secret());
         key.0[32..].copy_from_slice(self.mac_master_key.expose_secret());
@@ -170,14 +163,15 @@ impl MasterKey {
     where
         F: FnOnce(&GenericArray<u8, U64>) -> R,
     {
+        // Custom wrapper since GenericArray doesn't implement DefaultIsZeroes
         struct ZeroizeOnDrop(GenericArray<u8, U64>);
-
+        
         impl Drop for ZeroizeOnDrop {
             fn drop(&mut self) {
                 self.0.zeroize();
             }
         }
-
+        
         let mut key = ZeroizeOnDrop(GenericArray::<u8, U64>::default());
         // Note: SIV uses MAC key first, then AES key
         key.0[..32].copy_from_slice(self.mac_master_key.expose_secret());
