@@ -66,6 +66,15 @@ pub fn decrypt_filename(
     })
 }
 
+/// Create a SHA1 hash for shortened filenames (.c9s format)
+pub fn create_c9s_filename(long_encrypted_name: &str) -> String {
+    let hash = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, long_encrypted_name.as_bytes());
+    let hash_bytes = hash.as_ref();
+    
+    // Convert to base32 (uppercase)
+    data_encoding::BASE32_NOPAD.encode(&hash_bytes[..4])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,6 +12,8 @@ use crate::{crypto::keys::MasterKey, vault::master_key::MasterKeyFile};
 
 use jsonwebtoken::{Algorithm, Validation};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +22,27 @@ pub struct VaultConfigurationClaims {
     shortening_threshold: i32,
     jti: String,
     cipher_combo: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultConfig {
+    pub jti: String,
+    pub format: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ciphertext_dir: Option<CiphertextDir>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Payload>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CiphertextDir(pub String);
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Payload {
+    pub key: String,
+    #[serde(flatten)]
+    pub other_fields: HashMap<String, Value>,
 }
 
 #[derive(Error, Debug)]
@@ -124,6 +147,25 @@ pub fn validate_vault_claims(
     }
 
     Ok(claims)
+}
+
+/// Create a vault configuration JWT for testing
+pub fn create_vault_config(
+    config: &VaultConfig,
+    master_key: &MasterKey,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let claims = VaultConfigurationClaims {
+        format: config.format,
+        shortening_threshold: 220,
+        jti: config.jti.clone(),
+        cipher_combo: "SIV_GCM".to_string(),
+    };
+    
+    let encoding_key = master_key.create_jwt_encoding_key();
+    let mut header = jsonwebtoken::Header::new(Algorithm::HS256);
+    header.kid = Some("masterkeyfile:masterkey/masterkey.cryptomator".to_string());
+    
+    jsonwebtoken::encode(&header, &claims, &encoding_key)
 }
 
 #[cfg(test)]

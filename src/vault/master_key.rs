@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use ring::hmac;
+use ring::rand::{SecureRandom, SystemRandom};
 use secrecy::zeroize::Zeroizing;
 use secrecy::{ExposeSecret, Secret};
 
@@ -103,4 +104,89 @@ const fn num_bits<T>() -> usize {
 fn log_2(x: i32) -> u32 {
     assert!(x > 0);
     num_bits::<i32>() as u32 - x.leading_zeros() - 1
+}
+
+/// Create a master key file content for testing
+pub fn create_masterkey_file(
+    master_key: &MasterKey,
+    passphrase: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use crate::crypto::rfc3394::wrap_key;
+    
+    // Generate salt
+    let mut salt = vec![0u8; 32];
+    SystemRandom::new().fill(&mut salt)?;
+    
+    // Scrypt parameters (matching Cryptomator defaults)
+    let log2_n = 16;
+    let r = 8;
+    let p = 1;
+    
+    // Derive KEK from passphrase
+    let normalized_passphrase = Zeroizing::new(passphrase.nfc().collect::<String>());
+    let scrypt_params = scrypt::Params::new(log2_n as u8, r, p, 32)?;
+    let mut kek = Zeroizing::new([0u8; 32]);
+    scrypt::scrypt(
+        normalized_passphrase.as_bytes(),
+        &salt,
+        &scrypt_params,
+        &mut kek[..],
+    )?;
+    let kek_secret = Secret::new(*kek);
+    
+    // Wrap the keys
+    let wrapped_aes = master_key.with_aes_key(|key| wrap_key(key, &kek_secret))?;
+    let wrapped_mac = master_key.with_mac_key(|key| wrap_key(key, &kek_secret))?;
+    
+    // Create version MAC
+    let version = 999u32;
+    let version_mac = master_key.with_mac_key(|key| {
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, key);
+        let tag = hmac::sign(&hmac_key, &version.to_be_bytes());
+        tag.as_ref().to_vec()
+    });
+    
+    // Create MasterKeyFile structure
+    let masterkey_file = MasterKeyFile {
+        version,
+        scrypt_salt: salt,
+        scrypt_cost_param: 1 << log2_n,
+        scrypt_block_size: r as i32,
+        primary_master_key: wrapped_aes,
+        hmac_master_key: wrapped_mac,
+        version_mac,
+    };
+    
+    // Serialize to JSON
+    Ok(serde_json::to_string_pretty(&masterkey_file)?)
+}
+
+pub fn derive_keys(passphrase: &str) -> (MasterKey, Secret<[u8; 32]>) {
+    let master_key = MasterKey::random();
+    
+    // Generate salt
+    let mut salt = vec![0u8; 32];
+    SystemRandom::new()
+        .fill(&mut salt)
+        .expect("Failed to generate salt");
+    
+    // Scrypt parameters
+    let log2_n = 16;
+    let r = 8;
+    let p = 1;
+    
+    // Derive KEK from passphrase
+    let normalized_passphrase = Zeroizing::new(passphrase.nfc().collect::<String>());
+    let scrypt_params = scrypt::Params::new(log2_n as u8, r, p, 32)
+        .expect("Failed to create scrypt parameters");
+    let mut kek = Zeroizing::new([0u8; 32]);
+    scrypt::scrypt(
+        normalized_passphrase.as_bytes(),
+        &salt,
+        &scrypt_params,
+        &mut kek[..],
+    )
+    .expect("Failed to derive KEK");
+    
+    (master_key, Secret::new(*kek))
 }

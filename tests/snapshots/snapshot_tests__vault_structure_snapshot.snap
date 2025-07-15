@@ -1,0 +1,83 @@
+---
+source: tests/snapshot_tests.rs
+expression: vault_structure
+---
+VaultStructure {
+    directories: [
+        DirectoryInfo {
+            path: "assets",
+            name: "assets",
+            children_count: 2,
+        },
+        DirectoryInfo {
+            path: "assets/images",
+            name: "images",
+            children_count: 1,
+        },
+        DirectoryInfo {
+            path: "docs",
+            name: "docs",
+            children_count: 2,
+        },
+        DirectoryInfo {
+            path: "src",
+            name: "src",
+            children_count: 3,
+        },
+        DirectoryInfo {
+            path: "src/test",
+            name: "test",
+            children_count: 1,
+        },
+    ],
+    files: [
+        FileInfo {
+            path: "root.txt",
+            name: "root.txt",
+            size: 105,
+            content_hash: "f4d4be76a090c1008cd0d1cebd2c23cd",
+        },
+        FileInfo {
+            path: "assets/data.json",
+            name: "data.json",
+            size: 110,
+            content_hash: "efebd898e52c44e3b3514775e5a7c2fa",
+        },
+        FileInfo {
+            path: "assets/images/logo.png",
+            name: "logo.png",
+            size: 1120,
+            content_hash: "4198214ee02e6ad7ac39559cd3e70070",
+        },
+        FileInfo {
+            path: "docs/readme.md",
+            name: "readme.md",
+            size: 111,
+            content_hash: "fc3d6ba8de531d1e6c72c32b9e981e82",
+        },
+        FileInfo {
+            path: "docs/guide.md",
+            name: "guide.md",
+            size: 114,
+            content_hash: "b9a65a91b6de75521661aae67b901daa",
+        },
+        FileInfo {
+            path: "src/main.rs",
+            name: "main.rs",
+            size: 108,
+            content_hash: "7f3ad7260873da9bcfebd77ce4a8c504",
+        },
+        FileInfo {
+            path: "src/lib.rs",
+            name: "lib.rs",
+            size: 109,
+            content_hash: "5e6bd96377f29f8695a81db4c2200dca",
+        },
+        FileInfo {
+            path: "src/test/mod.rs",
+            name: "mod.rs",
+            size: 116,
+            content_hash: "db297ba807d64c73b1de218ae202336d",
+        },
+    ],
+}

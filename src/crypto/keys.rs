@@ -20,7 +20,7 @@ use zeroize::{Zeroize, Zeroizing};
 /// Access to key material is provided through scoped access methods that
 /// ensure keys are only exposed for the minimum necessary time and are
 /// automatically cleaned up.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MasterKey {
     pub aes_master_key: Secret<[u8; 32]>,
     pub mac_master_key: Secret<[u8; 32]>,

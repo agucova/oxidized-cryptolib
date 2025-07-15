@@ -1,0 +1,54 @@
+---
+source: tests/snapshot_tests.rs
+expression: file_summary
+---
+[
+    FileSummary {
+        name: "all_bytes.bin",
+        size: 256,
+        checksum: "e2c865db4162bed963bfaa9ef6ac18f0",
+        first_16_bytes: Some(
+            "[00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 0a, 0b, 0c, 0d, 0e, 0f]",
+        ),
+    },
+    FileSummary {
+        name: "repeating.bin",
+        size: 100,
+        checksum: "b40e0a384f2d961dabfe48ef03687301",
+        first_16_bytes: Some(
+            "[41, 42, 43, 44, 41, 42, 43, 44, 41, 42, 43, 44, 41, 42, 43, 44]",
+        ),
+    },
+    FileSummary {
+        name: "compressible.bin",
+        size: 100,
+        checksum: "8adc5937e635f6c9af646f0b23560fae",
+        first_16_bytes: Some(
+            "[41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41]",
+        ),
+    },
+    FileSummary {
+        name: "incompressible.bin",
+        size: 100,
+        checksum: "dc8076e29210a94c9dbb97c0d1a962a8",
+        first_16_bytes: Some(
+            "[2a, 27, ca, 87, 6a, e7, 0a, 47, aa, a7, 4a, 07, ea, 67, 8a, c7]",
+        ),
+    },
+    FileSummary {
+        name: "chunk_size.bin",
+        size: 32768,
+        checksum: "946c84f111b263c58973725d477d3f14",
+        first_16_bytes: Some(
+            "[2a, 27, ca, 87, 6a, e7, 0a, 47, aa, a7, 4a, 07, ea, 67, 8a, c7]",
+        ),
+    },
+    FileSummary {
+        name: "chunk_plus_one.bin",
+        size: 32769,
+        checksum: "7f8e255ced4bd354e5d3e7ecbbbbd48d",
+        first_16_bytes: Some(
+            "[2a, 27, ca, 87, 6a, e7, 0a, 47, aa, a7, 4a, 07, ea, 67, 8a, c7]",
+        ),
+    },
+]

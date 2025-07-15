@@ -1,0 +1,66 @@
+---
+source: tests/snapshot_tests.rs
+expression: vault_structure
+---
+VaultStructure {
+    directories: [
+        DirectoryInfo {
+            path: "nested",
+            name: "nested",
+            children_count: 1,
+        },
+        DirectoryInfo {
+            path: "nested/deeply",
+            name: "deeply",
+            children_count: 1,
+        },
+        DirectoryInfo {
+            path: "nested/deeply/nested",
+            name: "nested",
+            children_count: 1,
+        },
+        DirectoryInfo {
+            path: "nested/deeply/nested/structure",
+            name: "structure",
+            children_count: 1,
+        },
+    ],
+    files: [
+        FileInfo {
+            path: "empty.txt",
+            name: "empty.txt",
+            size: 96,
+            content_hash: "d41d8cd98f00b204e9800998ecf8427e",
+        },
+        FileInfo {
+            path: "chunk_boundary.bin",
+            name: "chunk_boundary.bin",
+            size: 229669,
+            content_hash: "8a975f7017826fcb19030160f3b95596",
+        },
+        FileInfo {
+            path: "special_chars.txt",
+            name: "special_chars.txt",
+            size: 161,
+            content_hash: "b520d4c5e7573a1590e8f7c1254ebd78",
+        },
+        FileInfo {
+            path: "file with spaces.txt",
+            name: "file with spaces.txt",
+            size: 120,
+            content_hash: "16d3fc47c4a05ce22bc59c1be7dd93f2",
+        },
+        FileInfo {
+            path: "émojis-🚀.txt",
+            name: "émojis-🚀.txt",
+            size: 119,
+            content_hash: "c781dee98df4423c33388704bcd92975",
+        },
+        FileInfo {
+            path: "nested/deeply/nested/structure/file.txt",
+            name: "file.txt",
+            size: 114,
+            content_hash: "912898a614e4fc9cd9797a5ec258e983",
+        },
+    ],
+}
