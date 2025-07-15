@@ -1,15 +1,19 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
-use cryptolib::files::decrypt_file;
+use cryptolib::directory::{print_tree, VaultExplorer};
+use cryptolib::names::hash_dir_id;
+use cryptolib::vault::{extract_master_key, validate_vault_claims};
 use std::fs;
 use std::path::Path;
-
-use cryptolib::vault::{extract_master_key, validate_vault_claims};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vault_path = Path::new("test_vault");
     let passphrase = "123456789";
+
+    println!("Vault path: {:?}", vault_path.canonicalize()?);
+    assert!(vault_path.exists(), "Vault path doesn't exist");
+    assert!(vault_path.is_dir(), "Vault path is not a directory");
 
     let master_key = extract_master_key(vault_path, passphrase)?;
 
@@ -18,21 +22,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Validated claims: {:?}", claims);
 
-    // Iterate over all files in the vault tree
-    for entry in walkdir::WalkDir::new(vault_path.join("d"))
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        if path.is_file() && path.extension().unwrap() == "c9r" {
-            if path.file_name().unwrap() == "dir.c9r" {
-                continue;
-            }
-            println!("Decrypting file on: {:?}", path);
-            let decrypted_file = decrypt_file(&path, &master_key).unwrap();
-            println!("{:?}", decrypted_file);
-        }
-    }
+    // Calculate where the root directory's contents should be
+    println!("\n[DEBUG] Calculating root directory location");
+    let root_dir_hash = hash_dir_id("", &master_key);
+    println!("[DEBUG] Root directory hash: {}", root_dir_hash);
+
+    // Build and print the directory tree
+    let explorer = VaultExplorer::new(vault_path);
+    let tree = explorer.build_directory_tree(&master_key)?;
+
+    println!("\nVault Directory Structure:");
+    println!("========================");
+    print_tree(&tree, 0);
 
     Ok(())
 }
