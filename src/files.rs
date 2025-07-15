@@ -169,7 +169,15 @@ pub fn encrypt_file_content(
     let mut encrypted_content = Vec::new();
     let chunk_size = 32 * 1024; // 32 KiB
 
-    for (chunk_number, chunk) in content.chunks(chunk_size).enumerate() {
+    // Always process at least one chunk, even for empty content
+    // This ensures proper authentication for empty files
+    let chunks: Vec<&[u8]> = if content.is_empty() {
+        vec![&[]] // One empty chunk
+    } else {
+        content.chunks(chunk_size).collect()
+    };
+
+    for (chunk_number, chunk) in chunks.iter().enumerate() {
         let mut chunk_nonce = [0u8; 12];
         OsRng.fill_bytes(&mut chunk_nonce);
 
