@@ -120,8 +120,8 @@ mod tests {
         let orig_name = "test.txt";
         let parent_dir_id = ""; // Root directory
 
-        let encrypted1 = encrypt_filename(&orig_name, parent_dir_id, &master_key);
-        let encrypted2 = encrypt_filename(&orig_name, parent_dir_id, &master_key);
+        let encrypted1 = encrypt_filename(orig_name, parent_dir_id, &master_key);
+        let encrypted2 = encrypt_filename(orig_name, parent_dir_id, &master_key);
 
         assert_eq!(encrypted1, encrypted2, "Encryption should be deterministic");
 
@@ -149,9 +149,9 @@ mod tests {
         for (original, parent_dir_id) in test_cases {
             let encrypted = encrypt_filename(original, parent_dir_id, &master_key);
             let decrypted = decrypt_filename(&encrypted, parent_dir_id, &master_key)
-                .unwrap_or_else(|e| panic!("Failed to decrypt '{}': {}", original, e));
+                .unwrap_or_else(|e| panic!("Failed to decrypt '{original}': {e}"));
             
-            assert_eq!(original, decrypted, "Roundtrip failed for '{}'", original);
+            assert_eq!(original, decrypted, "Roundtrip failed for '{original}'");
         }
     }
 
@@ -171,9 +171,9 @@ mod tests {
         for parent_dir_id in parent_dir_ids {
             let encrypted = encrypt_filename(filename, parent_dir_id, &master_key);
             let decrypted = decrypt_filename(&encrypted, parent_dir_id, &master_key)
-                .unwrap_or_else(|e| panic!("Failed with parent_dir_id '{}': {}", parent_dir_id, e));
+                .unwrap_or_else(|e| panic!("Failed with parent_dir_id '{parent_dir_id}': {e}"));
             
-            assert_eq!(filename, decrypted, "Failed with parent_dir_id '{}'", parent_dir_id);
+            assert_eq!(filename, decrypted, "Failed with parent_dir_id '{parent_dir_id}'");
         }
     }
 
@@ -252,7 +252,7 @@ mod tests {
 
         for invalid_filename in invalid_filenames {
             let result = decrypt_filename(invalid_filename, parent_dir_id, &master_key);
-            assert!(result.is_err(), "Invalid filename '{}' should fail to decrypt", invalid_filename);
+            assert!(result.is_err(), "Invalid filename '{invalid_filename}' should fail to decrypt");
         }
     }
 
@@ -304,7 +304,7 @@ mod tests {
         // Should only contain valid Base32 characters
         for ch in hash.chars() {
             assert!(ch.is_ascii_alphanumeric() || ch == '=', 
-                "Hash should only contain Base32 characters, found: {}", ch);
+                "Hash should only contain Base32 characters, found: {ch}");
         }
     }
 
@@ -325,8 +325,8 @@ mod tests {
         
         for dir_id in test_cases {
             let hash = hash_dir_id(dir_id, &master_key);
-            assert!(!hash.is_empty(), "Hash should not be empty for dir_id: '{}'", dir_id);
-            assert!(hash.len() >= 32, "Hash should be at least 32 characters for dir_id: '{}'", dir_id);
+            assert!(!hash.is_empty(), "Hash should not be empty for dir_id: '{dir_id}'");
+            assert!(hash.len() >= 32, "Hash should be at least 32 characters for dir_id: '{dir_id}'");
         }
     }
 

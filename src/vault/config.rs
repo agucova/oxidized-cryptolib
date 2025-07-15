@@ -219,18 +219,18 @@ mod tests {
             let claims_json =
                 String::from_utf8(BASE64URL_NOPAD.decode(parts[1].as_bytes()).unwrap()).unwrap();
             let tampered_claims_json = claims_json.replace("SIV_GCM", "SIV_CBC");
-            let tampered_payload = BASE64URL_NOPAD.encode(&tampered_claims_json.as_bytes());
+            let tampered_payload = BASE64URL_NOPAD.encode(tampered_claims_json.as_bytes());
             parts[1] = &tampered_payload;
             parts.join(".")
         };
 
-        println!("{}", tampered_token);
+        println!("{tampered_token}");
         let result = validate_vault_claims(&tampered_token, &master_key);
-        println!("{:?}", result);
+        println!("{result:?}");
         match result {
             Err(ClaimValidationError::JwtDecode(_)) => (),
             Ok(_) => panic!("Tampered token was validated successfully"),
-            Err(e) => panic!("Unexpected error: {:?}", e),
+            Err(e) => panic!("Unexpected error: {e:?}"),
         }
     }
 }

@@ -18,6 +18,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Specific test**: `cargo test [test_name]` (run a specific test function)
 - **Test with output**: `cargo test -- --nocapture` (show println! output during tests)
 
+### Benchmarking
+- **All benchmarks**: `cargo bench` (runs all criterion-based performance benchmarks)
+- **Specific benchmark**: `cargo bench --bench crypto_operations` (runs crypto operation benchmarks)
+- **Quick benchmarks**: `cargo bench -- --quick` (faster execution for development)
+- **Baseline benchmarks**: `cargo bench -- --save-baseline [name]` (save performance baseline)
+- **Compare benchmarks**: `cargo bench -- --baseline [name]` (compare against saved baseline)
+
 ## Architecture Overview
 
 **oxidized-cryptolib** is a Rust implementation for decrypting and exploring Cryptomator vaults. The project demonstrates modern cryptographic practices and implements the Cryptomator encryption protocol.

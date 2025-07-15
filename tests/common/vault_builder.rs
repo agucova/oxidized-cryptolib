@@ -48,27 +48,9 @@ impl VaultBuilder {
         self
     }
     
-    /// Set a custom passphrase
-    pub fn with_passphrase(mut self, passphrase: impl Into<String>) -> Self {
-        self.passphrase = passphrase.into();
-        self
-    }
-    
-    /// Set a custom vault ID
-    pub fn with_vault_id(mut self, vault_id: impl Into<String>) -> Self {
-        self.vault_id = vault_id.into();
-        self
-    }
-    
     /// Use a specific RNG seed for deterministic content keys
     pub fn with_rng_seed(mut self, seed: u64) -> Self {
         self.rng_seed = Some(seed);
-        self
-    }
-    
-    /// Use random RNG (non-deterministic)
-    pub fn with_random_rng(mut self) -> Self {
-        self.rng_seed = None;
         self
     }
     
@@ -78,14 +60,6 @@ impl VaultBuilder {
         self
     }
     
-    /// Add multiple files from a structure
-    pub fn add_files<I>(mut self, files: I) -> Self
-    where
-        I: IntoIterator<Item = (String, Vec<u8>)>,
-    {
-        self.files.extend(files);
-        self
-    }
     
     /// Add files from test structure
     pub fn add_file_structure(mut self, entries: Vec<super::test_structures::FileEntry>) -> Self {
@@ -234,7 +208,7 @@ impl VaultBuilder {
         
         fs::create_dir_all(&storage_path).unwrap();
         
-        let encrypted_dir_path = storage_path.join(format!("{}.c9r", encrypted_name));
+        let encrypted_dir_path = storage_path.join(format!("{encrypted_name}.c9r"));
         fs::create_dir_all(&encrypted_dir_path).unwrap();
         fs::write(encrypted_dir_path.join("dir.c9r"), dir_id).unwrap();
     }
@@ -279,12 +253,12 @@ impl VaultBuilder {
         let file_path = if encrypted_name.len() > 220 {
             // Handle long filenames
             let hash = oxidized_cryptolib::fs::name::create_c9s_filename(&encrypted_name);
-            let short_dir = storage_path.join(format!("{}.c9s", hash));
+            let short_dir = storage_path.join(format!("{hash}.c9s"));
             fs::create_dir_all(&short_dir).unwrap();
             fs::write(short_dir.join("name.c9s"), &encrypted_name).unwrap();
             short_dir.join("contents.c9r")
         } else {
-            storage_path.join(format!("{}.c9r", encrypted_name))
+            storage_path.join(format!("{encrypted_name}.c9r"))
         };
         
         fs::write(file_path, file_data).unwrap();

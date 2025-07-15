@@ -1,10 +1,4 @@
-use oxidized_cryptolib::{
-    crypto::keys::MasterKey,
-    vault::{
-        config::{CiphertextDir, Payload, VaultConfig},
-    },
-};
-use assert_fs::TempDir;
+use oxidized_cryptolib::crypto::keys::MasterKey;
 use secrecy::Secret;
 use std::path::Path;
 
@@ -39,25 +33,9 @@ pub fn create_seeded_master_key(seed: u8) -> MasterKey {
     }
 }
 
-/// Create a test vault config with default values
-pub fn create_test_vault_config() -> VaultConfig {
-    VaultConfig {
-        jti: TEST_VAULT_ID.to_string(),
-        format: 8,
-        ciphertext_dir: Some(CiphertextDir("d".to_string())),
-        payload: Some(Payload {
-            key: "test-key".to_string(),
-            other_fields: Default::default(),
-        }),
-    }
-}
-
-/// Create a temporary directory for testing
-pub fn create_temp_vault() -> TempDir {
-    assert_fs::TempDir::new().unwrap()
-}
 
 /// Standard test file contents
+#[allow(dead_code)]
 pub mod test_files {
     pub const EMPTY_FILE: &[u8] = b"";
     pub const SMALL_TEXT: &[u8] = b"Hello, World!";
@@ -97,6 +75,7 @@ pub mod test_files {
 }
 
 /// Standard test filenames
+#[allow(dead_code)]
 pub mod test_filenames {
     pub const NORMAL_FILES: &[&str] = &[
         "test.txt",
@@ -120,6 +99,7 @@ pub mod test_filenames {
 }
 
 /// Test directory structures
+#[allow(dead_code)]
 pub mod test_structures {
     use super::*;
     
@@ -216,6 +196,7 @@ pub mod test_structures {
 }
 
 /// Utility functions for assertions
+#[allow(dead_code)]
 pub mod assertions {
     use super::*;
     use oxidized_cryptolib::fs::file::{decrypt_file, DecryptedFile};
@@ -247,8 +228,7 @@ pub mod assertions {
             let path = vault_path.join(dir);
             assert!(
                 path.exists() && path.is_dir(),
-                "Expected directory {} to exist",
-                dir
+                "Expected directory {dir} to exist"
             );
         }
     }

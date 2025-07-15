@@ -128,8 +128,7 @@ fn test_chunk_boundary_files() {
         assert_eq!(
             decrypted.content.len(),
             expected_content.len(),
-            "Size mismatch for {}",
-            name
+            "Size mismatch for {name}"
         );
         assert_file_content(&decrypted, &expected_content);
     }
@@ -263,11 +262,6 @@ fn test_binary_file_patterns() {
 #[test]
 fn test_deterministic_vault_creation() {
     // Create two vaults with same seed - they should produce identical encrypted content
-    let files = vec![
-        ("test1.txt", b"Content 1" as &[u8]),
-        ("test2.txt", b"Content 2" as &[u8]),
-    ];
-    
     let (vault1_path, key1) = VaultBuilder::new()
         .with_rng_seed(12345)
         .add_file("test1.txt", b"Content 1")

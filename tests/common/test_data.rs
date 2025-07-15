@@ -22,55 +22,6 @@ pub mod test_vectors {
             ]),
         }
     }
-    
-    /// Test cases for filename encryption
-    pub mod filenames {
-        pub struct FilenameTestCase {
-            pub plaintext: &'static str,
-            pub directory_id: &'static str,
-            pub expected_base64: &'static str,
-        }
-        
-        pub const TEST_CASES: &[FilenameTestCase] = &[
-            FilenameTestCase {
-                plaintext: "test.txt",
-                directory_id: "",
-                expected_base64: "EXPECTED_BASE64_HERE", // To be filled with actual test vectors
-            },
-            FilenameTestCase {
-                plaintext: "document.pdf",
-                directory_id: "parent-dir-id",
-                expected_base64: "EXPECTED_BASE64_HERE",
-            },
-        ];
-    }
-    
-    /// Test cases for content encryption
-    pub mod content {
-        pub struct ContentTestCase {
-            pub plaintext: &'static [u8],
-            pub content_key: [u8; 32],
-            pub nonce: [u8; 12],
-            pub description: &'static str,
-        }
-        
-        pub fn test_cases() -> Vec<ContentTestCase> {
-            vec![
-                ContentTestCase {
-                    plaintext: b"Hello, World!",
-                    content_key: [0x42; 32],
-                    nonce: [0x00; 12],
-                    description: "Simple text encryption",
-                },
-                ContentTestCase {
-                    plaintext: &[],
-                    content_key: [0x43; 32],
-                    nonce: [0x01; 12],
-                    description: "Empty file encryption",
-                },
-            ]
-        }
-    }
 }
 
 /// Generate various test patterns
@@ -116,18 +67,13 @@ pub mod patterns {
 
 /// File size constants for testing
 pub mod sizes {
-    pub const TINY: usize = 10;                    // 10 bytes
-    pub const SMALL: usize = 1024;                 // 1 KB
-    pub const MEDIUM: usize = 1024 * 100;          // 100 KB
     pub const CHUNK_SIZE: usize = 32768;           // 32 KB (one chunk)
     pub const LARGE: usize = 1024 * 1024;          // 1 MB
-    pub const HUGE: usize = 1024 * 1024 * 10;     // 10 MB
     
     /// Sizes around chunk boundaries
     pub const CHUNK_MINUS_ONE: usize = CHUNK_SIZE - 1;
     pub const CHUNK_PLUS_ONE: usize = CHUNK_SIZE + 1;
     pub const TWO_CHUNKS: usize = CHUNK_SIZE * 2;
-    pub const TWO_CHUNKS_MINUS_ONE: usize = TWO_CHUNKS - 1;
     pub const TWO_CHUNKS_PLUS_ONE: usize = TWO_CHUNKS + 1;
 }
 
@@ -144,11 +90,11 @@ pub mod structures {
             if !path.is_empty() {
                 path.push('/');
             }
-            path.push_str(&format!("level{}", i));
+            path.push_str(&format!("level{i}"));
             
             entries.push(FileEntry {
-                path: Box::leak(format!("{}/file{}.txt", path, i).into_boxed_str()),
-                content: format!("Content at level {}", i).into_bytes(),
+                path: Box::leak(format!("{path}/file{i}.txt").into_boxed_str()),
+                content: format!("Content at level {i}").into_bytes(),
             });
         }
         
@@ -159,8 +105,8 @@ pub mod structures {
     pub fn wide_structure(width: usize) -> Vec<FileEntry> {
         (0..width)
             .map(|i| FileEntry {
-                path: Box::leak(format!("file{:04}.txt", i).into_boxed_str()),
-                content: format!("File {} content", i).into_bytes(),
+                path: Box::leak(format!("file{i:04}.txt").into_boxed_str()),
+                content: format!("File {i} content").into_bytes(),
             })
             .collect()
     }
@@ -181,17 +127,17 @@ pub mod structures {
             }
             
             for i in 0..branching_factor {
-                let dir_name = format!("dir{}", i);
+                let dir_name = format!("dir{i}");
                 let dir_path = if path.is_empty() {
                     dir_name.clone()
                 } else {
-                    format!("{}/{}", path, dir_name)
+                    format!("{path}/{dir_name}")
                 };
                 
                 // Add a file in this directory
                 entries.push(FileEntry {
-                    path: Box::leak(format!("{}/file.txt", dir_path).into_boxed_str()),
-                    content: format!("File in {}", dir_path).into_bytes(),
+                    path: Box::leak(format!("{dir_path}/file.txt").into_boxed_str()),
+                    content: format!("File in {dir_path}").into_bytes(),
                 });
                 
                 // Recurse

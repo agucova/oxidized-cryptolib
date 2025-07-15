@@ -57,7 +57,7 @@ fn test_file_content_patterns_snapshot() {
     
     let mut builder = VaultBuilder::new().with_rng_seed(456);
     for (name, content) in &patterns_data {
-        builder = builder.add_file(format!("{}.bin", name), content.clone());
+        builder = builder.add_file(format!("{name}.bin"), content.clone());
     }
     let (vault_path, master_key) = builder.build();
     
@@ -66,7 +66,7 @@ fn test_file_content_patterns_snapshot() {
     // Create a summary of file sizes and checksums for snapshot testing
     let mut file_summary = Vec::new();
     for (name, _) in patterns_data {
-        let filename = format!("{}.bin", name);
+        let filename = format!("{name}.bin");
         let decrypted = vault_ops.read_file("", &filename).unwrap();
         
         file_summary.push(FileSummary {
@@ -131,6 +131,7 @@ struct VaultStructure {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct DirectoryInfo {
     path: String,
     name: String,
@@ -138,6 +139,7 @@ struct DirectoryInfo {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct FileInfo {
     path: String,
     name: String,
@@ -146,6 +148,7 @@ struct FileInfo {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct FileSummary {
     name: String,
     size: usize,
@@ -154,6 +157,7 @@ struct FileSummary {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct FileMetadata {
     decrypted_name: String,
     encrypted_name: String,
