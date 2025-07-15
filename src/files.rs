@@ -205,8 +205,8 @@ pub fn encrypt_file_content(
 }
 
 pub struct DecryptedFile {
-    header: FileHeader,
-    content: Vec<u8>,
+    pub header: FileHeader,
+    pub content: Vec<u8>,
 }
 
 impl fmt::Debug for DecryptedFile {
