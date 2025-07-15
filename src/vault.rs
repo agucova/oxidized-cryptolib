@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::{master_key::MasterKey, master_key_file::MasterKeyFile};
 
-use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, Validation};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -103,35 +103,33 @@ pub fn validate_vault_claims(
     master_key: &MasterKey,
 ) -> Result<VaultConfigurationClaims, ClaimValidationError> {
     let header = jsonwebtoken::decode_header(vault_config)?;
-    let jwt_secret = DecodingKey::from_secret(master_key.raw_key().to_vec().as_slice());
 
     let mut validation = Validation::new(header.alg);
     validation.required_spec_claims.clear();
     validation.algorithms = vec![Algorithm::HS256, Algorithm::HS384, Algorithm::HS512];
 
-    let token =
-        jsonwebtoken::decode::<VaultConfigurationClaims>(vault_config, &jwt_secret, &validation)?;
+    // Use the new validate_jwt method which handles key access securely
+    let claims = master_key.validate_jwt::<VaultConfigurationClaims>(vault_config, &validation)?;
 
-    if token.claims.cipher_combo != "SIV_GCM" {
+    if claims.cipher_combo != "SIV_GCM" {
         return Err(ClaimValidationError::UnsupportedCipherCombo(
-            token.claims.cipher_combo,
+            claims.cipher_combo,
         ));
     }
 
-    if token.claims.format != 8 {
+    if claims.format != 8 {
         return Err(ClaimValidationError::UnsupportedVaultFormat(
-            token.claims.format,
+            claims.format,
         ));
     }
 
-    Ok(token.claims)
+    Ok(claims)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use data_encoding::BASE64URL_NOPAD;
-    use jsonwebtoken::EncodingKey;
     use uuid::Uuid;
 
     #[test]
@@ -144,10 +142,11 @@ mod tests {
             cipher_combo: "SIV_GCM".to_string(),
         };
 
+        let encoding_key = master_key.create_jwt_encoding_key();
         let token = jsonwebtoken::encode(
             &jsonwebtoken::Header::default(),
             &claims,
-            &EncodingKey::from_secret(master_key.raw_key().to_vec().as_slice()),
+            &encoding_key,
         );
 
         let validated_claims = validate_vault_claims(&token.unwrap(), &master_key).unwrap();
@@ -164,10 +163,11 @@ mod tests {
             cipher_combo: "SIV_GCM".to_string(),
         };
 
+        let encoding_key = master_key.create_jwt_encoding_key();
         let token = jsonwebtoken::encode(
             &jsonwebtoken::Header::default(),
             &claims,
-            &EncodingKey::from_secret(master_key.raw_key().to_vec().as_slice()),
+            &encoding_key,
         )
         .unwrap();
 

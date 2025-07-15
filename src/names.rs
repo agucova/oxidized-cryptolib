@@ -4,45 +4,38 @@ use aes_siv::{siv::Aes256Siv, KeyInit};
 use base64::{engine::general_purpose, Engine as _};
 use data_encoding::BASE32;
 use ring::digest;
-use secrecy::ExposeSecret;
 
 use crate::master_key::MasterKey;
 
 pub fn hash_dir_id(dir_id: &str, master_key: &MasterKey) -> String {
-    // For AES-SIV, we need to use both keys - MAC key first, then encryption key
-    let mut key = [0u8; 64];
-    key[..32].copy_from_slice(master_key.mac_master_key.expose_secret());
-    key[32..].copy_from_slice(master_key.aes_master_key.expose_secret());
+    master_key.with_siv_key(|key| {
+        let mut cipher = Aes256Siv::new(key);
 
-    let mut cipher = Aes256Siv::new(&key.into());
+        // Encrypt directory ID with no associated data (null in the spec)
+        let associated_data: &[&[u8]] = &[];
+        let encrypted = cipher
+            .encrypt(associated_data, dir_id.as_bytes())
+            .expect("Failed to encrypt directory ID");
 
-    // Encrypt directory ID with no associated data (null in the spec)
-    let associated_data: &[&[u8]] = &[];
-    let encrypted = cipher
-        .encrypt(associated_data, dir_id.as_bytes())
-        .expect("Failed to encrypt directory ID");
-
-    let hashed = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, &encrypted);
-    BASE32.encode(hashed.as_ref())
+        let hashed = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, &encrypted);
+        BASE32.encode(hashed.as_ref())
+    })
 }
 
 pub fn encrypt_filename(name: &str, parent_dir_id: &str, master_key: &MasterKey) -> String {
-    // For AES-SIV, we need to use both keys - MAC key first, then encryption key
-    let mut key = [0u8; 64];
-    key[..32].copy_from_slice(master_key.mac_master_key.expose_secret());
-    key[32..].copy_from_slice(master_key.aes_master_key.expose_secret());
+    master_key.with_siv_key(|key| {
+        let mut cipher = Aes256Siv::new(key);
 
-    let mut cipher = Aes256Siv::new(&key.into());
+        // Encrypt with parent directory ID as associated data
+        let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
+        let encrypted = cipher
+            .encrypt(associated_data, name.as_bytes())
+            .expect("Encryption failed");
 
-    // Encrypt with parent directory ID as associated data
-    let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
-    let encrypted = cipher
-        .encrypt(associated_data, name.as_bytes())
-        .expect("Encryption failed");
+        let encoded = general_purpose::URL_SAFE.encode(&encrypted); // Note: using URL_SAFE with padding
 
-    let encoded = general_purpose::URL_SAFE.encode(&encrypted); // Note: using URL_SAFE with padding
-
-    encoded + ".c9r"
+        encoded + ".c9r"
+    })
 }
 
 pub fn decrypt_filename(
@@ -57,23 +50,20 @@ pub fn decrypt_filename(
         .decode(name_without_extension.as_bytes())
         .map_err(|e| format!("Base64 decode error: {}", e))?;
 
-    // For AES-SIV, we need to use both keys - MAC key first, then encryption key
-    let mut key = [0u8; 64];
-    key[..32].copy_from_slice(master_key.mac_master_key.expose_secret());
-    key[32..].copy_from_slice(master_key.aes_master_key.expose_secret());
+    master_key.with_siv_key(|key| {
+        let mut cipher = Aes256Siv::new(key);
 
-    let mut cipher = Aes256Siv::new(&key.into());
+        // Decrypt with parent directory ID as associated data
+        let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
+        let decrypted = cipher
+            .decrypt(associated_data, &decoded)
+            .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
-    // Decrypt with parent directory ID as associated data
-    let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
-    let decrypted = cipher
-        .decrypt(associated_data, &decoded)
-        .map_err(|e| format!("Decryption failed: {:?}", e))?;
+        let result =
+            String::from_utf8(decrypted.to_vec()).map_err(|e| format!("UTF-8 decode error: {}", e))?;
 
-    let result =
-        String::from_utf8(decrypted.to_vec()).map_err(|e| format!("UTF-8 decode error: {}", e))?;
-
-    Ok(result)
+        Ok(result)
+    })
 }
 
 #[cfg(test)]

@@ -30,6 +30,7 @@ unicode-normalization = "0.1.21"
 url = "2.2.2"
 uuid = { version = "1.10.0", features = ["v4"] }
 walkdir = "2.5.0"
+zeroize = "1.8.1"
 
 [dev-dependencies]
 hex-literal = "0.3.4"

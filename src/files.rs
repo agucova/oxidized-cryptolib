@@ -6,7 +6,6 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use rand::{rngs::OsRng, RngCore};
-use secrecy::ExposeSecret;
 use thiserror::Error;
 
 use crate::master_key::MasterKey;
@@ -71,26 +70,28 @@ pub fn decrypt_file_header(
     let ciphertext = &encrypted_header[12..52];
     let tag: [u8; 16] = encrypted_header[52..68].try_into().unwrap();
 
-    let key: &Key<Aes256Gcm> = master_key.aes_master_key.expose_secret().into();
-    let cipher = Aes256Gcm::new(key);
+    master_key.with_aes_key(|aes_key| {
+        let key: &Key<Aes256Gcm> = aes_key.into();
+        let cipher = Aes256Gcm::new(key);
 
-    let mut ciphertext_with_tag = ciphertext.to_vec();
-    ciphertext_with_tag.extend_from_slice(&tag);
+        let mut ciphertext_with_tag = ciphertext.to_vec();
+        ciphertext_with_tag.extend_from_slice(&tag);
 
-    let decrypted = cipher
-        .decrypt(nonce, ciphertext_with_tag.as_ref())
-        .map_err(|e| FileDecryptionError::HeaderDecryption(e.to_string()))?;
+        let decrypted = cipher
+            .decrypt(nonce, ciphertext_with_tag.as_ref())
+            .map_err(|e| FileDecryptionError::HeaderDecryption(e.to_string()))?;
 
-    if decrypted.len() != 40 || &decrypted[0..8] != &[0xFF; 8] {
-        return Err(FileDecryptionError::InvalidHeader(
-            "Decrypted header has incorrect format".to_string(),
-        ));
-    }
+        if decrypted.len() != 40 || &decrypted[0..8] != &[0xFF; 8] {
+            return Err(FileDecryptionError::InvalidHeader(
+                "Decrypted header has incorrect format".to_string(),
+            ));
+        }
 
-    let mut content_key = [0u8; 32];
-    content_key.copy_from_slice(&decrypted[8..40]);
+        let mut content_key = [0u8; 32];
+        content_key.copy_from_slice(&decrypted[8..40]);
 
-    Ok(FileHeader { content_key, tag })
+        Ok(FileHeader { content_key, tag })
+    })
 }
 
 pub fn decrypt_file_content(
@@ -141,21 +142,23 @@ pub fn encrypt_file_header(
     let mut header_nonce = [0u8; 12];
     OsRng.fill_bytes(&mut header_nonce);
 
-    let key: &Key<Aes256Gcm> = master_key.aes_master_key.expose_secret().into();
-    let cipher = Aes256Gcm::new(key);
+    master_key.with_aes_key(|aes_key| {
+        let key: &Key<Aes256Gcm> = aes_key.into();
+        let cipher = Aes256Gcm::new(key);
 
-    let mut plaintext = vec![0xFF; 8];
-    plaintext.extend_from_slice(content_key);
+        let mut plaintext = vec![0xFF; 8];
+        plaintext.extend_from_slice(content_key);
 
-    let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&header_nonce), plaintext.as_ref())
-        .map_err(|e| FileEncryptionError::HeaderEncryption(e.to_string()))?;
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&header_nonce), plaintext.as_ref())
+            .map_err(|e| FileEncryptionError::HeaderEncryption(e.to_string()))?;
 
-    let mut encrypted_header = Vec::with_capacity(68);
-    encrypted_header.extend_from_slice(&header_nonce);
-    encrypted_header.extend_from_slice(&ciphertext);
+        let mut encrypted_header = Vec::with_capacity(68);
+        encrypted_header.extend_from_slice(&header_nonce);
+        encrypted_header.extend_from_slice(&ciphertext);
 
-    Ok(encrypted_header)
+        Ok(encrypted_header)
+    })
 }
 
 pub fn encrypt_file_content(
