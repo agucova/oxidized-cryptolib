@@ -1,0 +1,18 @@
+name: Rust CI
+
+on: [push, pull_request]
+
+jobs:
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Miri
+      run: |
+        rustup toolchain install nightly --component miri
+        rustup override set nightly
+        cargo miri setup
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo miri test --verbose
