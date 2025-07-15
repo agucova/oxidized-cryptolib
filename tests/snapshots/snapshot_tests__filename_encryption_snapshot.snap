@@ -4,56 +4,8 @@ expression: file_metadata
 ---
 [
     FileMetadata {
-        decrypted_name: "test.txt",
-        encrypted_name: "VRyEh_FViWp2pxdKlCLkugio-xfnx1OI.c9r.c9r",
-        size: 110,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "document.pdf",
-        encrypted_name: "vLSVGJ-U19CzzBDotWUCALeTrVbRPhBLX5Q-Rg==.c9r.c9r",
-        size: 110,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "image.png",
-        encrypted_name: "WQi9MHM82pDKtGqJaZZDscOUa9YcGilnWA==.c9r.c9r",
-        size: 110,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "data.json",
-        encrypted_name: "w7uukfXXXDcynYPvay6MPlZPgc_c3UbGAQ==.c9r.c9r",
-        size: 110,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "file with spaces.txt",
-        encrypted_name: "CjTKam9sAHF9GyiXjtJd8IxHH39BWmuKPJ4bDdirZLkyYuM8.c9r.c9r",
-        size: 116,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "émojis-🚀.txt",
-        encrypted_name: "GfaonfFAVv-2EDla7xI39l_oG3NVwb915MKhwwX1k4s=.c9r.c9r",
-        size: 116,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "special@#$%^chars.doc",
-        encrypted_name: "tpjsCz76j2dnOh7IBXclmfogqeZcGz7d8NbELicajttqbB8qiQ==.c9r.c9r",
-        size: 116,
-        is_shortened: false,
-    },
-    FileMetadata {
-        decrypted_name: "very_long_filename_that_might_exceed_normal_limits_and_cause_shortening_to_c9s_format_because_cryptomator_has_a_220_character_limit_for_encrypted_filenames_so_this_should_definitely_trigger_that_behavior_when_encrypted.txt",
-        encrypted_name: "QZIOTQA.c9s",
-        size: 116,
-        is_shortened: true,
-    },
-    FileMetadata {
-        decrypted_name: ".hidden",
-        encrypted_name: "gNN66mROQo9tDoevg5Tkth7aM4XXMDY=.c9r.c9r",
+        decrypted_name: ".config",
+        encrypted_name: "3P47c2-HktSQsRRFttcm_OJ9BbnIKIo=.c9r.c9r",
         size: 110,
         is_shortened: false,
     },
@@ -64,9 +16,51 @@ expression: file_metadata
         is_shortened: false,
     },
     FileMetadata {
-        decrypted_name: ".config",
-        encrypted_name: "3P47c2-HktSQsRRFttcm_OJ9BbnIKIo=.c9r.c9r",
+        decrypted_name: ".hidden",
+        encrypted_name: "gNN66mROQo9tDoevg5Tkth7aM4XXMDY=.c9r.c9r",
         size: 110,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "data.json",
+        encrypted_name: "w7uukfXXXDcynYPvay6MPlZPgc_c3UbGAQ==.c9r.c9r",
+        size: 110,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "document.pdf",
+        encrypted_name: "vLSVGJ-U19CzzBDotWUCALeTrVbRPhBLX5Q-Rg==.c9r.c9r",
+        size: 110,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "file with spaces.txt",
+        encrypted_name: "CjTKam9sAHF9GyiXjtJd8IxHH39BWmuKPJ4bDdirZLkyYuM8.c9r.c9r",
+        size: 116,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "image.png",
+        encrypted_name: "WQi9MHM82pDKtGqJaZZDscOUa9YcGilnWA==.c9r.c9r",
+        size: 110,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "special@#$%^chars.doc",
+        encrypted_name: "tpjsCz76j2dnOh7IBXclmfogqeZcGz7d8NbELicajttqbB8qiQ==.c9r.c9r",
+        size: 116,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "test.txt",
+        encrypted_name: "VRyEh_FViWp2pxdKlCLkugio-xfnx1OI.c9r.c9r",
+        size: 110,
+        is_shortened: false,
+    },
+    FileMetadata {
+        decrypted_name: "émojis-🚀.txt",
+        encrypted_name: "GfaonfFAVv-2EDla7xI39l_oG3NVwb915MKhwwX1k4s=.c9r.c9r",
+        size: 116,
         is_shortened: false,
     },
 ]

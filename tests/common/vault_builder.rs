@@ -54,6 +54,12 @@ impl VaultBuilder {
         self
     }
     
+    /// Add a directory (without files)
+    pub fn add_directory(mut self, path: impl Into<String>) -> Self {
+        self.directories.push(path.into());
+        self
+    }
+    
     /// Add a file to the vault
     pub fn add_file(mut self, path: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
         self.files.push((path.into(), content.into()));
@@ -69,11 +75,6 @@ impl VaultBuilder {
         self
     }
     
-    /// Add a directory (without files)
-    pub fn add_directory(mut self, path: impl Into<String>) -> Self {
-        self.directories.push(path.into());
-        self
-    }
     
     /// Build the vault and return the path and master key
     pub fn build(self) -> (PathBuf, MasterKey) {
@@ -105,12 +106,9 @@ impl VaultBuilder {
         let mut dir_map: HashMap<String, String> = HashMap::new();
         dir_map.insert("".to_string(), "".to_string()); // Root directory
         
-        // Create RNG for content keys
-        let mut rng: Box<dyn RngCore> = if let Some(seed) = self.rng_seed {
-            Box::new(StdRng::seed_from_u64(seed))
-        } else {
-            Box::new(rand::thread_rng())
-        };
+        // Create deterministic RNG for content keys (always use seed for reproducibility)
+        let seed = self.rng_seed.unwrap_or(42); // Default deterministic seed
+        let mut rng = StdRng::seed_from_u64(seed);
         
         // Process files and directories to create directory structure
         let mut all_paths: Vec<String> = self.files.iter()
@@ -167,7 +165,7 @@ impl VaultBuilder {
                 ""
             };
             
-            self.create_file(&vault_path, parent_dir_id, filename, content, &mut *rng);
+            self.create_file(&vault_path, parent_dir_id, filename, content, &mut rng);
         }
         
         // Create empty directories

@@ -23,6 +23,10 @@ fn test_vault_structure_snapshot() {
     // Recursively collect all files and directories
     collect_directory_structure(&vault_ops, "", &mut vault_structure);
     
+    // Sort for deterministic snapshots
+    vault_structure.directories.sort_by(|a, b| a.path.cmp(&b.path));
+    vault_structure.files.sort_by(|a, b| a.path.cmp(&b.path));
+    
     assert_debug_snapshot!(vault_structure);
 }
 
@@ -37,6 +41,10 @@ fn test_edge_case_vault_snapshot() {
     let mut vault_structure = VaultStructure::default();
     
     collect_directory_structure(&vault_ops, "", &mut vault_structure);
+    
+    // Sort for deterministic snapshots
+    vault_structure.directories.sort_by(|a, b| a.path.cmp(&b.path));
+    vault_structure.files.sort_by(|a, b| a.path.cmp(&b.path));
     
     assert_debug_snapshot!(vault_structure);
 }
@@ -113,12 +121,15 @@ fn test_filename_encryption_snapshot() {
     
     // Collect file metadata for snapshot
     let files = vault_ops.list_files("").unwrap();
-    let file_metadata: Vec<FileMetadata> = files.into_iter().map(|f| FileMetadata {
+    let mut file_metadata: Vec<FileMetadata> = files.into_iter().map(|f| FileMetadata {
         decrypted_name: f.name,
         encrypted_name: f.encrypted_name,
         size: f.encrypted_size,
         is_shortened: f.is_shortened,
     }).collect();
+    
+    // Sort for deterministic snapshots
+    file_metadata.sort_by(|a, b| a.decrypted_name.cmp(&b.decrypted_name));
     
     assert_debug_snapshot!(file_metadata);
 }

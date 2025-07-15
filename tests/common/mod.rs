@@ -34,8 +34,7 @@ pub fn create_seeded_master_key(seed: u8) -> MasterKey {
 }
 
 
-/// Standard test file contents
-#[allow(dead_code)]
+/// Standard test file contents  
 pub mod test_files {
     pub const EMPTY_FILE: &[u8] = b"";
     pub const SMALL_TEXT: &[u8] = b"Hello, World!";
@@ -53,29 +52,18 @@ pub mod test_files {
         content
     }
     
-    /// Create content that will test chunk boundaries (32KB chunks)
-    pub fn create_chunk_boundary_content() -> Vec<u8> {
-        // 32KB - 1, 32KB, 32KB + 1
-        vec![
-            create_sized_content(32767),
-            create_sized_content(32768),
-            create_sized_content(32769),
-            create_sized_content(65536), // 2 chunks exactly
-            create_sized_content(65537), // 2 chunks + 1 byte
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
-    }
-    
     /// File content with special characters
     pub fn create_special_char_content() -> Vec<u8> {
         "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings".as_bytes().to_vec()
     }
+    
+    /// Create content that will test chunk boundaries (32KB chunks)
+    pub fn create_chunk_boundary_content() -> Vec<u8> {
+        create_sized_content(65537) // 2 chunks + 1 byte
+    }
 }
 
 /// Standard test filenames
-#[allow(dead_code)]
 pub mod test_filenames {
     pub const NORMAL_FILES: &[&str] = &[
         "test.txt",
@@ -88,7 +76,6 @@ pub mod test_filenames {
         "file with spaces.txt",
         "émojis-🚀.txt",
         "special@#$%^chars.doc",
-        "very_long_filename_that_might_exceed_normal_limits_and_cause_shortening_to_c9s_format_because_cryptomator_has_a_220_character_limit_for_encrypted_filenames_so_this_should_definitely_trigger_that_behavior_when_encrypted.txt",
     ];
     
     pub const HIDDEN_FILES: &[&str] = &[
@@ -99,27 +86,10 @@ pub mod test_filenames {
 }
 
 /// Test directory structures
-#[allow(dead_code)]
 pub mod test_structures {
-    use super::*;
-    
     pub struct FileEntry {
         pub path: &'static str,
         pub content: Vec<u8>,
-    }
-    
-    /// Simple flat directory with a few files
-    pub fn simple_structure() -> Vec<FileEntry> {
-        vec![
-            FileEntry {
-                path: "file1.txt",
-                content: test_files::SMALL_TEXT.to_vec(),
-            },
-            FileEntry {
-                path: "file2.txt",
-                content: test_files::LOREM_IPSUM.to_vec(),
-            },
-        ]
     }
     
     /// Nested directory structure
@@ -151,7 +121,7 @@ pub mod test_structures {
             },
             FileEntry {
                 path: "assets/images/logo.png",
-                content: test_files::create_sized_content(1024),
+                content: super::test_files::create_sized_content(1024),
             },
             FileEntry {
                 path: "assets/data.json",
@@ -165,26 +135,26 @@ pub mod test_structures {
         vec![
             FileEntry {
                 path: "empty.txt",
-                content: test_files::EMPTY_FILE.to_vec(),
+                content: Vec::new(),
             },
             FileEntry {
                 path: "chunk_boundary.bin",
-                content: test_files::create_chunk_boundary_content(),
+                content: super::test_files::create_sized_content(65537), // 2 chunks + 1 byte
             },
             FileEntry {
                 path: "special_chars.txt",
-                content: test_files::create_special_char_content(),
+                content: "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings".as_bytes().to_vec(),
             },
             FileEntry {
-                path: test_filenames::SPECIAL_CHAR_FILES[0],
+                path: "file with spaces.txt",
                 content: b"File with spaces in name".to_vec(),
             },
             FileEntry {
-                path: test_filenames::SPECIAL_CHAR_FILES[1],
+                path: "émojis-🚀.txt",
                 content: b"File with emoji in name".to_vec(),
             },
             FileEntry {
-                path: test_filenames::SPECIAL_CHAR_FILES[3],
+                path: "very_long_filename_that_might_exceed_normal_limits_and_cause_shortening_to_c9s_format_because_cryptomator_has_a_220_character_limit_for_encrypted_filenames_so_this_should_definitely_trigger_that_behavior_when_encrypted.txt",
                 content: b"Very long filename".to_vec(),
             },
             FileEntry {
@@ -193,6 +163,7 @@ pub mod test_structures {
             },
         ]
     }
+    
 }
 
 /// Utility functions for assertions

@@ -248,15 +248,15 @@ fn test_binary_file_patterns() {
     
     // Verify all patterns decrypt correctly
     let test_cases = vec![
-        ("all_bytes.bin", all_bytes),
-        ("repeating.bin", repeating),
-        ("compressible.bin", compressible),
-        ("incompressible.bin", incompressible),
+        ("all_bytes.bin", &all_bytes),
+        ("repeating.bin", &repeating),
+        ("compressible.bin", &compressible),
+        ("incompressible.bin", &incompressible),
     ];
     
     for (filename, expected) in test_cases {
         let decrypted = vault_ops.read_file("", filename).unwrap();
-        assert_file_content(&decrypted, &expected);
+        assert_file_content(&decrypted, expected);
     }
 }
 
