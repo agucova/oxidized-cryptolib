@@ -2,34 +2,74 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Structure
+
+This is a Cargo workspace with two crates:
+
+```
+crates/
+├── oxidized-cryptolib/    # Core cryptographic library
+│   ├── src/
+│   │   ├── crypto/        # MasterKey, RFC 3394 key wrapping
+│   │   ├── vault/         # VaultOperations, config, master key extraction
+│   │   ├── fs/            # File/directory/symlink encryption
+│   │   └── error/         # Unified error types
+│   ├── benches/           # Performance and timing leak benchmarks
+│   └── tests/             # Integration tests
+└── oxidized-cli/          # CLI tool (oxcrypt binary)
+    └── src/
+        └── commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
+```
+
 ## Commands
 
 ### Build and Development
-- **Build**: `cargo build` (compile the library and binary)
-- **Run**: `cargo run` (runs the main.rs demo with test_vault using password "123456789")
+- **Build all**: `cargo build` (builds entire workspace)
+- **Build library**: `cargo build -p oxidized-cryptolib`
+- **Build CLI**: `cargo build -p oxidized-cli`
 - **Check**: `cargo check` (fast compile check without generating binaries)
 - **Format**: `cargo fmt` (format all Rust code using rustfmt)
 - **Lint**: `cargo clippy` (static analysis and linting)
 - **Clean**: `cargo clean` (remove target directory)
 
+### Running the CLI
+- **Run CLI**: `cargo run -p oxidized-cli -- --vault <path> <command>`
+- **Install CLI**: `cargo install --path crates/oxidized-cli`
+- **Example**: `oxcrypt --vault test_vault ls`
+
 ### Testing
-- **All tests**: `cargo test` (runs unit tests and integration tests)
-- **Integration tests**: `cargo test --test crypto_tests` (runs property-based crypto tests)
-- **Specific test**: `cargo test [test_name]` (run a specific test function)
-- **Test with output**: `cargo test -- --nocapture` (show println! output during tests)
+Uses `cargo-nextest` for faster parallel test execution: `cargo install cargo-nextest`
+- **All tests**: `cargo nextest run` (runs all tests in parallel with better output)
+- **Library tests**: `cargo nextest run -p oxidized-cryptolib`
+- **CLI tests**: `cargo nextest run -p oxidized-cli`
+- **Integration tests**: `cargo nextest run -p oxidized-cryptolib -E 'test(crypto_tests)'`
+- **Specific test**: `cargo nextest run [test_name]`
+- **CI profile**: `cargo nextest run --profile ci` (used in GitHub Actions)
+- **List tests**: `cargo nextest list` (show all available tests)
+- **Retry flaky**: `cargo nextest run --retries 2` (retry failed tests)
+
+Legacy `cargo test` still works but nextest is preferred:
+- **Fallback**: `cargo test` (standard test runner)
+- **With output**: `cargo test -- --nocapture`
+
+### Code Coverage
+Requires `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
+- **Text summary**: `cargo llvm-cov nextest --workspace`
+- **HTML report**: `cargo llvm-cov nextest --workspace --html` (output in `target/llvm-cov/html/`)
+- **LCOV format**: `cargo llvm-cov nextest --workspace --lcov --output-path lcov.info`
+- **Open HTML report**: `cargo llvm-cov nextest --workspace --open`
 
 ### Benchmarking
-- **All benchmarks**: `cargo bench` (runs all criterion-based performance benchmarks)
-- **Specific benchmark**: `cargo bench --bench crypto_operations` (runs crypto operation benchmarks)
-- **Quick benchmarks**: `cargo bench -- --quick` (faster execution for development)
-- **Baseline benchmarks**: `cargo bench -- --save-baseline [name]` (save performance baseline)
-- **Compare benchmarks**: `cargo bench -- --baseline [name]` (compare against saved baseline)
+- **All benchmarks**: `cargo bench -p oxidized-cryptolib` (runs all criterion-based performance benchmarks)
+- **Quick benchmarks**: `cargo bench -p oxidized-cryptolib -- --quick` (faster execution for development)
+- **Baseline benchmarks**: `cargo bench -p oxidized-cryptolib -- --save-baseline [name]` (save performance baseline)
+- **Compare benchmarks**: `cargo bench -p oxidized-cryptolib -- --baseline [name]` (compare against saved baseline)
 
 ### Timing Leak Detection (Constant-Time Verification)
 Uses dudect statistical methodology to detect timing side-channels in cryptographic operations:
-- **Run all tests**: `cargo bench --bench timing_leaks` (runs all timing tests)
-- **Run specific test**: `cargo bench --bench timing_leaks -- --filter <name>` (e.g., `--filter key_unwrap`)
-- **Continuous mode**: `cargo bench --bench timing_leaks -- --continuous <name>` (runs until Ctrl+C)
+- **Run all tests**: `cargo bench -p oxidized-cryptolib --bench timing_leaks` (runs all timing tests)
+- **Run specific test**: `cargo bench -p oxidized-cryptolib --bench timing_leaks -- --filter <name>` (e.g., `--filter key_unwrap`)
+- **Continuous mode**: `cargo bench -p oxidized-cryptolib --bench timing_leaks -- --continuous <name>` (runs until Ctrl+C)
 
 **Interpretation**: t-value < 4.5 = PASS (no timing leak detected), t-value > 4.5 = FAIL (potential timing leak)
 
@@ -41,52 +81,65 @@ Uses dudect statistical methodology to detect timing side-channels in cryptograp
 
 ## Architecture Overview
 
-**oxidized-cryptolib** is a Rust implementation for decrypting and exploring Cryptomator vaults. The project demonstrates modern cryptographic practices and implements the Cryptomator encryption protocol.
+### oxidized-cryptolib (Core Library)
 
-### Core Components
+Implements the Cryptomator encryption protocol with modern cryptographic practices.
 
-#### Cryptographic Modules
-- **`master_key.rs`**: Core MasterKey struct with AES and MAC keys (32 bytes each), uses `secrecy` crate for memory protection
-- **`master_key_file.rs`**: Scrypt-based key derivation from passphrases with RFC 3394 AES key wrapping  
-- **`rfc_3394.rs`**: Pure Rust implementation of AES Key Wrap algorithm per RFC 3394
-- **`names.rs`**: Filename encryption/decryption using AES-SIV with directory ID as associated data
-- **`files.rs`**: File content encryption/decryption using AES-GCM with 32KB chunk processing
+#### Cryptographic Modules (`crates/oxidized-cryptolib/src/crypto/`)
+- **`keys.rs`**: Core MasterKey struct with AES and MAC keys (32 bytes each), uses `memsafe` crate for memory protection (mlock, mprotect)
+- **`key_wrap.rs`**: Pure Rust implementation of AES Key Wrap algorithm per RFC 3394
 
-#### Vault Operations
-- **`vault.rs`**: JWT-based vault configuration parsing, master key extraction, claim validation
-- **`main.rs`**: Demo application showing vault exploration with directory tree reconstruction
+#### Vault Modules (`crates/oxidized-cryptolib/src/vault/`)
+- **`master_key.rs`**: Scrypt-based key derivation from passphrases with RFC 3394 AES key wrapping
+- **`config.rs`**: JWT-based vault configuration parsing and master key extraction
+- **`operations.rs`**: High-level VaultOperations API for file/directory operations
+- **`path.rs`**: DirId and VaultPath types for vault navigation
+
+#### Filesystem Modules (`crates/oxidized-cryptolib/src/fs/`)
+- **`name.rs`**: Filename encryption/decryption using AES-SIV with directory ID as associated data
+- **`file.rs`**: File content encryption/decryption using AES-GCM with 32KB chunk processing
+- **`directory.rs`**: Directory traversal and tree building
+- **`symlink.rs`**: Symlink target encryption/decryption
+
+### oxidized-cli (CLI Tool)
+
+Command-line interface for interacting with Cryptomator vaults.
+
+#### Commands (`crates/oxidized-cli/src/commands/`)
+- **`ls`**: List directory contents
+- **`cat`**: Read and output file contents
+- **`tree`**: Show directory tree
+- **`mkdir`**: Create a directory
+- **`rm`**: Remove a file or directory
+- **`cp`**: Copy a file within the vault
+- **`mv`**: Move or rename a file or directory
+- **`info`**: Show vault information
 
 ### Security Features
-- Uses `#![forbid(unsafe_code)]` in critical modules
-- Memory zeroization for sensitive data via `secrecy` crate
+- Uses `#![forbid(unsafe_code)]` in critical crypto modules
+- Memory protection via `memsafe` crate (mlock, mprotect, zeroization on drop)
 - Authenticated encryption (AES-GCM, AES-SIV) preventing tampering
 - JWT signature validation for vault integrity
 - Property-based testing with 1000 test cases for crypto operations
 - Constant-time operations verified via dudect timing analysis
 - Uses `subtle` crate for constant-time comparisons in key unwrap
 
-### Project Structure
-- **Library**: Core cryptographic operations exposed via `lib.rs`
-- **Binary**: Demo vault explorer in `main.rs` (hardcoded to use test_vault with password "123456789")
-- **Integration tests**: Comprehensive crypto roundtrip tests in `tests/crypto_tests.rs`
-- **Test vault**: Real Cryptomator vault structure in `test_vault/` for testing
-
 ### Dependencies
 Key cryptographic dependencies include:
 - `aes-gcm`, `aes-siv` for authenticated encryption
-- `ring` for cryptographic primitives
+- `ring` for cryptographic primitives (HMAC, SHA)
 - `scrypt` for key derivation
 - `jsonwebtoken` for vault configuration validation
 - `proptest` for property-based testing
-- `secrecy` for secure memory handling
+- `memsafe` for memory-protected key storage (mlock, mprotect)
+- `zeroize` for secure memory zeroization
 - `subtle` for constant-time primitives
 - `dudect-bencher` for timing leak detection (dev-dependency)
 
 ### Development Notes
-- The main binary demonstrates vault exploration with detailed debug output
 - Property-based tests use 1000 test cases to verify cryptographic correctness
-- Code follows Rust 2021 edition with modern async patterns where applicable
-- Uses nightly features (`#![feature(test)]`, `#![feature(int_roundings)]`)
+- Code follows Rust 2024 edition (requires Rust 1.90+)
+- Test vault in `test_vault/` for integration testing
 
 ## Cryptomator Protocol Reference
 

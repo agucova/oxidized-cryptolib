@@ -1,0 +1,356 @@
+#![forbid(unsafe_code)]
+#![allow(dead_code)]
+
+/*!
+    This is a pure Rust implementation of the AES key wrapping algorithm
+    as defined in [IETF RFC3394](https://datatracker.ietf.org/doc/html/rfc3394).
+
+    The implementation relies on the [`aes`](https://crates.io/crates/aes) crate from RustCrypto.
+
+    This crate has NOT been audited and it's provided as-is.
+
+    # Reference Standard
+
+    - [RFC 3394: Advanced Encryption Standard (AES) Key Wrap Algorithm](https://datatracker.ietf.org/doc/html/rfc3394)
+    - Section 2.2.1 defines the Key Wrap algorithm (used by [`wrap_key`])
+    - Section 2.2.2 defines the Key Unwrap algorithm (used by [`unwrap_key`])
+    - Section 2.2.3.1 defines the default IV (0xA6A6A6A6A6A6A6A6)
+
+    # Cryptomator Usage
+
+    In Cryptomator, this algorithm is used to wrap the 512-bit master key (256-bit AES + 256-bit MAC)
+    using a key encryption key (KEK) derived from the user's passphrase via scrypt.
+
+    - Java: [`MasterkeyFileAccess`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/common/MasterkeyFileAccess.java)
+      uses Java's `Cipher.WRAP_MODE` with "AES/KW/NoPadding" which implements RFC 3394.
+*/
+
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::Aes256;
+use secrecy::{ExposeSecret, SecretBox};
+use subtle::ConstantTimeEq;
+use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
+
+// Note: GenericArray is intentionally used here rather than const generics because:
+// 1. Upstream crates (aes, aes-siv, aes-gcm) require GenericArray types
+// 2. The Concat trait enables compile-time verified U8 + U8 = U16 block concatenation
+// 3. Block sizes are fixed by RFC 3394 spec, so const generic flexibility isn't needed
+use generic_array::{
+    sequence::Concat,
+    typenum::{U16, U8},
+    GenericArray,
+};
+
+type U8x8 = GenericArray<u8, U8>;
+type Block = GenericArray<u8, U16>;
+extern crate hex;
+
+/**
+    IV from RFC3394 Section 2.2.3.1
+    https://datatracker.ietf.org/doc/html/rfc3394#section-2.2.3.1
+*/
+const IV_3394: [u8; 8] = [0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6];
+
+#[derive(Error, Debug)]
+pub enum WrapError {
+    #[error("The plaintext length is not a multiple of 64 bits per RFC3394.")]
+    InvalidPlaintextLength,
+}
+
+/// Wraps a key using the AES key wrapping algorithm defined in RFC3394.
+///
+/// The key (plaintext) is wrapped using the key encryption key (KEK)
+/// through successive rounds of AES encryption.
+/// For now this function only supports AES-256.
+///
+/// # Reference Standard
+///
+/// - [RFC 3394 Section 2.2.1](https://datatracker.ietf.org/doc/html/rfc3394#section-2.2.1) - Key Wrap Algorithm
+#[allow(clippy::needless_range_loop)]
+pub fn wrap_key(plaintext: &[u8], kek: &SecretBox<[u8; 32]>) -> Result<Vec<u8>, WrapError> {
+    // Ensure that the plaintext is a multiple of 64 bits
+    if !plaintext.len().is_multiple_of(8) {
+        return Err(WrapError::InvalidPlaintextLength);
+    }
+
+    // Acquire ownership through copying
+    let plaintext = plaintext.to_owned();
+
+    // 1) Initialize variables
+    let n_blocks = plaintext.len() / 8;
+    // The 64-bit integrity check register (A)
+    let mut integrity_check: U8x8 = U8x8::from(IV_3394);
+    // An array of 64-bit registers of length n (R)
+    let mut registers = plaintext;
+
+    // 2) Calculate intermediate values
+    let cipher = Aes256::new(GenericArray::from_slice(kek.expose_secret()));
+
+    // Wrap the key in 6 * n_blocks steps
+    for j in 0..6 {
+        for (i, chunk) in registers.chunks_mut(8).enumerate() {
+            // i was supposed to start from 1, so we shift
+            let t = (n_blocks * j) + (i + 1);
+            let plaintext_block: U8x8 = *U8x8::from_slice(chunk);
+
+            // B = AES(K, A | R[i])
+            let mut iv_block: Block = integrity_check.concat(plaintext_block);
+            cipher.encrypt_block(&mut iv_block);
+
+            // A = MSB(64, B) ^ t where t = (n*j)+i
+            // Because we're using BE, we can just get the first 64 bits
+            let a = &mut iv_block[0..8];
+
+            // XOR with t
+            for i in 0..8 {
+                a[i] ^= t.to_be_bytes()[i];
+            }
+            // Overwrite integrity_check with a
+            integrity_check.copy_from_slice(a);
+
+            // R[i] = LSB(64xw, B)
+            chunk.copy_from_slice(&iv_block[8..16]);
+        }
+    }
+
+    // 3) Output the results
+    let mut ciphertext = integrity_check.to_vec();
+    ciphertext.extend(registers);
+
+    integrity_check.zeroize();
+
+    Ok(ciphertext)
+}
+
+#[derive(Error, Debug)]
+pub enum UnwrapError {
+    #[error("The ciphertext length is not a multiple of 64 bits per RFC3394.")]
+    InvalidCiphertextLength,
+    #[error("The ciphertext is too short (minimum 16 bytes: 8-byte IV + 8-byte data).")]
+    CiphertextTooShort,
+    #[error("The integrity check failed.")]
+    InvalidIntegrityCheck,
+}
+
+/// Unwraps a key using the AES key wrapping algorithm defined in RFC3394.
+///
+/// The ciphertext is unwrapped using the key encryption key (KEK)
+/// through successive rounds of AES decryption.
+///
+/// In the case that the given kek is not the correct key,
+/// it is expected that the integrity check will fail (`InvalidIntegrityCheck`).
+///
+/// # Security
+///
+/// The returned key material is wrapped in `Zeroizing` to ensure it is
+/// securely erased from memory when dropped. The integrity check uses
+/// constant-time comparison to prevent timing oracle attacks.
+///
+/// # Reference Standard
+///
+/// - [RFC 3394 Section 2.2.2](https://datatracker.ietf.org/doc/html/rfc3394#section-2.2.2) - Key Unwrap Algorithm
+pub fn unwrap_key(ciphertext: &[u8], kek: &SecretBox<[u8; 32]>) -> Result<Zeroizing<Vec<u8>>, UnwrapError> {
+    // RFC 3394 requires minimum 16 bytes: 8-byte IV + at least one 8-byte block
+    if ciphertext.len() < 16 {
+        return Err(UnwrapError::CiphertextTooShort);
+    }
+
+    // Ensure that the ciphertext is a multiple of 64 bits
+    if !ciphertext.len().is_multiple_of(8) {
+        return Err(UnwrapError::InvalidCiphertextLength);
+    }
+
+    // 1) Initialize variables
+    // We need to substract the IV block
+    let n_blocks = (ciphertext.len() / 8) - 1;
+    // The 64-bit integrity check register (A) initialized from the first 8 bytes of ciphertext
+    let mut integrity_check = U8x8::from_slice(&ciphertext[0..8]).to_owned();
+    // An array of 64-bit registers of length n (R) initialized from the rest of the ciphertext
+    let mut registers = ciphertext[8..].to_owned();
+
+    // 2) Calculate intermediate values
+    let cipher = Aes256::new(GenericArray::from_slice(kek.expose_secret()));
+
+    // Unwrap the key in 6 * n_blocks steps
+    for j in (0..6).rev() {
+        for (i, chunk) in registers.chunks_mut(8).enumerate().rev() {
+            // i was supposed to start from 1, so we shift
+            let t = (n_blocks * j) + (i + 1);
+            let ciphertext_block: U8x8 = *U8x8::from_slice(chunk);
+
+            // B = AES-1(K, (A ^ t) | R[i]) where t = n*j+i
+            let a = &mut integrity_check.clone();
+            for i in 0..8 {
+                a[i] ^= t.to_be_bytes()[i];
+            }
+            let mut iv_block: Block = a.concat(ciphertext_block);
+            cipher.decrypt_block(&mut iv_block);
+
+            // A = MSB(64, B)
+            // Because we're using BE, we can just get the first 64 bits
+            integrity_check.copy_from_slice(&iv_block[0..8]);
+
+            // R[i] = LSB(64, B)
+            chunk.copy_from_slice(&iv_block[8..16]);
+        }
+    }
+
+    // 3) Output the results
+
+    // Check if the integrity check register matches the IV
+    // SECURITY: Use constant-time comparison to prevent timing oracle attacks
+    let expected = U8x8::from(IV_3394);
+    if integrity_check.ct_eq(&expected).unwrap_u8() != 1 {
+        return Err(UnwrapError::InvalidIntegrityCheck);
+    }
+
+    integrity_check.zeroize();
+
+    // Get the plaintext from the registers
+    // SECURITY: Wrap in Zeroizing to ensure key material is erased on drop
+    Ok(Zeroizing::new(registers))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Test vectors
+    extern crate test;
+
+    use super::*;
+    use hex_literal::hex;
+    use test::Bencher;
+
+    #[test]
+    #[should_panic(expected = "InvalidPlaintextLength")]
+    fn test_wrap_invalid_key_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFFF123");
+
+        // Wrap
+        wrap_key(&key_data, &kek).unwrap();
+    }
+
+    #[test]
+    fn test_wrap_128_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF");
+        let ciphertext = hex!("64E8C3F9CE0F5BA2 63E9777905818A2A 93C8191E7D6E8AE7");
+
+        // Wrap
+        let wrapped_key = wrap_key(&key_data, &kek).unwrap();
+        assert_eq!(&ciphertext, &wrapped_key.as_slice());
+    }
+
+    #[test]
+    fn test_unwrap_128_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF");
+        let ciphertext = hex!("64E8C3F9CE0F5BA2 63E9777905818A2A 93C8191E7D6E8AE7");
+
+        // Unwrap
+        let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
+        assert_eq!(&key_data, &unwrapped_key.as_slice());
+    }
+
+    #[test]
+    fn test_wrap_192_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
+        let ciphertext =
+            hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
+
+        // Wrap
+        let wrapped_key = wrap_key(&key_data, &kek).unwrap();
+        assert_eq!(&ciphertext, &wrapped_key.as_slice());
+    }
+
+    #[test]
+    #[should_panic(expected = "CiphertextTooShort")]
+    fn test_unwrap_invalid_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
+        let ciphertext = hex!("A8F9BC1612C68B3F F6E6F4FBE30E");
+
+        // Unwrap
+        let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
+        assert_eq!(&key_data, &unwrapped_key.as_slice());
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidIntegrityCheck")]
+    fn test_unwrap_192_key_with_wrong_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "36b0144a13d0b5c1950c435762ff47789ab64258763f6f980f66dc00c11697cd"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
+        let ciphertext =
+            hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
+
+        // Unwrap
+        let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
+        assert_eq!(&key_data, &unwrapped_key.as_slice());
+    }
+
+    #[test]
+    fn test_unwrap_192_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
+        let ciphertext =
+            hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
+
+        // Unwrap
+        let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
+        assert_eq!(&key_data, &unwrapped_key.as_slice());
+    }
+
+    #[test]
+    fn test_wrap_256_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
+        let ciphertext = hex!(
+            "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21"
+        );
+
+        let wrapped_key = wrap_key(&key_data, &kek).unwrap();
+        assert_eq!(&ciphertext, &wrapped_key.as_slice());
+    }
+
+    #[test]
+    fn test_unwrap_256_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
+        let ciphertext = hex!(
+            "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21"
+        );
+
+        let unwrapped_key = unwrap_key(&ciphertext, &kek).unwrap();
+        assert_eq!(&key_data, &unwrapped_key.as_slice());
+    }
+
+    #[bench]
+    fn bench_wrap_256_key_with_256_kek(b: &mut Bencher) {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
+
+        b.iter(|| wrap_key(&key_data, &kek).unwrap());
+    }
+}

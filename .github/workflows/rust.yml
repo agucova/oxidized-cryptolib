@@ -4,15 +4,50 @@ on:
   push:
   pull_request:
 
-env: 
+env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build_and_test:
-    name: Rust project - latest
+    name: Build and Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: rustup update nightly && rustup default nightly
-      - run: cargo build --verbose
-      - run: cargo test --verbose
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Build and test (default features)
+        run: |
+          cargo build --verbose
+          cargo nextest run --profile ci
+      - name: Build and test (no default features)
+        run: |
+          cargo build --verbose --no-default-features
+          cargo nextest run --profile ci --no-default-features
+      - name: Run stress tests (long-running concurrency tests)
+        run: cargo nextest run --profile ci -p oxidized-cryptolib --features stress -E 'test(stress_)'
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+      - name: Install cargo-llvm-cov and nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,nextest
+      - name: Generate coverage report
+        run: |
+          cargo llvm-cov nextest --workspace --html
+          cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            target/llvm-cov/html/
+            lcov.info

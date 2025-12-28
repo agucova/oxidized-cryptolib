@@ -1,0 +1,44 @@
+# Configuration for cargo-nextest
+# https://nexte.st/book/configuration.html
+
+[store]
+# Store test results for analysis
+dir = "target/nextest"
+
+[profile.default]
+# Default test threads = number of CPUs
+# For crypto tests with heavy I/O, this is usually optimal
+
+# Retry flaky tests once
+retries = 1
+
+# Fail fast on first failure in CI (can override with --no-fail-fast)
+fail-fast = true
+
+# Test timeout - crypto operations should complete quickly
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Status output
+status-level = "pass"
+final-status-level = "flaky"
+
+[profile.default.junit]
+# JUnit XML output for CI integration
+path = "target/nextest/default/junit.xml"
+
+[profile.ci]
+# CI-specific settings
+retries = 2
+fail-fast = true
+
+# More verbose output in CI
+status-level = "all"
+
+[profile.ci.junit]
+path = "target/nextest/ci/junit.xml"
+
+[profile.quick]
+# Quick iteration during development
+# Skip slow tests (those marked #[ignore])
+retries = 0
+fail-fast = true

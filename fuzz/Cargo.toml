@@ -14,7 +14,7 @@ secrecy = "0.10"
 hex-literal = "0.4"
 
 [dependencies.oxidized-cryptolib]
-path = ".."
+path = "../crates/oxidized-cryptolib"
 
 # Prevent this from interfering with workspaces
 [workspace]

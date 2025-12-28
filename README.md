@@ -3,20 +3,61 @@
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
 
-A Rust library for reading and writing [Cryptomator](https://cryptomator.org/) vaults (Vault Format 8).
+A Rust implementation for reading and writing [Cryptomator](https://cryptomator.org/) vaults (Vault Format 8).
 
-This is the foundation for building a full-featured, high-performance Cryptomator client in Rust. It implements all the core cryptographic and vault operations a client would need: master key derivation, file and filename encryption/decryption, directory traversal, and file operations including symlinks.
+This monorepo contains two crates:
+- **oxidized-cryptolib** - Core library implementing all cryptographic and vault operations
+- **[oxidized-cli](crates/oxidized-cli/)** (`oxcrypt`) - Command-line interface for interacting with vaults
 
-The cryptographic operations use established RustCrypto libraries (aes-gcm, aes-siv, scrypt) rather than custom implementations. Keys are memory-protected using `secrecy` and `zeroize`, and timing-sensitive operations use constant-time comparisons via the `subtle` crate, verified with dudect. The codebase includes property-based tests, Wycheproof test vectors, and fuzz targets.
+The goal is to build a full-featured, high-performance Cryptomator client in Rust. The library implements master key derivation, file and filename encryption/decryption, directory traversal, and file operations including symlinks.
 
-## Installation
+Cryptographic operations use established RustCrypto libraries (aes-gcm, aes-siv, scrypt) rather than custom implementations. Keys are memory-protected using `memsafe` (mlock, mprotect) and zeroized on drop. Timing-sensitive operations use constant-time comparisons via the `subtle` crate, verified with dudect. The codebase includes property-based tests, Wycheproof test vectors, and fuzz targets.
+
+## CLI Usage
+
+```bash
+# Build and install
+cargo install --path crates/oxidized-cli
+
+# List vault contents
+oxcrypt --vault /path/to/vault ls
+
+# Show directory tree
+oxcrypt --vault /path/to/vault tree
+
+# Read a file
+oxcrypt --vault /path/to/vault cat documents/secret.txt
+
+# Create a directory
+oxcrypt --vault /path/to/vault mkdir my_folder
+
+# Create an empty file
+oxcrypt --vault /path/to/vault touch newfile.txt
+
+# Write stdin to a file
+echo "Hello" | oxcrypt --vault /path/to/vault write greeting.txt
+
+# Copy, move, remove files
+oxcrypt --vault /path/to/vault cp source.txt dest.txt
+oxcrypt --vault /path/to/vault mv old.txt new.txt
+oxcrypt --vault /path/to/vault rm unwanted.txt
+
+# Show vault info
+oxcrypt --vault /path/to/vault info
+```
+
+Set `OXCRYPT_VAULT` to avoid passing `--vault` every time.
+
+See the [CLI README](crates/oxidized-cli/README.md) for full documentation.
+
+## Library Usage
+
+Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxidized-cryptolib = "0.3.0"
+oxidized-cryptolib = { git = "https://github.com/agucova/oxidized-cryptolib" }
 ```
-
-## Usage
 
 ### Opening a vault and listing contents
 
@@ -97,18 +138,26 @@ vault.create_symlink(&dir_id, "link_name", "../target/path")?;
 let target = vault.read_symlink(&dir_id, "link_name")?;
 ```
 
-## API Overview
+## Project Structure
 
-| Module | Description |
-|--------|-------------|
-| `crypto` | Low-level primitives: `MasterKey`, RFC 3394 key wrapping |
-| `vault` | High-level `VaultOperations` API, vault configuration, master key extraction |
-| `fs` | File/directory/symlink encryption and decryption |
-| `error` | Unified error types with security context |
+```
+crates/
+├── oxidized-cryptolib/    # Core library
+│   ├── src/
+│   │   ├── crypto/        # MasterKey, RFC 3394 key wrapping
+│   │   ├── vault/         # VaultOperations, config, master key extraction
+│   │   ├── fs/            # File/directory/symlink encryption
+│   │   └── error/         # Unified error types
+│   ├── benches/           # Performance and timing leak benchmarks
+│   └── tests/             # Integration tests
+└── oxidized-cli/          # CLI tool (oxcrypt)
+    └── src/
+        └── commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
+```
 
 ## Security
 
-This library prioritizes security. See [SECURITY.md](SECURITY.md) for the full threat model.
+See [SECURITY.md](SECURITY.md) for the full threat model.
 
 **What it protects against:**
 - Unauthorized file/filename access (AES-256 encryption)
@@ -122,24 +171,24 @@ This library prioritizes security. See [SECURITY.md](SECURITY.md) for the full t
 - Denial of service
 
 **Memory protection:**
-- Keys wrapped in `SecretBox`, zeroized on drop
-- Memory locking via `mlock` where supported
+- Keys wrapped in `MemSafe` with mlock and mprotect
+- Automatic zeroization on drop
 - `#![forbid(unsafe_code)]` in cryptographic modules
 
 ## Development
 
 ```bash
-# Build
+# Build all crates
 cargo build
 
-# Run tests
+# Run all tests
 cargo test
 
-# Run benchmarks
-cargo bench
+# Run library benchmarks
+cargo bench -p oxidized-cryptolib
 
 # Verify constant-time operations
-cargo bench --bench timing_leaks
+cargo bench -p oxidized-cryptolib --bench timing_leaks
 ```
 
 ## Roadmap

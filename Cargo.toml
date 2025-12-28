@@ -1,59 +1,23 @@
-[package]
-name = "oxidized-cryptolib"
-version = "0.3.0"
+[workspace]
+resolver = "2"
+members = ["crates/oxidized-cryptolib", "crates/oxidized-cli", "crates/oxidized-fuse"]
+# Note: oxidized-fuse requires macFUSE (macOS) or libfuse (Linux) to be installed
+exclude = ["fuzz"]
+
+[workspace.package]
 edition = "2024"
 rust-version = "1.90"
-authors = ["Aggustin Covarrubias <gh@agucova.dev>"]
-description = "A Rust implementation for decrypting and exploring Cryptomator vaults"
 license = "MPL-2.0"
 repository = "https://github.com/agucova/oxidized-cryptolib"
-keywords = ["cryptomator", "encryption", "vault", "aes", "cryptography"]
-categories = ["cryptography", "filesystem"]
 
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
-
-[dependencies]
-aead = "0.5"
-aes = "0.8"
-aes-gcm = "0.10"
-aes-siv = "0.7"
-base64 = "0.22"
-data-encoding = "2.9"
-generic-array = "0.14"
-hex = "0.4"
-jsonwebtoken = "9"
-rand = "0.9"
-rand_core = "0.9"
-relative-path = "2.0.1"
-ring = "0.17"
-scrypt = "0.11"
-secrecy = { version = "0.10", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_with = { version = "3", features = ["base64"] }
+[workspace.dependencies]
+oxidized-cryptolib = { path = "crates/oxidized-cryptolib" }
+clap = { version = "4.5", features = ["derive", "wrap_help", "env"] }
+rpassword = "7.4"
+comfy-table = "7.2"
+anyhow = "1.0"
 thiserror = "2"
-unicode-normalization = "0.1"
-url = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
-walkdir = "2"
-zeroize = { version = "1", features = ["std"] }
-subtle = "2"
-tempfile = "3"
-memsafe = "0.4"
 tracing = "0.1"
-
-[dev-dependencies]
-assert_fs = "1"
-criterion = "0.5"
-dudect-bencher = "0.6"
-hex-literal = "0.4"
-insta = "1"
-md5 = "0.7"
-proptest = "1"
-rand_chacha = "0.9"
-wycheproof = "0.6"
 
 [profile.release]
 lto = true
@@ -66,27 +30,3 @@ opt-level = 0
 
 [profile.test]
 opt-level = 2
-
-[[bin]]
-name = "oxidized-cryptolib"
-path = "src/main.rs"
-
-[[bench]]
-name = "directory_operations"
-harness = false
-
-[[bench]]
-name = "file_operations"
-harness = false
-
-[[bench]]
-name = "vault_operations"
-harness = false
-
-[[bench]]
-name = "workflows"
-harness = false
-
-[[bench]]
-name = "timing_leaks"
-harness = false

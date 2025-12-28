@@ -27,9 +27,9 @@ This document describes the security goals, threat model, and accepted trade-off
 
 | Goal | Mechanism |
 |------|-----------|
-| **Memory protection** | Keys wrapped in `SecretBox`, zeroized on drop |
+| **Memory protection** | Keys wrapped in `MemSafe`, zeroized on drop |
 | **Timing attack resistance** | Constant-time comparisons via `subtle` crate, verified with dudect |
-| **Swap protection** | Memory locking via `mlock` (planned) |
+| **Swap protection** | Memory locking via `mlock` (implemented via `memsafe`) |
 | **API misuse resistance** | Private fields enforce scoped key access patterns |
 
 ## What This Library Protects Against
@@ -54,10 +54,11 @@ This document describes the security goals, threat model, and accepted trade-off
 - All cryptographic operations use constant-time primitives from RustCrypto
 
 **Memory Protection:**
-- All key material stored in `SecretBox<[u8; N]>` containers
+- All key material stored in `MemSafe<[u8; N]>` containers
+- Memory locking (`mlock`) prevents swapping to disk
+- Access control via `mprotect(PROT_NONE)` when not in use
 - Automatic zeroization on drop via `zeroize` crate
 - Scoped access pattern prevents key material from escaping callbacks
-- Memory locking (`mlock`) prevents swapping to disk (planned)
 
 ## What This Library Does NOT Protect Against
 
@@ -105,7 +106,7 @@ This library relies on well-audited cryptographic implementations:
 | `aes`, `aes-gcm`, `aes-siv` | Symmetric encryption | RustCrypto project, widely reviewed |
 | `ring` | HMAC, SHA, RNG | Derived from BoringSSL, extensively audited |
 | `scrypt` | Key derivation | RustCrypto, implements RFC 7914 |
-| `secrecy`, `zeroize` | Memory protection | RustCrypto memory security primitives |
+| `memsafe`, `zeroize` | Memory protection | Memory locking (mlock), access control (mprotect), zeroization |
 | `subtle` | Constant-time operations | RustCrypto, modeled after Go's `subtle` |
 | `jsonwebtoken` | JWT parsing | Popular crate, **not** RustCrypto (documented limitation) |
 

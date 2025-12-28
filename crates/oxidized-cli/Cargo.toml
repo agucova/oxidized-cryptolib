@@ -1,0 +1,32 @@
+[package]
+name = "oxidized-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for Cryptomator vaults"
+
+[[bin]]
+name = "oxcrypt"
+path = "src/main.rs"
+
+[dependencies]
+oxidized-cryptolib.workspace = true
+clap.workspace = true
+rpassword.workspace = true
+comfy-table.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd = "2.1"
+predicates = "3.1"
+tempfile = "3"
+criterion = { version = "0.6.0", features = ["html_reports"] }
+
+[[bench]]
+name = "cli_operations"
+harness = false
