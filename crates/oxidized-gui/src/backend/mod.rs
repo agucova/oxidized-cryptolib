@@ -11,7 +11,10 @@ pub use fuse::FuseBackend;
 pub use fskit::FSKitBackend;
 
 // Re-export traits and types from cryptolib
-pub use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+pub use oxidized_cryptolib::{
+    BackendInfo, BackendType, MountBackend, MountError, MountHandle,
+    first_available_backend, list_backend_info, select_backend,
+};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,12 +39,17 @@ impl Default for MountManager {
 
 impl MountManager {
     /// Create a new mount manager with default backends
+    ///
+    /// Backends are ordered by preference: FSKit first (better macOS integration),
+    /// then FUSE as fallback. This order is used by `first_available_backend()`.
     pub fn new() -> Self {
         Self {
             mounts: Mutex::new(HashMap::new()),
             backends: vec![
-                Box::new(FuseBackend::new()),
+                // FSKit preferred on macOS 15.4+ (better integration, no kernel extension)
                 Box::new(FSKitBackend::default()),
+                // FUSE as fallback (cross-platform)
+                Box::new(FuseBackend::new()),
             ],
         }
     }
@@ -60,33 +68,19 @@ impl MountManager {
             .collect()
     }
 
-    /// Get a backend by type
-    pub fn get_backend(&self, backend_type: BackendType) -> Option<&dyn MountBackend> {
-        match backend_type {
-            BackendType::Fuse => self.backends.iter().find(|b| b.id() == "fuse"),
-            BackendType::FSKit => self.backends.iter().find(|b| b.id() == "fskit"),
-            BackendType::Auto => self.select_best_backend(),
-        }
-        .map(|b| b.as_ref())
+    /// Get information about all registered backends
+    pub fn backend_info(&self) -> Vec<BackendInfo> {
+        list_backend_info(&self.backends)
     }
 
-    /// Select the best available backend automatically
+    /// Select a backend by type using shared selection logic
     ///
-    /// Priority: FSKit (if available) > FUSE
-    fn select_best_backend(&self) -> Option<&Box<dyn MountBackend>> {
-        // Prefer FSKit on macOS 15.4+ (better integration)
-        if let Some(fskit) = self.backends.iter().find(|b| b.id() == "fskit") {
-            if fskit.is_available() {
-                return Some(fskit);
-            }
-        }
-        // Fall back to FUSE
-        self.backends.iter().find(|b| b.id() == "fuse" && b.is_available())
+    /// Returns an error if the requested backend is not available.
+    pub fn get_backend(&self, backend_type: BackendType) -> Result<&dyn MountBackend, MountError> {
+        select_backend(&self.backends, backend_type)
     }
 
     /// Mount a vault using the specified backend type
-    ///
-    /// If `backend_type` is `Auto`, selects the best available backend.
     pub fn mount_with_backend(
         &self,
         vault_id: &str,
@@ -95,18 +89,8 @@ impl MountManager {
         mountpoint: &std::path::Path,
         backend_type: BackendType,
     ) -> Result<PathBuf, MountError> {
-        let backend = self.get_backend(backend_type).ok_or_else(|| {
-            MountError::BackendUnavailable(format!(
-                "No {} backend available",
-                backend_type.display_name()
-            ))
-        })?;
-
-        if !backend.is_available() {
-            return Err(MountError::BackendUnavailable(
-                backend.unavailable_reason().unwrap_or_else(|| "Unknown reason".to_string()),
-            ));
-        }
+        // Use shared selection logic
+        let backend = self.get_backend(backend_type)?;
 
         // Create mount point directory if it doesn't exist
         if !mountpoint.exists() {
@@ -131,10 +115,11 @@ impl MountManager {
         Ok(mp)
     }
 
-    /// Mount a vault using the default FUSE backend
+    /// Mount a vault using the first available backend
     ///
     /// This is the simplified 4-parameter API for callers that don't need
-    /// backend selection. Uses FUSE backend by default.
+    /// explicit backend selection. Uses the first available backend based on
+    /// the order defined in `new()` (FSKit preferred, then FUSE).
     pub fn mount(
         &self,
         vault_id: &str,
@@ -142,7 +127,29 @@ impl MountManager {
         password: &str,
         mountpoint: &std::path::Path,
     ) -> Result<PathBuf, MountError> {
-        self.mount_with_backend(vault_id, vault_path, password, mountpoint, BackendType::Fuse)
+        let backend = first_available_backend(&self.backends)?;
+
+        // Create mount point directory if it doesn't exist
+        if !mountpoint.exists() {
+            std::fs::create_dir_all(mountpoint)?;
+        }
+
+        // Mount using the selected backend
+        let handle = backend.mount(vault_id, vault_path, password, mountpoint)?;
+        let mp = handle.mountpoint().to_path_buf();
+
+        // Store the handle
+        let mut mounts = self.mounts.lock().unwrap();
+        mounts.insert(vault_id.to_string(), handle);
+
+        tracing::info!(
+            "Mounted vault {} at {} using {}",
+            vault_id,
+            mp.display(),
+            backend.name()
+        );
+
+        Ok(mp)
     }
 
     /// Unmount a vault

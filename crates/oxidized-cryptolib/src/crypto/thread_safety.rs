@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn can_share_across_threads() {
-        let key = MasterKey::generate().expect("generate key");
+        let key = MasterKey::random().expect("generate key");
         let key = Arc::new(key);
 
         let key1 = Arc::clone(&key);
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn concurrent_reads() {
-        let key = MasterKey::generate().expect("generate key");
+        let key = MasterKey::random().expect("generate key");
         let key = Arc::new(key);
 
         let mut handles = Vec::new();

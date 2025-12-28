@@ -1,11 +1,69 @@
 //! Type-safe path handling for Cryptomator vaults.
 //!
-//! This module provides two distinct types to prevent confusion between:
+//! This module provides types to prevent confusion between:
 //! - `DirId`: Internal directory identifiers (opaque UUIDs)
 //! - `VaultPath`: User-facing paths within the vault (e.g., "/Documents/file.txt")
+//! - `EntryType`: The type of an entry (file, directory, or symlink)
 
 use relative_path::{RelativePath, RelativePathBuf};
 use std::fmt;
+
+/// The type of an entry in a Cryptomator vault.
+///
+/// This enum represents the three possible types of entries that can exist
+/// in a vault: regular files, directories, and symbolic links.
+///
+/// # Examples
+///
+/// ```
+/// use oxidized_cryptolib::vault::path::EntryType;
+///
+/// let file_type = EntryType::File;
+/// assert!(file_type.is_file());
+/// assert!(!file_type.is_directory());
+///
+/// let dir_type = EntryType::Directory;
+/// assert!(dir_type.is_directory());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryType {
+    /// A regular file.
+    File,
+    /// A directory.
+    Directory,
+    /// A symbolic link.
+    Symlink,
+}
+
+impl EntryType {
+    /// Returns `true` if this is a regular file.
+    #[inline]
+    pub fn is_file(&self) -> bool {
+        matches!(self, Self::File)
+    }
+
+    /// Returns `true` if this is a directory.
+    #[inline]
+    pub fn is_directory(&self) -> bool {
+        matches!(self, Self::Directory)
+    }
+
+    /// Returns `true` if this is a symbolic link.
+    #[inline]
+    pub fn is_symlink(&self) -> bool {
+        matches!(self, Self::Symlink)
+    }
+}
+
+impl fmt::Display for EntryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File => write!(f, "file"),
+            Self::Directory => write!(f, "directory"),
+            Self::Symlink => write!(f, "symlink"),
+        }
+    }
+}
 
 /// Opaque directory identifier used internally by Cryptomator.
 ///

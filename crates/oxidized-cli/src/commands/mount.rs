@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+use oxidized_cryptolib::{
+    BackendInfo, BackendType, MountBackend, MountHandle,
+    first_available_backend, list_backend_info, select_backend,
+};
 
 #[cfg(feature = "fuse")]
 use oxidized_fuse::FuseBackend;
@@ -19,11 +22,8 @@ use oxidized_fuse::FuseBackend;
 use oxidized_fskit::FSKitBackend;
 
 /// Backend selection for mount command
-#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum BackendArg {
-    /// Automatically select the best available backend
-    #[default]
-    Auto,
     /// Use FUSE backend (requires macFUSE on macOS or libfuse on Linux)
     #[cfg(feature = "fuse")]
     Fuse,
@@ -35,7 +35,6 @@ pub enum BackendArg {
 impl From<BackendArg> for BackendType {
     fn from(arg: BackendArg) -> Self {
         match arg {
-            BackendArg::Auto => BackendType::Auto,
             #[cfg(feature = "fuse")]
             BackendArg::Fuse => BackendType::Fuse,
             #[cfg(feature = "fskit")]
@@ -54,9 +53,9 @@ pub struct Args {
     #[arg(short, long)]
     pub mountpoint: PathBuf,
 
-    /// Backend to use for mounting
-    #[arg(short, long, value_enum, default_value = "auto")]
-    pub backend: BackendArg,
+    /// Backend to use for mounting (if not specified, uses first available)
+    #[arg(short, long, value_enum)]
+    pub backend: Option<BackendArg>,
 
     /// Vault passphrase
     #[arg(long, env = "OXCRYPT_PASSWORD", hide_env_values = true)]
@@ -67,72 +66,26 @@ pub struct Args {
     pub create_mountpoint: bool,
 }
 
-/// Get a backend instance based on the selection and availability.
-fn get_backend(backend_type: BackendType) -> Result<Box<dyn MountBackend>, MountError> {
-    match backend_type {
-        BackendType::Auto => {
-            // Try FSKit first (if available and enabled), then FUSE
-            #[cfg(feature = "fskit")]
-            {
-                let fskit = FSKitBackend::new();
-                if fskit.is_available() {
-                    return Ok(Box::new(fskit));
-                }
-            }
+/// Build the list of available backends based on enabled features
+///
+/// Backends are ordered by preference: FSKit first (better macOS integration),
+/// then FUSE as fallback. This order is used when `BackendType::Auto` is selected.
+fn build_backends() -> Vec<Box<dyn MountBackend>> {
+    let mut backends: Vec<Box<dyn MountBackend>> = Vec::new();
 
-            #[cfg(feature = "fuse")]
-            {
-                let fuse = FuseBackend::new();
-                if fuse.is_available() {
-                    return Ok(Box::new(fuse));
-                }
-            }
-
-            // Nothing available
-            Err(MountError::BackendUnavailable(
-                "No mount backend available. Install macFUSE/libfuse or upgrade to macOS 15.4+."
-                    .to_string(),
-            ))
-        }
-
-        BackendType::Fuse => {
-            #[cfg(feature = "fuse")]
-            {
-                let backend = FuseBackend::new();
-                if !backend.is_available() {
-                    return Err(MountError::BackendUnavailable(
-                        backend.unavailable_reason().unwrap_or_default(),
-                    ));
-                }
-                Ok(Box::new(backend))
-            }
-            #[cfg(not(feature = "fuse"))]
-            {
-                Err(MountError::BackendUnavailable(
-                    "FUSE backend not enabled. Rebuild with --features fuse".to_string(),
-                ))
-            }
-        }
-
-        BackendType::FSKit => {
-            #[cfg(feature = "fskit")]
-            {
-                let backend = FSKitBackend::new();
-                if !backend.is_available() {
-                    return Err(MountError::BackendUnavailable(
-                        backend.unavailable_reason().unwrap_or_default(),
-                    ));
-                }
-                Ok(Box::new(backend))
-            }
-            #[cfg(not(feature = "fskit"))]
-            {
-                Err(MountError::BackendUnavailable(
-                    "FSKit backend not enabled. Rebuild with --features fskit".to_string(),
-                ))
-            }
-        }
+    // FSKit preferred on macOS 15.4+ (better integration, no kernel extension)
+    #[cfg(feature = "fskit")]
+    {
+        backends.push(Box::new(FSKitBackend::new()));
     }
+
+    // FUSE as fallback (cross-platform)
+    #[cfg(feature = "fuse")]
+    {
+        backends.push(Box::new(FuseBackend::new()));
+    }
+
+    backends
 }
 
 pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
@@ -171,8 +124,21 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
     }
 
     // Get backend
-    let backend_type: BackendType = args.backend.into();
-    let backend = get_backend(backend_type).context("Failed to get mount backend")?;
+    let backends = build_backends();
+    if backends.is_empty() {
+        anyhow::bail!("No mount backends enabled. Rebuild with --features fuse or --features fskit");
+    }
+
+    let backend = match args.backend {
+        Some(arg) => {
+            let backend_type: BackendType = arg.into();
+            select_backend(&backends, backend_type).context("Failed to get mount backend")?
+        }
+        None => {
+            // Use first available backend (ordered by preference in build_backends)
+            first_available_backend(&backends).context("No mount backend available")?
+        }
+    };
 
     eprintln!("Using {} backend", backend.name());
 
@@ -216,37 +182,5 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
 
 /// List available backends and their status
 pub fn list_backends() -> Vec<BackendInfo> {
-    let mut backends = Vec::new();
-
-    #[cfg(feature = "fuse")]
-    {
-        let fuse = FuseBackend::new();
-        backends.push(BackendInfo {
-            id: fuse.id().to_string(),
-            name: fuse.name().to_string(),
-            available: fuse.is_available(),
-            reason: fuse.unavailable_reason(),
-        });
-    }
-
-    #[cfg(feature = "fskit")]
-    {
-        let fskit = FSKitBackend::new();
-        backends.push(BackendInfo {
-            id: fskit.id().to_string(),
-            name: fskit.name().to_string(),
-            available: fskit.is_available(),
-            reason: fskit.unavailable_reason(),
-        });
-    }
-
-    backends
-}
-
-/// Information about a mount backend
-pub struct BackendInfo {
-    pub id: String,
-    pub name: String,
-    pub available: bool,
-    pub reason: Option<String>,
+    list_backend_info(&build_backends())
 }

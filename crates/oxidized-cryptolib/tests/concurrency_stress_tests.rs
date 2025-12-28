@@ -78,18 +78,18 @@ fn setup_write_test_vault() -> (PathBuf, [u8; 32], [u8; 32]) {
 }
 
 /// Helper to create VaultOperationsAsync from components
-fn create_ops(vault_path: &std::path::Path, enc_key: &[u8; 32], mac_key: &[u8; 32]) -> VaultOperationsAsync {
+fn create_ops(vault_path: &std::path::Path, enc_key: &[u8; 32], mac_key: &[u8; 32]) -> Arc<VaultOperationsAsync> {
     use oxidized_cryptolib::crypto::keys::MasterKey;
-    let master_key = MasterKey::new(*enc_key, *mac_key).unwrap();
-    VaultOperationsAsync::new(vault_path, &master_key).unwrap()
+    let master_key = Arc::new(MasterKey::new(*enc_key, *mac_key).unwrap());
+    VaultOperationsAsync::new(vault_path, master_key).into_shared()
 }
 
 // ============================================================================
 // Happy Path Tests
 // ============================================================================
 
-/// Verify that clone_shared() instances properly synchronize
-/// Note: This uses tokio::join! instead of spawn because VaultOperationsAsync is !Send
+/// Verify that Arc-cloned instances properly synchronize
+/// Note: VaultOperationsAsync is now Send+Sync, but we use join! for simpler test structure
 #[tokio::test]
 async fn concurrency_happy_clone_shared_sync() {
     let (vault_path, enc_key, mac_key) = setup_write_test_vault();
@@ -97,8 +97,8 @@ async fn concurrency_happy_clone_shared_sync() {
 
     // Create ONE instance and clone it (shares lock manager)
     let ops = create_ops(&vault_path, &enc_key, &mac_key);
-    let ops1 = ops.clone_shared().unwrap();
-    let ops2 = ops.clone_shared().unwrap();
+    let ops1 = ops.clone();
+    let ops2 = ops.clone();
 
     let data1 = b"First write content".to_vec();
     let data2 = b"Second write content".to_vec();
@@ -106,7 +106,7 @@ async fn concurrency_happy_clone_shared_sync() {
     let root1 = root.clone();
     let root2 = root.clone();
 
-    // Use tokio::join! to run concurrently on the same task (since !Send)
+    // Use tokio::join! to run concurrently within the same task
     let (result1, result2) = tokio::join!(
         async { ops1.write_file(&root1, "shared.txt", &data1).await },
         async { ops2.write_file(&root2, "shared.txt", &data2).await }
@@ -140,9 +140,9 @@ async fn concurrency_happy_concurrent_readers() {
     let root = DirId::root();
 
     let ops = create_ops(&vault_path, &enc_key, &mac_key);
-    let ops1 = ops.clone_shared().unwrap();
-    let ops2 = ops.clone_shared().unwrap();
-    let ops3 = ops.clone_shared().unwrap();
+    let ops1 = ops.clone();
+    let ops2 = ops.clone();
+    let ops3 = ops.clone();
 
     let root1 = root.clone();
     let root2 = root.clone();
@@ -168,8 +168,8 @@ async fn concurrency_happy_different_files() {
     let root = DirId::root();
 
     let ops = create_ops(&vault_path, &enc_key, &mac_key);
-    let ops1 = ops.clone_shared().unwrap();
-    let ops2 = ops.clone_shared().unwrap();
+    let ops1 = ops.clone();
+    let ops2 = ops.clone();
 
     let root1 = root.clone();
     let root2 = root.clone();
@@ -311,8 +311,8 @@ async fn concurrency_happy_concurrent_list_operations() {
     let root = DirId::root();
 
     let ops = create_ops(&vault_path, &enc_key, &mac_key);
-    let ops1 = ops.clone_shared().unwrap();
-    let ops2 = ops.clone_shared().unwrap();
+    let ops1 = ops.clone();
+    let ops2 = ops.clone();
 
     let root1 = root.clone();
     let root2 = root.clone();
@@ -719,8 +719,8 @@ fn stress_true_parallel_lock_contention() {
 /// Runs for a fixed duration rather than fixed iterations to catch
 /// timing-dependent races that only manifest over time.
 ///
-/// Uses std::thread with separate tokio runtimes since VaultOperationsAsync
-/// is !Send (contains RefCell). Each thread creates its own ops via clone_shared().
+/// Uses std::thread with separate tokio runtimes for isolation.
+/// VaultOperationsAsync is now Send+Sync and can be shared across threads via Arc.
 #[test]
 #[cfg(feature = "stress")]
 fn stress_mixed_operations_timed() {

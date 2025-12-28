@@ -7,7 +7,10 @@ pub mod mount;
 pub mod vault;
 
 // Re-export commonly used types at crate root
-pub use mount::{BackendType, MountBackend, MountError, MountHandle};
+pub use mount::{
+    BackendInfo, BackendType, MountBackend, MountError, MountHandle,
+    first_available_backend, list_backend_info, select_backend,
+};
 
 #[cfg(feature = "async")]
 pub use vault::VaultOperationsAsync;

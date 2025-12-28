@@ -27,6 +27,42 @@ let
     };
   };
 
+  # FSKitBridge - Bridge between macOS FSKit and Rust filesystem implementations
+  # https://github.com/debox-network/FSKitBridge
+  # Required for oxidized-fskit (FSKit-based vault mounting on macOS 15.4+)
+  fskitbridge = pkgs.stdenv.mkDerivation rec {
+    pname = "FSKitBridge";
+    version = "0.1.0";
+
+    src = pkgs.fetchurl {
+      url = "https://github.com/debox-network/FSKitBridge/releases/download/v${version}/FSKitBridge-${version}.zip";
+      sha256 = "sha256-u1z4Z/THPhD7M8t3nHNnYo62ozn83adFmT73JYb8vhE=";
+    };
+
+    nativeBuildInputs = [ pkgs.unzip ];
+
+    unpackPhase = ''
+      unzip $src
+    '';
+
+    installPhase = ''
+      mkdir -p $out/Applications
+      cp -Ra FSKitBridge.app $out/Applications/
+    '';
+
+    # macOS app bundles shouldn't be patched
+    dontPatchShebangs = true;
+    dontPatchELF = true;
+    dontFixup = true;
+
+    meta = with lib; {
+      description = "FSKit bridge for Rust filesystem implementations on macOS 15.4+";
+      homepage = "https://github.com/debox-network/FSKitBridge";
+      license = licenses.mit;
+      platforms = platforms.darwin;
+    };
+  };
+
   # fsstress - filesystem stress testing tool
   # Originally from SGI/XFS, ported via secfs.test
   fsstress = pkgs.stdenv.mkDerivation rec {
@@ -72,6 +108,7 @@ in
     cargo-audit
     cargo-fuzz
     cargo-nextest
+    act  # Run GitHub Actions locally
   ]
   # Add pjdfstest and fsstress on Linux (requires FUSE which is native there)
   ++ lib.optionals stdenv.isLinux [
@@ -81,8 +118,9 @@ in
   ]
   # On macOS, add macfuse build dependencies (macfuse itself must be installed via brew)
   ++ lib.optionals stdenv.isDarwin [
-    pjdfstest  # Can still build pjdfstest, just needs macFUSE at runtime
-    protobuf   # Required for fskit-rs (FSKit filesystem support)
+    pjdfstest   # Can still build pjdfstest, just needs macFUSE at runtime
+    protobuf    # Required for fskit-rs (FSKit filesystem support)
+    fskitbridge # FSKitBridge.app for FSKit-based vault mounting (macOS 15.4+)
   ];
 
   env = {
@@ -112,5 +150,31 @@ in
       echo "Installing tokio-console..."
       cargo install tokio-console --locked --quiet
     fi
+
+    # FSKitBridge installation for macOS 15.4+
+    if [[ "$(uname)" == "Darwin" ]] && [[ -d "${fskitbridge}/Applications/FSKitBridge.app" ]]; then
+      if [[ ! -d ~/Applications/FSKitBridge.app ]]; then
+        echo "Installing FSKitBridge.app to ~/Applications..."
+        mkdir -p ~/Applications
+        cp -Ra "${fskitbridge}/Applications/FSKitBridge.app" ~/Applications/
+        xattr -cr ~/Applications/FSKitBridge.app 2>/dev/null || true
+        echo ""
+        echo "FSKitBridge.app installed. To enable FSKit support:"
+        echo "  1. Open FSKitBridge.app once to register the extension"
+        echo "  2. Go to System Settings → General → Login Items & Extensions"
+        echo "  3. Enable 'FSKitBridge' under File System Extensions"
+        echo ""
+      fi
+    fi
+
+    echo ""
+    echo "Local CI testing with act (requires Docker):"
+    echo "  act -l                        # List available jobs"
+    echo "  act push -j format            # Run format check"
+    echo "  act push -j clippy            # Run clippy"
+    echo "  act push -j build_and_test_linux  # Run build & test"
+    echo "  act push                      # Run all Linux jobs"
+    echo ""
+    echo "Note: macOS/FSKit jobs only run in GitHub Actions."
   '';
 }

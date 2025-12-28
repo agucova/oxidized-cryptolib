@@ -3,6 +3,7 @@
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use comfy_table::{Cell, Color, Table};
+use oxidized_cryptolib::BackendInfo;
 
 use super::mount::list_backends;
 
@@ -31,7 +32,7 @@ pub fn execute(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn output_table(backends: &[super::mount::BackendInfo]) {
+fn output_table(backends: &[BackendInfo]) {
     let mut table = Table::new();
     table.set_header(vec!["Backend", "Status", "Notes"]);
 
@@ -47,7 +48,7 @@ fn output_table(backends: &[super::mount::BackendInfo]) {
             "fskit" => "Native macOS integration (15.4+)",
             _ => "",
         };
-        let notes = backend.reason.as_deref().unwrap_or(default_notes);
+        let notes = backend.unavailable_reason.as_deref().unwrap_or(default_notes);
 
         table.add_row(vec![
             Cell::new(&backend.name),
@@ -71,14 +72,14 @@ fn output_table(backends: &[super::mount::BackendInfo]) {
     }
 }
 
-fn output_json(backends: &[super::mount::BackendInfo]) -> Result<()> {
+fn output_json(backends: &[BackendInfo]) -> Result<()> {
     let json_backends: Vec<_> = backends
         .iter()
         .map(|b| serde_json::json!({
             "id": b.id,
             "name": b.name,
             "available": b.available,
-            "reason": b.reason,
+            "unavailable_reason": b.unavailable_reason,
         }))
         .collect();
 

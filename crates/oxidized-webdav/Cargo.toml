@@ -1,0 +1,40 @@
+[package]
+name = "oxidized-webdav"
+version = "0.1.0"
+description = "WebDAV server backend for Cryptomator vaults using oxidized-cryptolib"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["cryptomator", "webdav", "encryption", "filesystem"]
+categories = ["filesystem", "cryptography", "web-programming"]
+
+[dependencies]
+oxidized-cryptolib = { workspace = true, features = ["async"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# WebDAV server
+dav-server = "0.7"
+
+# HTTP server
+hyper = { version = "1.5", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
+http-body-util = "0.1"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "signal", "macros", "process"] }
+
+# Utilities
+bytes = "1"
+futures = "0.3"
+dashmap = "6"
+pin-project-lite = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", features = ["blocking"] }
+
+[features]
+default = []

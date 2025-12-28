@@ -1,0 +1,17 @@
+# act configuration for local GitHub Actions testing
+# https://nektosact.com/
+
+# Use full GitHub runner image (has rustup, cargo, etc pre-installed)
+# Options:
+#   catthehacker/ubuntu:act-latest (~500MB, minimal)
+#   catthehacker/ubuntu:full-latest (~12GB, full GitHub runner with most tools)
+-P ubuntu-latest=catthehacker/ubuntu:full-latest
+
+# For Apple Silicon Macs, use amd64 architecture
+--container-architecture linux/amd64
+
+# Disable container daemon socket (fixes podman compatibility)
+--container-daemon-socket=-
+
+# Reuse containers between runs for faster iteration
+--reuse

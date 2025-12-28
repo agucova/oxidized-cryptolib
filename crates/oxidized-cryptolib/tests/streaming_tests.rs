@@ -7,6 +7,7 @@ use oxidized_cryptolib::{
     vault::{VaultOperationsAsync, DirId},
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 
 mod common;
 use common::vault_builder::VaultBuilder;
@@ -17,8 +18,7 @@ use common::vault_builder::VaultBuilder;
 
 async fn setup_vault() -> (PathBuf, VaultOperationsAsync) {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create VaultOperationsAsync");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
     (vault_path, ops)
 }
 

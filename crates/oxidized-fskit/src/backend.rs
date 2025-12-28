@@ -111,31 +111,6 @@ impl FSKitBackend {
         )))
     }
 
-    /// Check if FSKit is available on this macOS version.
-    #[cfg(target_os = "macos")]
-    fn check_macos_version() -> bool {
-        use std::process::Command;
-
-        // Run sw_vers -productVersion to get macOS version
-        if let Ok(output) = Command::new("sw_vers")
-            .arg("-productVersion")
-            .output()
-        {
-            if let Ok(version) = String::from_utf8(output.stdout) {
-                let parts: Vec<&str> = version.trim().split('.').collect();
-                if parts.len() >= 2 {
-                    if let (Ok(major), Ok(minor)) = (
-                        parts[0].parse::<u32>(),
-                        parts[1].parse::<u32>(),
-                    ) {
-                        // FSKit requires macOS 15.4+
-                        return major > 15 || (major == 15 && minor >= 4);
-                    }
-                }
-            }
-        }
-        false
-    }
 }
 
 impl MountBackend for FSKitBackend {
@@ -148,28 +123,28 @@ impl MountBackend for FSKitBackend {
     }
 
     fn is_available(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            Self::check_macos_version()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
+        use crate::setup;
+        setup::check_macos_version() && setup::find_installation().is_some()
     }
 
     fn unavailable_reason(&self) -> Option<String> {
-        if self.is_available() {
-            return None;
-        }
+        use crate::setup::{self, BridgeStatus};
 
-        #[cfg(target_os = "macos")]
-        {
-            Some("FSKit requires macOS 15.4 or later.".to_string())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Some("FSKit is only available on macOS 15.4 and later.".to_string())
+        match setup::get_status_sync() {
+            BridgeStatus::Ready => None,
+            BridgeStatus::UnsupportedPlatform => {
+                Some("FSKit requires macOS 15.4 or later.".to_string())
+            }
+            BridgeStatus::NotInstalled => Some(format!(
+                "FSKitBridge.app not installed. Download from: {}",
+                setup::RELEASES_URL
+            )),
+            BridgeStatus::Quarantined => Some(
+                "FSKitBridge.app is quarantined. Remove with: xattr -cr /Applications/FSKitBridge.app".to_string()
+            ),
+            BridgeStatus::ExtensionDisabled => Some(
+                "FSKit extension not enabled. Enable in System Settings → General → Login Items → File System Extensions".to_string()
+            ),
         }
     }
 

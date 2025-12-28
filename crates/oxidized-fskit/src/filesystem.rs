@@ -20,6 +20,7 @@ use uuid::Uuid;
 use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
 use oxidized_cryptolib::vault::VaultOperationsAsync;
 
+use crate::attr::AttrCache;
 use crate::error::{operation_error_to_errno, write_error_to_errno};
 use crate::handles::{FsKitHandle, HandleTable, WriteBuffer};
 use crate::item_table::{ItemKind, ItemTable, ROOT_ITEM_ID};
@@ -35,8 +36,8 @@ const DEFAULT_DIR_PERM: u16 = 0o755;
 
 /// Internal state that needs interior mutability.
 struct FsKitInner {
-    /// Async vault operations.
-    ops: VaultOperationsAsync,
+    /// Async vault operations (shared via Arc).
+    ops: Arc<VaultOperationsAsync>,
 }
 
 /// FSKit filesystem for Cryptomator vaults.
@@ -51,6 +52,8 @@ pub struct CryptomatorFSKit {
     items: Arc<ItemTable>,
     /// File handle table for open files (DashMap is already Send+Sync).
     handles: Arc<HandleTable>,
+    /// Attribute cache to reduce vault operations.
+    attr_cache: Arc<AttrCache>,
     /// User ID to use for file ownership.
     uid: u32,
     /// Group ID to use for file ownership.
@@ -78,7 +81,8 @@ impl CryptomatorFSKit {
     pub fn new(vault_path: &Path, password: &str) -> anyhow::Result<Self> {
         // Open vault - extracts key, reads config, configures cipher combo automatically
         let ops = VaultOperationsAsync::open(vault_path, password)
-            .map_err(|e| anyhow::anyhow!("Failed to open vault: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to open vault: {e}"))?
+            .into_shared();
 
         // Get current user/group
         let uid = unsafe { libc::getuid() };
@@ -98,6 +102,7 @@ impl CryptomatorFSKit {
             inner: Arc::new(Mutex::new(FsKitInner { ops })),
             items: Arc::new(ItemTable::new()),
             handles: Arc::new(HandleTable::new()),
+            attr_cache: Arc::new(AttrCache::with_defaults()),
             uid,
             gid,
             vault_path: vault_path.to_path_buf(),
@@ -216,28 +221,24 @@ impl CryptomatorFSKit {
         }
     }
 
-    /// Get a cloned VaultOperationsAsync from the inner state.
-    async fn get_ops(&self) -> Result<VaultOperationsAsync, FsKitError> {
+    /// Get a clone of the vault operations Arc from the inner state.
+    async fn get_ops(&self) -> Arc<VaultOperationsAsync> {
         let inner = self.inner.lock().await;
-        inner
-            .ops
-            .clone_shared()
-            .map_err(|_| FsKitError::Posix(libc::EIO))
+        Arc::clone(&inner.ops)
     }
 
     /// Run an async vault operation in spawn_blocking with a current-thread runtime.
     ///
-    /// This is necessary because VaultOperationsAsync contains RefCell (via memsafe)
-    /// which is not Sync. async_trait requires futures to be Send, but since
-    /// &VaultOperationsAsync is not Send (because VaultOperationsAsync is not Sync),
-    /// we need to run vault operations in a separate single-threaded context.
+    /// Note: With VaultOperationsAsync now being Send+Sync, this pattern could
+    /// be simplified in the future. The spawn_blocking is kept for now to
+    /// maintain consistent behavior.
     async fn run_vault_op<T, F, Fut>(&self, f: F) -> Result<T, FsKitError>
     where
         T: Send + 'static,
-        F: FnOnce(VaultOperationsAsync) -> Fut + Send + 'static,
+        F: FnOnce(Arc<VaultOperationsAsync>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = T>,
     {
-        let ops = self.get_ops().await?;
+        let ops = self.get_ops().await;
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -487,14 +488,28 @@ impl Filesystem for CryptomatorFSKit {
     async fn get_attributes(&mut self, item_id: u64) -> FsKitResult<ItemAttributes> {
         trace!(item_id = item_id, "get_attributes");
 
+        // Check cache first for files and symlinks
+        if let Some(cached) = self.attr_cache.get(item_id) {
+            trace!(item_id = item_id, "attr cache hit");
+            return Ok(cached.attrs);
+        }
+
         let entry = self
             .items
             .get(item_id)
             .ok_or(FsKitError::Posix(libc::ENOENT))?;
 
         match &entry.kind {
-            ItemKind::Root => Ok(self.make_dir_attrs(item_id)),
-            ItemKind::Directory { .. } => Ok(self.make_dir_attrs(item_id)),
+            ItemKind::Root => {
+                let attrs = self.make_dir_attrs(item_id);
+                self.attr_cache.insert(item_id, attrs.clone());
+                Ok(attrs)
+            }
+            ItemKind::Directory { .. } => {
+                let attrs = self.make_dir_attrs(item_id);
+                self.attr_cache.insert(item_id, attrs.clone());
+                Ok(attrs)
+            }
             ItemKind::File { dir_id, name } => {
                 let dir_id = dir_id.clone();
                 let name = name.clone();
@@ -511,7 +526,9 @@ impl Filesystem for CryptomatorFSKit {
                     .ok_or(FsKitError::Posix(libc::ENOENT))?;
 
                 let size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
-                Ok(self.make_file_attrs(item_id, size))
+                let attrs = self.make_file_attrs(item_id, size);
+                self.attr_cache.insert(item_id, attrs.clone());
+                Ok(attrs)
             }
             ItemKind::Symlink { dir_id, name } => {
                 let dir_id = dir_id.clone();
@@ -523,7 +540,9 @@ impl Filesystem for CryptomatorFSKit {
                     .await?
                     .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?;
 
-                Ok(self.make_symlink_attrs(item_id, target.len() as u64))
+                let attrs = self.make_symlink_attrs(item_id, target.len() as u64);
+                self.attr_cache.insert(item_id, attrs.clone());
+                Ok(attrs)
             }
         }
     }
@@ -555,7 +574,9 @@ impl Filesystem for CryptomatorFSKit {
                     if let Some(buffer) = handle.as_write_buffer_mut() {
                         buffer.truncate(new_size);
                         drop(handle);
-                        return Ok(self.make_file_attrs(item_id, new_size));
+                        let attrs = self.make_file_attrs(item_id, new_size);
+                        self.attr_cache.insert(item_id, attrs.clone());
+                        return Ok(attrs);
                     }
                 }
 
@@ -579,7 +600,9 @@ impl Filesystem for CryptomatorFSKit {
                 .await?
                 .map_err(|e| FsKitError::Posix(write_error_to_errno(&e)))?;
 
-                return Ok(self.make_file_attrs(item_id, new_size));
+                let attrs = self.make_file_attrs(item_id, new_size);
+                self.attr_cache.insert(item_id, attrs.clone());
+                return Ok(attrs);
             }
         }
 
@@ -590,6 +613,7 @@ impl Filesystem for CryptomatorFSKit {
     /// Reclaim an item (called when system no longer needs it).
     async fn reclaim_item(&mut self, item_id: u64) -> FsKitResult<()> {
         trace!(item_id = item_id, "reclaim_item");
+        self.attr_cache.invalidate(item_id);
         self.items.reclaim(item_id);
         Ok(())
     }
@@ -1107,6 +1131,9 @@ impl Filesystem for CryptomatorFSKit {
                     })
                     .await?
                     .map_err(|e| FsKitError::Posix(write_error_to_errno(&e)))?;
+
+                    // Invalidate cache - size has changed
+                    self.attr_cache.invalidate(item_id);
 
                     debug!(item_id = item_id, size = content_len, "WriteBuffer flushed");
                 }

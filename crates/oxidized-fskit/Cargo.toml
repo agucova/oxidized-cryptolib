@@ -17,6 +17,8 @@ path = "src/main.rs"
 [features]
 default = []
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+# Enable download/install functionality for FSKitBridge setup
+setup = ["dep:reqwest", "dep:zip", "dep:serde", "dep:tempfile"]
 
 [dependencies]
 oxidized-cryptolib = { workspace = true, features = ["async"] }
@@ -32,7 +34,10 @@ fskit-rs = { git = "https://github.com/debox-network/fskit-rs", branch = "main" 
 async-trait = "0.1"
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros", "net", "time"] }
+
+# Home directory detection
+dirs = "6"
 
 # Concurrent data structures
 dashmap = "6"
@@ -51,6 +56,12 @@ nix = { version = "0.30", features = ["fs"] }
 
 # Optional: tokio-console for async debugging
 console-subscriber = { workspace = true, optional = true }
+
+# Optional: FSKitBridge download/setup functionality
+reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
+zip = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

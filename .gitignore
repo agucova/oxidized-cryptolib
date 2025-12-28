@@ -10,3 +10,6 @@ devenv.local.nix
 fuzz/target
 fuzz/corpus
 fuzz/artifacts
+
+# act secrets (local GitHub Actions testing)
+.secrets

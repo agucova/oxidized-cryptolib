@@ -10,9 +10,9 @@
 //!
 
 #![cfg(feature = "async")]
-//! Note: Since VaultOperationsAsync contains MasterKey with RefCell (not Sync),
-//! we can't spawn it across threads. Tests use concurrent execution within a single
-//! task or LocalSet for true parallelism testing of the locking primitives.
+//! Note: MasterKey is now thread-safe (Send + Sync via RwLock), and VaultOperationsAsync
+//! can be wrapped in Arc for sharing across threads. Tests use concurrent execution
+//! and Arc-based sharing for parallelism testing of the locking primitives.
 
 #![cfg(feature = "async")]
 
@@ -26,16 +26,15 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 /// Test helper to create a vault with test content.
-async fn create_test_vault() -> (TempDir, VaultOperationsAsync) {
+async fn create_test_vault() -> (TempDir, Arc<VaultOperationsAsync>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let vault_path = temp_dir.path().join("test_vault");
 
     let creator = VaultCreator::new(&vault_path, "test_password");
     let sync_ops = creator.create().expect("Failed to create vault");
-    let master_key = sync_ops.master_key();
+    let master_key = Arc::new(sync_ops.master_key().clone());
 
-    let ops = VaultOperationsAsync::new(&vault_path, master_key)
-        .expect("Failed to create async operations");
+    let ops = VaultOperationsAsync::new(&vault_path, master_key).into_shared();
 
     (temp_dir, ops)
 }
@@ -296,15 +295,15 @@ async fn test_many_sequential_operations_no_deadlock() {
     }
 }
 
-/// Test clone_shared properly shares lock state.
+/// Test Arc-cloned ops properly shares lock state.
 #[tokio::test]
-async fn test_clone_shared_shares_locks() {
+async fn test_arc_shared_shares_locks() {
     let (_temp_dir, ops) = create_test_vault().await;
 
-    let ops1 = ops.clone_shared().expect("clone 1");
-    let ops2 = ops.clone_shared().expect("clone 2");
+    let ops1 = Arc::clone(&ops);
+    let ops2 = Arc::clone(&ops);
 
-    // Both should share the same lock manager
+    // All should share the same lock manager (they're the same Arc)
     assert!(
         Arc::ptr_eq(ops.lock_manager(), ops1.lock_manager()),
         "ops and ops1 should share lock manager"
@@ -314,7 +313,7 @@ async fn test_clone_shared_shares_locks() {
         "ops1 and ops2 should share lock manager"
     );
 
-    // Both should share the same handle table
+    // All should share the same handle table
     assert!(
         Arc::ptr_eq(ops.handle_table(), ops1.handle_table()),
         "ops and ops1 should share handle table"
@@ -522,11 +521,10 @@ async fn test_regression_global_lock_registry_sharing() {
     let sync_ops = creator.create().expect("Failed to create vault");
     let master_key = sync_ops.master_key();
 
-    // Create two INDEPENDENT instances (not via clone_shared())
-    let ops1 = VaultOperationsAsync::new(&vault_path, master_key)
-        .expect("Failed to create ops1");
-    let ops2 = VaultOperationsAsync::new(&vault_path, master_key)
-        .expect("Failed to create ops2");
+    // Create two INDEPENDENT instances (not via Arc::clone)
+    let master_key_arc = Arc::new(master_key.clone());
+    let ops1 = VaultOperationsAsync::new(&vault_path, Arc::clone(&master_key_arc));
+    let ops2 = VaultOperationsAsync::new(&vault_path, Arc::clone(&master_key_arc));
 
     // They should share the same lock manager via the global registry
     assert!(
@@ -644,8 +642,8 @@ async fn test_regression_reader_locks_block_writes() {
     // Use LocalSet for single-threaded async
     let local = tokio::task::LocalSet::new();
 
-    // Clone ops for the spawned task - need clone_shared to share resources
-    let ops_clone = ops.clone_shared().expect("clone");
+    // Clone Arc for the spawned task to share resources
+    let ops_clone = Arc::clone(&ops);
     let root_clone = root.clone();
 
     local.spawn_local(async move {
@@ -688,7 +686,7 @@ async fn test_regression_lock_ordering_no_deadlock() {
 
     // Run many mixed operations concurrently - if lock ordering is wrong, this deadlocks
     for iteration in 0..10 {
-        let ops_clone = ops.clone_shared().expect("clone");
+        let ops_clone = Arc::clone(&ops);
         let root_clone = root.clone();
 
         // Pre-compute filenames to avoid temporary lifetime issues

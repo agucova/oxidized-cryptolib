@@ -152,7 +152,8 @@ impl ItemTable {
             .path_to_id
             .entry(path.clone())
             .or_insert_with(|| {
-                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+                // Relaxed is sufficient for a monotonic counter - we only need uniqueness
+                let id = self.next_id.fetch_add(1, Ordering::Relaxed);
                 self.id_to_entry.insert(id, ItemEntry::new(path.clone(), kind));
                 id
             });

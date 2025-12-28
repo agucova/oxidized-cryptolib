@@ -172,7 +172,7 @@ impl CryptomatorFS {
 
         if let Some(buffer) = handle.as_write_buffer_mut() {
             if buffer.is_dirty() {
-                let ops = self.ops_clone().map_err(|e| e.to_errno())?;
+                let ops = self.ops_clone();
                 let dir_id = buffer.dir_id().clone();
                 let filename = buffer.filename().to_string();
 
@@ -289,7 +289,7 @@ impl CryptomatorFS {
         drop(parent_entry);
 
         // Clone ops for async use
-        let ops = self.ops_clone()?;
+        let ops = self.ops_clone();
 
         // Use list_all to fetch all entries in a single operation (parallel I/O)
         // This replaces 3 sequential block_on calls with a single one
@@ -354,7 +354,7 @@ impl CryptomatorFS {
     /// Uses `list_all` to fetch files, directories, and symlinks in a single
     /// operation with parallel I/O, replacing 3 sequential blocking calls.
     fn list_directory(&self, dir_id: &DirId) -> FuseResult<Vec<DirListingEntry>> {
-        let ops = self.ops_clone()?;
+        let ops = self.ops_clone();
 
         // Single blocking call with parallel I/O internally
         let (files, dirs, symlinks) = self.runtime.block_on(ops.list_all(dir_id))?;
@@ -536,13 +536,7 @@ impl Filesystem for CryptomatorFS {
             InodeKind::Directory { .. } => self.make_dir_attr(ino),
             InodeKind::File { dir_id, name } => {
                 // Get file size from vault
-                let ops = match self.ops_clone() {
-                    Ok(ops) => ops,
-                    Err(e) => {
-                        reply.error(e.to_errno());
-                        return;
-                    }
-                };
+                let ops = self.ops_clone();
                 let dir_id = dir_id.clone();
                 let name = name.clone();
                 drop(entry);
@@ -566,13 +560,7 @@ impl Filesystem for CryptomatorFS {
             }
             InodeKind::Symlink { dir_id, name } => {
                 // Get symlink target length
-                let ops = match self.ops_clone() {
-                    Ok(ops) => ops,
-                    Err(e) => {
-                        reply.error(e.to_errno());
-                        return;
-                    }
-                };
+                let ops = self.ops_clone();
                 let dir_id = dir_id.clone();
                 let name = name.clone();
                 drop(entry);
@@ -611,13 +599,7 @@ impl Filesystem for CryptomatorFS {
         };
         drop(entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         match self.runtime.block_on(ops.read_symlink(&dir_id, &name)) {
             Ok(target) => {
@@ -674,13 +656,7 @@ impl Filesystem for CryptomatorFS {
         };
         drop(entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Check if opening for write
         let is_write = (flags & libc::O_ACCMODE) != libc::O_RDONLY;
@@ -811,14 +787,7 @@ impl Filesystem for CryptomatorFS {
             FuseHandle::WriteBuffer(buffer) => {
                 // Write buffer back to vault if dirty
                 if buffer.is_dirty() {
-                    let ops = match self.ops_clone() {
-                        Ok(ops) => ops,
-                        Err(e) => {
-                            error!(error = %e, "Failed to clone ops for write-back");
-                            reply.error(libc::EIO);
-                            return;
-                        }
-                    };
+                    let ops = self.ops_clone();
 
                     let dir_id = buffer.dir_id().clone();
                     let filename = buffer.filename().to_string();
@@ -1046,13 +1015,7 @@ impl Filesystem for CryptomatorFS {
 
         // We need to list directory contents with file sizes for readdirplus
         // Use list_all to fetch all entries in a single operation with parallel I/O
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Single blocking call with parallel I/O internally
         let (files, dirs, symlinks) = match self.runtime.block_on(ops.list_all(&dir_id)) {
@@ -1313,13 +1276,7 @@ impl Filesystem for CryptomatorFS {
                     }
 
                     // No open handle - read file, truncate, write back
-                    let ops = match self.ops_clone() {
-                        Ok(ops) => ops,
-                        Err(e) => {
-                            reply.error(e.to_errno());
-                            return;
-                        }
-                    };
+                    let ops = self.ops_clone();
 
                     // Read existing content (or empty if file doesn't exist)
                     let mut content = match self.runtime.block_on(ops.read_file(&dir_id, &name)) {
@@ -1331,13 +1288,7 @@ impl Filesystem for CryptomatorFS {
                     content.resize(new_size as usize, 0);
 
                     // Write back
-                    let ops = match self.ops_clone() {
-                        Ok(ops) => ops,
-                        Err(e) => {
-                            reply.error(e.to_errno());
-                            return;
-                        }
-                    };
+                    let ops = self.ops_clone();
 
                     match self.runtime.block_on(ops.write_file(&dir_id, &name, &content)) {
                         Ok(_) => {
@@ -1381,13 +1332,7 @@ impl Filesystem for CryptomatorFS {
                         let name = name.clone();
                         drop(entry);
 
-                        let ops = match self.ops_clone() {
-                            Ok(ops) => ops,
-                            Err(e) => {
-                                reply.error(e.to_errno());
-                                return;
-                            }
-                        };
+                        let ops = self.ops_clone();
 
                         // Cache miss - fall back to list_files
                         match self.runtime.block_on(ops.list_files(&dir_id)) {
@@ -1416,13 +1361,7 @@ impl Filesystem for CryptomatorFS {
                         let name = name.clone();
                         drop(entry);
 
-                        let ops = match self.ops_clone() {
-                            Ok(ops) => ops,
-                            Err(e) => {
-                                reply.error(e.to_errno());
-                                return;
-                            }
-                        };
+                        let ops = self.ops_clone();
 
                         // Cache miss - fall back to read_symlink
                         match self.runtime.block_on(ops.read_symlink(&dir_id, &name)) {
@@ -1658,13 +1597,7 @@ impl Filesystem for CryptomatorFS {
         let parent_path = parent_entry.path.clone();
         drop(parent_entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Create directory
         match self
@@ -1740,13 +1673,7 @@ impl Filesystem for CryptomatorFS {
         let parent_path = parent_entry.path.clone();
         drop(parent_entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Try to delete as file first
         match self.runtime.block_on(ops.delete_file(&dir_id, name_str)) {
@@ -1759,13 +1686,7 @@ impl Filesystem for CryptomatorFS {
             }
             Err(_) => {
                 // Try as symlink
-                let ops = match self.ops_clone() {
-                    Ok(ops) => ops,
-                    Err(e) => {
-                        reply.error(e.to_errno());
-                        return;
-                    }
-                };
+                let ops = self.ops_clone();
 
                 match self.runtime.block_on(ops.delete_symlink(&dir_id, name_str)) {
                     Ok(()) => {
@@ -1825,13 +1746,7 @@ impl Filesystem for CryptomatorFS {
         let parent_path = parent_entry.path.clone();
         drop(parent_entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Delete directory
         match self
@@ -1896,13 +1811,7 @@ impl Filesystem for CryptomatorFS {
         let parent_path = parent_entry.path.clone();
         drop(parent_entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Create symlink
         match self
@@ -2033,13 +1942,7 @@ impl Filesystem for CryptomatorFS {
         let dest_parent_path = newparent_entry.path.clone();
         drop(newparent_entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Handle rename flags
         #[cfg(target_os = "linux")]
@@ -2180,13 +2083,7 @@ impl Filesystem for CryptomatorFS {
         }
 
         // No open handle - read file, extend if needed, write back
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        let ops = self.ops_clone();
 
         // Read existing content
         let mut content = match self.runtime.block_on(ops.read_file(&dir_id, &name)) {
@@ -2199,13 +2096,7 @@ impl Filesystem for CryptomatorFS {
             content.resize(new_size as usize, 0);
 
             // Write back
-            let ops = match self.ops_clone() {
-                Ok(ops) => ops,
-                Err(e) => {
-                    reply.error(e.to_errno());
-                    return;
-                }
-            };
+            let ops = self.ops_clone();
 
             match self.runtime.block_on(ops.write_file(&dir_id, &name, &content)) {
                 Ok(_) => {
@@ -2340,13 +2231,7 @@ impl Filesystem for CryptomatorFS {
                         }
                     } else {
                         // Fall back to listing files
-                        let ops = match self.ops_clone() {
-                            Ok(ops) => ops,
-                            Err(e) => {
-                                reply.error(e.to_errno());
-                                return;
-                            }
-                        };
+                        let ops = self.ops_clone();
 
                         match self.runtime.block_on(ops.list_files(&dir_id)) {
                             Ok(files) => files

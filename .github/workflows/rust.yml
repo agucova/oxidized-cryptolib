@@ -190,11 +190,29 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/debox-network/FSKitBridge.git /tmp/FSKitBridge
           cd /tmp/FSKitBridge
-          xcodebuild -scheme FSKitBridge -configuration Release -derivedDataPath build
+          xcodebuild -scheme FSKitBridge -configuration Release -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO
           # Install to Applications
           cp -R build/Build/Products/Release/FSKitBridge.app /Applications/
           # Remove quarantine
           xattr -cr /Applications/FSKitBridge.app
+      - name: Register FSKitBridge extension
+        run: |
+          # Run the app once to register with PlugInKit
+          open -a /Applications/FSKitBridge.app
+          sleep 2
+          # Register the extension explicitly
+          APPEX_PATH="/Applications/FSKitBridge.app/Contents/Extensions/FSKitExt.appex"
+          if [ -d "$APPEX_PATH" ]; then
+            pluginkit -a "$APPEX_PATH" || echo "pluginkit -a failed (may need signing)"
+            # Try to enable the extension
+            BUNDLE_ID=$(defaults read "$APPEX_PATH/Contents/Info.plist" CFBundleIdentifier 2>/dev/null || echo "")
+            if [ -n "$BUNDLE_ID" ]; then
+              pluginkit -e use -i "$BUNDLE_ID" || echo "pluginkit -e failed (expected in CI)"
+            fi
+          fi
+          # List registered extensions for debugging
+          pluginkit -m -v | grep -i fskit || echo "No FSKit extensions found"
       - name: Build oxidized-fskit
         run: cargo build -p oxidized-fskit --verbose
       - name: Run oxidized-fskit unit tests

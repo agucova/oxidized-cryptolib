@@ -12,22 +12,24 @@
 //!
 //! # Backend Selection
 //!
-//! Applications can use [`BackendType`] to let users choose their preferred
-//! backend, with automatic fallback to available alternatives.
+//! Applications can use [`BackendType`] to specify a preferred backend,
+//! or use [`first_available_backend()`] to pick the first available one
+//! from an ordered list.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use oxidized_cryptolib::mount::{MountBackend, BackendType};
+//! use oxidized_cryptolib::mount::{MountBackend, first_available_backend};
 //!
-//! // Get the appropriate backend for the platform
-//! let backend = get_backend(BackendType::Auto);
+//! // Build backends in order of preference
+//! let backends: Vec<Box<dyn MountBackend>> = vec![/* ... */];
 //!
-//! if backend.is_available() {
-//!     let handle = backend.mount("my-vault", vault_path, password, mountpoint)?;
-//!     // ... use the mounted filesystem ...
-//!     handle.unmount()?;
-//! }
+//! // Get the first available backend
+//! let backend = first_available_backend(&backends)?;
+//!
+//! let handle = backend.mount("my-vault", vault_path, password, mountpoint)?;
+//! // ... use the mounted filesystem ...
+//! handle.unmount()?;
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -163,9 +165,7 @@ pub trait MountBackend: Send + Sync {
 
 /// Available backend types for vault mounting
 ///
-/// This enum is used for configuration and preferences. Applications can
-/// store the user's preferred backend and use [`BackendType::Auto`] for
-/// automatic selection.
+/// This enum is used for configuration and preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendType {
@@ -186,14 +186,6 @@ pub enum BackendType {
     /// - Better system integration
     /// - Survives sleep/wake cycles more reliably
     FSKit,
-
-    /// Automatically select the best available backend
-    ///
-    /// Selection priority:
-    /// 1. FSKit (if available on macOS 15.4+)
-    /// 2. FUSE (if installed)
-    /// 3. Error if nothing available
-    Auto,
 }
 
 impl BackendType {
@@ -202,7 +194,6 @@ impl BackendType {
         match self {
             BackendType::Fuse => "FUSE",
             BackendType::FSKit => "FSKit",
-            BackendType::Auto => "Automatic",
         }
     }
 
@@ -211,12 +202,11 @@ impl BackendType {
         match self {
             BackendType::Fuse => "Uses macFUSE (macOS) or libfuse (Linux) for filesystem mounting",
             BackendType::FSKit => "Uses Apple's native FSKit framework (macOS 15.4+)",
-            BackendType::Auto => "Automatically selects the best available backend",
         }
     }
 
-    /// Get all backend types (excluding Auto)
-    pub fn all_backends() -> &'static [BackendType] {
+    /// Get all backend types
+    pub fn all() -> &'static [BackendType] {
         &[BackendType::Fuse, BackendType::FSKit]
     }
 }
@@ -225,6 +215,97 @@ impl std::fmt::Display for BackendType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_name())
     }
+}
+
+/// Serializable information about a backend's availability
+///
+/// This struct provides a snapshot of a backend's status that can be
+/// serialized for configuration or display purposes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BackendInfo {
+    /// Backend identifier (e.g., "fuse", "fskit")
+    pub id: String,
+    /// Human-readable name (e.g., "FUSE", "FSKit")
+    pub name: String,
+    /// Whether the backend is available on this system
+    pub available: bool,
+    /// Why the backend is unavailable, if applicable
+    pub unavailable_reason: Option<String>,
+}
+
+/// Select a specific backend by type from a list
+///
+/// Returns an error if the requested backend is not available.
+///
+/// # Arguments
+///
+/// * `backends` - List of available backend implementations
+/// * `backend_type` - The type of backend to select
+pub fn select_backend<'a>(
+    backends: &'a [Box<dyn MountBackend>],
+    backend_type: BackendType,
+) -> Result<&'a dyn MountBackend, MountError> {
+    let id = match backend_type {
+        BackendType::Fuse => "fuse",
+        BackendType::FSKit => "fskit",
+    };
+
+    backends
+        .iter()
+        .find(|b| b.id() == id)
+        .map(|b| b.as_ref())
+        .filter(|b| b.is_available())
+        .ok_or_else(|| {
+            let reason = backends
+                .iter()
+                .find(|b| b.id() == id)
+                .and_then(|b| b.unavailable_reason())
+                .unwrap_or_else(|| "Backend not found".to_string());
+            MountError::BackendUnavailable(reason)
+        })
+}
+
+/// Get the first available backend from an ordered list
+///
+/// The caller controls priority by ordering the backends list.
+/// Returns an error if no backend is available.
+///
+/// # Arguments
+///
+/// * `backends` - List of backend implementations, ordered by preference
+pub fn first_available_backend(
+    backends: &[Box<dyn MountBackend>],
+) -> Result<&dyn MountBackend, MountError> {
+    backends
+        .iter()
+        .find(|b| b.is_available())
+        .map(|b| b.as_ref())
+        .ok_or_else(|| {
+            let reasons: Vec<String> = backends
+                .iter()
+                .filter_map(|b| b.unavailable_reason())
+                .collect();
+            MountError::BackendUnavailable(if reasons.is_empty() {
+                "No backends available".to_string()
+            } else {
+                reasons.join("; ")
+            })
+        })
+}
+
+/// Get information about all backends in a list
+///
+/// Returns a serializable snapshot of each backend's availability status.
+pub fn list_backend_info(backends: &[Box<dyn MountBackend>]) -> Vec<BackendInfo> {
+    backends
+        .iter()
+        .map(|b| BackendInfo {
+            id: b.id().to_string(),
+            name: b.name().to_string(),
+            available: b.is_available(),
+            unavailable_reason: b.unavailable_reason(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -240,10 +321,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&BackendType::FSKit).unwrap(),
             "\"fskit\""
-        );
-        assert_eq!(
-            serde_json::to_string(&BackendType::Auto).unwrap(),
-            "\"auto\""
         );
     }
 

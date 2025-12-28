@@ -14,6 +14,7 @@ use common::vault_builder::VaultBuilder;
 use oxidized_cryptolib::vault::{DirId, VaultOperations, VaultOperationsAsync};
 use oxidized_cryptolib::vault::config::extract_master_key;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn test_vault_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -36,8 +37,7 @@ async fn test_async_list_files_root() {
     let vault_path = test_vault_path();
     let master_key = get_test_master_key();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let files = ops.list_files(&DirId::root()).await
         .expect("Failed to list files");
@@ -51,8 +51,7 @@ async fn test_async_list_directories_root() {
     let vault_path = test_vault_path();
     let master_key = get_test_master_key();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let dirs = ops.list_directories(&DirId::root()).await
         .expect("Failed to list directories");
@@ -85,8 +84,7 @@ async fn test_async_from_sync() {
 #[tokio::test]
 async fn test_async_write_read_roundtrip_basic() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let content = b"Hello, async Cryptomator!";
 
@@ -104,8 +102,7 @@ async fn test_async_write_read_roundtrip_basic() {
 #[tokio::test]
 async fn test_async_write_read_empty_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write empty file
     ops.write_file(&DirId::root(), "empty.txt", b"").await
@@ -121,8 +118,7 @@ async fn test_async_write_read_empty_file() {
 #[tokio::test]
 async fn test_async_write_read_large_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create content larger than one chunk (32KB = 32768 bytes)
     let content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
@@ -139,8 +135,7 @@ async fn test_async_write_read_large_file() {
 #[tokio::test]
 async fn test_async_write_read_binary_content() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // All possible byte values
     let content: Vec<u8> = (0..=255).collect();
@@ -157,8 +152,7 @@ async fn test_async_write_read_binary_content() {
 #[tokio::test]
 async fn test_async_write_read_unicode_filename() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let content = b"Unicode content";
     let filename = "файл-测试-🔐.txt";
@@ -175,8 +169,7 @@ async fn test_async_write_read_unicode_filename() {
 #[tokio::test]
 async fn test_async_write_read_long_filename() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create filename longer than shortening threshold (220 chars when encrypted)
     let filename = format!("{}.txt", "a".repeat(200));
@@ -194,8 +187,7 @@ async fn test_async_write_read_long_filename() {
 #[tokio::test]
 async fn test_async_overwrite_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write initial content
     ops.write_file(&DirId::root(), "overwrite.txt", b"Initial content").await
@@ -221,8 +213,7 @@ async fn test_async_overwrite_file() {
 #[tokio::test]
 async fn test_safe_write_new_file_no_temp_files_left() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write a new file
     ops.write_file(&DirId::root(), "newfile.txt", b"new content").await
@@ -245,8 +236,7 @@ async fn test_safe_write_overwrite_no_temp_files_left() {
         .add_file("existing.txt", b"original content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Overwrite the existing file
     ops.write_file(&DirId::root(), "existing.txt", b"updated content").await
@@ -271,8 +261,7 @@ async fn test_safe_write_overwrite_no_temp_files_left() {
 #[tokio::test]
 async fn test_safe_write_multiple_overwrites() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // First write (new file - direct write)
     ops.write_file(&DirId::root(), "multi.txt", b"version 1").await
@@ -308,8 +297,7 @@ async fn test_safe_write_multiple_overwrites() {
 #[tokio::test]
 async fn test_safe_write_overwrite_with_larger_content() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write small file
     ops.write_file(&DirId::root(), "grow.txt", b"small").await
@@ -328,8 +316,7 @@ async fn test_safe_write_overwrite_with_larger_content() {
 #[tokio::test]
 async fn test_safe_write_overwrite_with_smaller_content() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write large file (multi-chunk)
     let large_content: Vec<u8> = (0..50_000).map(|i| (i % 256) as u8).collect();
@@ -348,8 +335,7 @@ async fn test_safe_write_overwrite_with_smaller_content() {
 #[tokio::test]
 async fn test_safe_write_overwrite_with_same_content() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let content = b"identical content";
 
@@ -369,8 +355,7 @@ async fn test_safe_write_overwrite_with_same_content() {
 #[tokio::test]
 async fn test_safe_write_overwrite_empty_to_content() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write empty file
     ops.write_file(&DirId::root(), "empty_to_full.txt", b"").await
@@ -388,8 +373,7 @@ async fn test_safe_write_overwrite_empty_to_content() {
 #[tokio::test]
 async fn test_safe_write_overwrite_content_to_empty() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write file with content
     ops.write_file(&DirId::root(), "full_to_empty.txt", b"has content").await
@@ -407,8 +391,7 @@ async fn test_safe_write_overwrite_content_to_empty() {
 #[tokio::test]
 async fn test_safe_write_long_filename_overwrite() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Long filename that triggers .c9s shortening
     let long_name = format!("{}.txt", "a".repeat(200));
@@ -448,8 +431,7 @@ async fn test_sync_write_async_read() {
         .expect("Failed to sync write");
 
     // Read with async API
-    let async_ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
     let decrypted = async_ops.read_file(&DirId::root(), "sync_written.txt").await
         .expect("Failed to async read");
 
@@ -461,8 +443,7 @@ async fn test_async_write_sync_read() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
     // Write with async API
-    let async_ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key.clone()));
     let content = b"Written by async, read by sync";
     async_ops.write_file(&DirId::root(), "async_written.txt", content).await
         .expect("Failed to async write");
@@ -484,8 +465,7 @@ async fn test_sync_async_list_files_consistency() {
         .build();
 
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    let async_ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let sync_files = sync_ops.list_files(&DirId::root())
         .expect("Failed to sync list files");
@@ -513,8 +493,7 @@ async fn test_concurrent_reads() {
         .add_file("file3.txt", b"content three")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Store DirId to avoid temporary value issues
     let root = DirId::root();
@@ -534,8 +513,7 @@ async fn test_concurrent_reads() {
 #[tokio::test]
 async fn test_concurrent_writes_different_files() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -572,8 +550,7 @@ async fn test_concurrent_list_operations() {
         .add_directory("subdir")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -596,8 +573,7 @@ async fn test_concurrent_read_write_different_files() {
         .add_file("existing.txt", b"existing content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -626,8 +602,7 @@ async fn test_many_sequential_reads() {
         .add_file("shared.txt", b"shared content for many readers")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -644,8 +619,7 @@ async fn test_many_sequential_reads() {
 #[tokio::test]
 async fn test_async_read_nonexistent_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.read_file(&DirId::root(), "does_not_exist.txt").await;
     assert!(result.is_err());
@@ -654,8 +628,7 @@ async fn test_async_read_nonexistent_file() {
 #[tokio::test]
 async fn test_async_read_from_nonexistent_directory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let fake_dir = DirId::from_raw("nonexistent-directory-id");
     let result = ops.read_file(&fake_dir, "file.txt").await;
@@ -665,8 +638,7 @@ async fn test_async_read_from_nonexistent_directory() {
 #[tokio::test]
 async fn test_async_list_files_nonexistent_directory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Note: list_files for a nonexistent directory returns empty list
     // (directory storage path doesn't exist, so no entries are found)
@@ -684,8 +656,7 @@ async fn test_async_list_files_nonexistent_directory() {
 #[tokio::test]
 async fn test_async_write_read_exactly_one_chunk() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Exactly 32KB (one chunk boundary)
     let content: Vec<u8> = (0..32768).map(|i| (i % 256) as u8).collect();
@@ -702,8 +673,7 @@ async fn test_async_write_read_exactly_one_chunk() {
 #[tokio::test]
 async fn test_async_write_read_chunk_boundary_plus_one() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // 32KB + 1 byte (crosses chunk boundary)
     let content: Vec<u8> = (0..32769).map(|i| (i % 256) as u8).collect();
@@ -720,8 +690,7 @@ async fn test_async_write_read_chunk_boundary_plus_one() {
 #[tokio::test]
 async fn test_async_multiple_files_same_directory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write multiple files
     for i in 0..10 {
@@ -749,8 +718,7 @@ async fn test_async_multiple_files_same_directory() {
 #[tokio::test]
 async fn test_async_special_characters_in_filename() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let special_names = [
         "file with spaces.txt",
@@ -780,8 +748,7 @@ async fn test_async_resolve_path_root_file() {
         .add_file("readme.txt", b"Hello from root")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // resolve_path returns (DirId, is_directory)
     let (dir_id, is_directory) = ops.resolve_path("readme.txt").await
@@ -797,8 +764,7 @@ async fn test_async_resolve_path_nested_file() {
         .add_directory("docs")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get the docs directory ID
     let dirs = ops.list_directories(&DirId::root()).await
@@ -823,8 +789,7 @@ async fn test_async_resolve_path_directory() {
         .add_directory("docs")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
     let docs_dir = dirs.iter().find(|d| d.name == "docs").unwrap();
@@ -843,8 +808,7 @@ async fn test_async_resolve_path_deeply_nested() {
         .add_directory("level1")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get level1 dir
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -873,8 +837,7 @@ async fn test_async_resolve_path_deeply_nested() {
 #[tokio::test]
 async fn test_async_resolve_path_nonexistent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.resolve_path("nonexistent/path/file.txt").await;
     assert!(result.is_err());
@@ -886,8 +849,7 @@ async fn test_async_read_by_path() {
         .add_directory("docs")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get docs directory and write a file
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -907,8 +869,7 @@ async fn test_async_read_by_path_root_file() {
         .add_file("root_file.txt", b"root content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let content = ops.read_by_path("root_file.txt").await
         .expect("Failed to read root file by path");
@@ -922,8 +883,7 @@ async fn test_async_write_by_path() {
         .add_directory("output")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write by path
     ops.write_by_path("output/result.txt", b"computed result").await
@@ -939,8 +899,7 @@ async fn test_async_write_by_path() {
 #[tokio::test]
 async fn test_async_write_by_path_root() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     ops.write_by_path("new_root_file.txt", b"new content").await
         .expect("Failed to write to root by path");
@@ -957,8 +916,7 @@ async fn test_async_write_by_path_overwrite() {
         .add_file("existing.txt", b"original")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     ops.write_by_path("existing.txt", b"updated").await
         .expect("Failed to overwrite by path");
@@ -974,8 +932,7 @@ async fn test_async_write_by_path_overwrite() {
 #[tokio::test]
 async fn test_async_create_directory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create a new directory
     let new_dir_id = ops.create_directory(&DirId::root(), "new_folder").await
@@ -996,8 +953,7 @@ async fn test_async_create_nested_directory() {
         .add_directory("parent")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get parent directory
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1019,8 +975,7 @@ async fn test_async_create_nested_directory() {
 #[tokio::test]
 async fn test_async_create_directory_with_unicode_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let unicode_name = "文件夹-📁-папка";
     let dir_id = ops.create_directory(&DirId::root(), unicode_name).await
@@ -1035,8 +990,7 @@ async fn test_async_create_directory_with_unicode_name() {
 #[tokio::test]
 async fn test_async_create_directory_long_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Long name that triggers .c9s shortening
     let long_name = "a".repeat(200);
@@ -1052,8 +1006,7 @@ async fn test_async_create_directory_long_name() {
 #[tokio::test]
 async fn test_async_delete_directory_empty() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create directory
     ops.create_directory(&DirId::root(), "to_delete").await
@@ -1075,8 +1028,7 @@ async fn test_async_delete_directory_empty() {
 #[tokio::test]
 async fn test_async_delete_directory_long_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let long_name = "b".repeat(200);
 
@@ -1098,8 +1050,7 @@ async fn test_async_delete_file() {
         .add_file("to_delete.txt", b"delete me")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Verify file exists
     let files = ops.list_files(&DirId::root()).await.unwrap();
@@ -1117,8 +1068,7 @@ async fn test_async_delete_file() {
 #[tokio::test]
 async fn test_async_delete_file_long_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let long_name = format!("{}.txt", "c".repeat(200));
 
@@ -1138,8 +1088,7 @@ async fn test_async_delete_file_in_subdirectory() {
         .add_directory("subdir")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get subdir
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1157,8 +1106,7 @@ async fn test_async_delete_file_in_subdirectory() {
 #[tokio::test]
 async fn test_async_delete_nonexistent_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.delete_file(&DirId::root(), "nonexistent.txt").await;
     assert!(result.is_err());
@@ -1172,8 +1120,7 @@ async fn test_async_rename_file() {
         .add_file("original.txt", b"content to rename")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     ops.rename_file(&DirId::root(), "original.txt", "renamed.txt").await
         .expect("Failed to rename file");
@@ -1194,8 +1141,7 @@ async fn test_async_rename_file_unicode() {
         .add_file("file.txt", b"unicode rename test")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let unicode_name = "файл-测试-🔐.txt";
     ops.rename_file(&DirId::root(), "file.txt", unicode_name).await
@@ -1214,8 +1160,7 @@ async fn test_async_rename_file_to_long_name() {
         .add_file("short.txt", b"will have long name")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let long_name = format!("{}.txt", "d".repeat(200));
     ops.rename_file(&DirId::root(), "short.txt", &long_name).await
@@ -1231,8 +1176,7 @@ async fn test_async_rename_file_to_long_name() {
 #[tokio::test]
 async fn test_async_rename_file_from_long_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let long_name = format!("{}.txt", "e".repeat(200));
     ops.write_file(&DirId::root(), &long_name, b"from long name").await.unwrap();
@@ -1258,8 +1202,7 @@ async fn test_async_move_file_to_subdirectory() {
         .add_directory("destination")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get destination dir
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1288,8 +1231,7 @@ async fn test_async_move_file_to_root() {
         .add_directory("source")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get source dir
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1318,8 +1260,7 @@ async fn test_async_move_file_preserves_name() {
         .add_directory("target")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
     let target = dirs.iter().find(|d| d.name == "target").unwrap();
@@ -1345,8 +1286,7 @@ async fn test_async_move_file_with_long_name() {
         .add_directory("dest")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Long filename that triggers .c9s shortening
     let long_name = format!("{}.txt", "f".repeat(200));
@@ -1373,8 +1313,7 @@ async fn test_async_move_large_file() {
         .add_directory("archive")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create large file (multi-chunk)
     let large_content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
@@ -1396,8 +1335,7 @@ async fn test_async_move_large_file() {
 #[tokio::test]
 async fn test_async_create_write_read_delete_flow() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create directory
     let project_id = ops.create_directory(&DirId::root(), "project").await
@@ -1430,8 +1368,7 @@ async fn test_async_path_api_full_workflow() {
         .add_directory("workspace")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get workspace dir
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1460,8 +1397,7 @@ async fn test_async_path_api_full_workflow() {
 #[tokio::test]
 async fn test_async_concurrent_directory_operations() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -1489,8 +1425,7 @@ async fn test_async_rename_file_same_name() {
         .add_file("test.txt", b"content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to rename file to itself - should fail
     let result = ops.rename_file(&DirId::root(), "test.txt", "test.txt").await;
@@ -1509,8 +1444,7 @@ async fn test_async_move_file_same_directory() {
         .add_file("test.txt", b"content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to move file to same directory - should fail
     let result = ops.move_file(&DirId::root(), "test.txt", &DirId::root()).await;
@@ -1529,8 +1463,7 @@ async fn test_async_rename_file_target_exists() {
         .add_file("target.txt", b"target content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to rename source.txt to target.txt which already exists
     let result = ops.rename_file(&DirId::root(), "source.txt", "target.txt").await;
@@ -1555,8 +1488,7 @@ async fn test_async_move_file_target_exists() {
         .add_directory("dest")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get dest dir and write a file with same name there
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1580,8 +1512,7 @@ async fn test_async_delete_directory_not_empty_files() {
         .add_directory("nonempty")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get the nonempty dir and add a file
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1605,8 +1536,7 @@ async fn test_async_delete_directory_not_empty_subdirs() {
         .add_directory("parent")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Get parent dir and create subdirectory
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1623,8 +1553,7 @@ async fn test_async_delete_directory_not_empty_subdirs() {
 async fn test_async_delete_nonexistent_directory() {
     // Test DirectoryNotFound error for delete_directory
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.delete_directory(&DirId::root(), "nonexistent").await;
     assert!(result.is_err(), "Deleting nonexistent directory should fail");
@@ -1638,8 +1567,7 @@ async fn test_async_delete_nonexistent_directory() {
 async fn test_async_rename_nonexistent_file() {
     // Test FileNotFound error for rename_file
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.rename_file(&DirId::root(), "nonexistent.txt", "newname.txt").await;
     assert!(result.is_err(), "Renaming nonexistent file should fail");
@@ -1656,8 +1584,7 @@ async fn test_async_move_nonexistent_file() {
         .add_directory("dest")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
     let dest = dirs.iter().find(|d| d.name == "dest").unwrap();
@@ -1669,16 +1596,15 @@ async fn test_async_move_nonexistent_file() {
 // ==================== Clone Shared Tests ====================
 
 #[tokio::test]
-async fn test_async_clone_shared() {
+async fn test_async_into_shared() {
     let (vault_path, master_key) = VaultBuilder::new()
         .add_file("test.txt", b"shared content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key)).into_shared();
 
-    // Clone the ops instance
-    let ops_clone = ops.clone_shared().expect("Failed to clone shared");
+    // Clone the Arc to get another reference
+    let ops_clone = Arc::clone(&ops);
 
     // Both instances should be able to read the same file
     let content1 = ops.read_file(&DirId::root(), "test.txt").await.unwrap();
@@ -1689,15 +1615,14 @@ async fn test_async_clone_shared() {
 }
 
 #[tokio::test]
-async fn test_async_clone_shared_concurrent_reads() {
+async fn test_async_arc_shared_concurrent_reads() {
     let (vault_path, master_key) = VaultBuilder::new()
         .add_file("file1.txt", b"content1")
         .add_file("file2.txt", b"content2")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
-    let ops_clone = ops.clone_shared().expect("Failed to clone shared");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key)).into_shared();
+    let ops_clone = Arc::clone(&ops);
 
     let root = DirId::root();
 
@@ -1712,12 +1637,11 @@ async fn test_async_clone_shared_concurrent_reads() {
 }
 
 #[tokio::test]
-async fn test_async_clone_shared_write_visibility() {
+async fn test_async_arc_shared_write_visibility() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
-    let ops_clone = ops.clone_shared().expect("Failed to clone shared");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key)).into_shared();
+    let ops_clone = Arc::clone(&ops);
 
     // Write with original
     ops.write_file(&DirId::root(), "new.txt", b"new content").await.unwrap();
@@ -1734,8 +1658,7 @@ async fn test_async_with_shortening_threshold() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
     // Create with custom shortening threshold
-    let ops = VaultOperationsAsync::with_shortening_threshold(&vault_path, &master_key, 100)
-        .expect("Failed to create async ops with custom threshold");
+    let ops = VaultOperationsAsync::with_shortening_threshold(&vault_path, Arc::new(master_key), 100);
 
     assert_eq!(ops.shortening_threshold(), 100);
 
@@ -1756,10 +1679,10 @@ async fn test_async_with_options_siv_gcm() {
 
     let ops = VaultOperationsAsync::with_options(
         &vault_path,
-        &master_key,
+        Arc::new(master_key),
         220,
         CipherCombo::SivGcm,
-    ).expect("Failed to create async ops with options");
+    );
 
     assert_eq!(ops.cipher_combo(), CipherCombo::SivGcm);
     assert_eq!(ops.shortening_threshold(), 220);
@@ -1774,8 +1697,7 @@ async fn test_async_with_options_siv_gcm() {
 async fn test_async_accessor_methods() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Test accessor methods
     assert_eq!(ops.vault_path(), vault_path);
@@ -1791,8 +1713,7 @@ async fn test_async_accessor_methods() {
 #[tokio::test]
 async fn test_async_resolve_empty_path() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Empty path should resolve to root directory
     let (dir_id, is_dir) = ops.resolve_path("").await.expect("Failed to resolve empty path");
@@ -1803,8 +1724,7 @@ async fn test_async_resolve_empty_path() {
 #[tokio::test]
 async fn test_async_resolve_path_slash_only() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Single slash should resolve to root
     let (dir_id, is_dir) = ops.resolve_path("/").await.expect("Failed to resolve /");
@@ -1818,8 +1738,7 @@ async fn test_async_resolve_path_multiple_slashes() {
         .add_directory("dir")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Multiple slashes should be handled (empty components filtered)
     let result = ops.resolve_path("//dir//").await;
@@ -1831,8 +1750,7 @@ async fn test_async_resolve_path_multiple_slashes() {
 #[tokio::test]
 async fn test_async_resolve_parent_path_empty() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Empty path should return error
     let result = ops.resolve_parent_path("").await;
@@ -1845,8 +1763,7 @@ async fn test_async_resolve_parent_path_not_a_directory() {
         .add_file("file.txt", b"content")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to resolve path where parent is a file (not a directory)
     let result = ops.resolve_parent_path("file.txt/child.txt").await;
@@ -1856,8 +1773,7 @@ async fn test_async_resolve_parent_path_not_a_directory() {
 #[tokio::test]
 async fn test_async_read_by_path_nonexistent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.read_by_path("nonexistent/path/file.txt").await;
     assert!(result.is_err());
@@ -1866,8 +1782,7 @@ async fn test_async_read_by_path_nonexistent() {
 #[tokio::test]
 async fn test_async_write_by_path_nonexistent_parent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write to path where parent directory doesn't exist
     let result = ops.write_by_path("nonexistent/file.txt", b"content").await;
@@ -1882,8 +1797,7 @@ async fn test_async_open_file_streaming() {
         .add_file("stream.txt", b"streaming content here")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let reader = ops.open_file(&DirId::root(), "stream.txt").await
         .expect("Failed to open file for streaming");
@@ -1897,8 +1811,7 @@ async fn test_async_open_file_streaming_read_all() {
         .add_file("stream.txt", b"streaming content here")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let mut reader = ops.open_file(&DirId::root(), "stream.txt").await
         .expect("Failed to open file for streaming");
@@ -1917,8 +1830,7 @@ async fn test_async_open_file_streaming_partial_read() {
         .add_file("partial.txt", content)
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let mut reader = ops.open_file(&DirId::root(), "partial.txt").await
         .expect("Failed to open file for streaming");
@@ -1933,8 +1845,7 @@ async fn test_async_open_file_streaming_partial_read() {
 #[tokio::test]
 async fn test_async_open_file_nonexistent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.open_file(&DirId::root(), "nonexistent.txt").await;
     assert!(result.is_err(), "Opening nonexistent file should fail");
@@ -1946,8 +1857,7 @@ async fn test_async_open_by_path() {
         .add_directory("docs")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write a file first
     let dirs = ops.list_directories(&DirId::root()).await.unwrap();
@@ -1964,8 +1874,7 @@ async fn test_async_open_by_path() {
 #[tokio::test]
 async fn test_async_open_by_path_nonexistent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.open_by_path("nonexistent/file.txt").await;
     assert!(result.is_err());
@@ -1974,8 +1883,7 @@ async fn test_async_open_by_path_nonexistent() {
 #[tokio::test]
 async fn test_async_create_file_streaming() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let mut writer = ops.create_file(&DirId::root(), "streamed.txt").await
         .expect("Failed to create file for streaming");
@@ -1993,8 +1901,7 @@ async fn test_async_create_file_streaming() {
 #[tokio::test]
 async fn test_async_create_file_streaming_large() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let mut writer = ops.create_file(&DirId::root(), "large_stream.bin").await
         .expect("Failed to create file for streaming");
@@ -2015,8 +1922,7 @@ async fn test_async_create_file_streaming_large() {
 #[tokio::test]
 async fn test_async_create_file_streaming_abort() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let mut writer = ops.create_file(&DirId::root(), "aborted.txt").await
         .expect("Failed to create file for streaming");
@@ -2036,8 +1942,7 @@ async fn test_async_create_by_path() {
         .add_directory("output")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let mut writer = ops.create_by_path("output/result.txt").await
         .expect("Failed to create by path");
@@ -2053,8 +1958,7 @@ async fn test_async_create_by_path() {
 #[tokio::test]
 async fn test_async_create_by_path_nonexistent_parent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let result = ops.create_by_path("nonexistent/file.txt").await;
     assert!(result.is_err(), "Creating in nonexistent parent should fail");
@@ -2063,8 +1967,7 @@ async fn test_async_create_by_path_nonexistent_parent() {
 #[tokio::test]
 async fn test_async_create_file_long_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let long_name = format!("{}.txt", "z".repeat(200));
 
@@ -2084,8 +1987,7 @@ async fn test_async_create_file_long_name() {
 #[tokio::test]
 async fn test_async_streaming_multi_chunk_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create a file larger than 2 chunks (64KB+)
     let large_content: Vec<u8> = (0..70_000).map(|i| (i % 256) as u8).collect();
@@ -2116,8 +2018,7 @@ async fn test_async_streaming_empty_file() {
         .add_file("empty_stream.txt", b"")
         .build();
 
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let reader = ops.open_file(&DirId::root(), "empty_stream.txt").await
         .expect("Failed to open empty file");
@@ -2131,8 +2032,7 @@ async fn test_async_streaming_empty_file() {
 async fn test_async_concurrent_write_same_file() {
     // This tests that locking prevents corruption when writing same file concurrently
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -2158,8 +2058,7 @@ async fn test_async_concurrent_write_same_file() {
 #[tokio::test]
 async fn test_async_concurrent_create_and_delete() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let root = DirId::root();
 
@@ -2183,8 +2082,7 @@ async fn test_async_concurrent_create_and_delete() {
 #[tokio::test]
 async fn test_async_error_contains_context() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to read nonexistent file
     let err = ops.read_file(&DirId::root(), "context_test.txt").await
@@ -2198,8 +2096,7 @@ async fn test_async_error_contains_context() {
 #[tokio::test]
 async fn test_async_error_delete_dir_contains_context() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let err = ops.delete_directory(&DirId::root(), "nonexistent_dir").await
         .expect_err("Should fail");
@@ -2214,8 +2111,7 @@ async fn test_async_error_delete_dir_contains_context() {
 #[tokio::test]
 async fn test_find_file_existing() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Write a file first
     let content = b"find me!";
@@ -2235,8 +2131,7 @@ async fn test_find_file_existing() {
 #[tokio::test]
 async fn test_find_file_nonexistent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to find a file that doesn't exist
     let found = ops.find_file(&DirId::root(), "ghost.txt").await
@@ -2249,8 +2144,7 @@ async fn test_find_file_nonexistent() {
 async fn test_find_file_shortened_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     // Use a low threshold to force shortening
-    let ops = VaultOperationsAsync::with_shortening_threshold(&vault_path, &master_key, 50)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::with_shortening_threshold(&vault_path, Arc::new(master_key), 50);
 
     // Create a file with a very long name that will be shortened (> 50 chars base64 encoded)
     let long_name = "this_is_a_very_long_filename_that_will_definitely_exceed_the_threshold.txt";
@@ -2271,8 +2165,7 @@ async fn test_find_file_shortened_name() {
 #[tokio::test]
 async fn test_find_directory_existing() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create a directory first
     let dir_id = ops.create_directory(&DirId::root(), "findable_dir").await
@@ -2291,8 +2184,7 @@ async fn test_find_directory_existing() {
 #[tokio::test]
 async fn test_find_directory_nonexistent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Try to find a directory that doesn't exist
     let found = ops.find_directory(&DirId::root(), "ghost_dir").await
@@ -2305,8 +2197,7 @@ async fn test_find_directory_nonexistent() {
 async fn test_find_directory_shortened_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     // Use a low threshold to force shortening
-    let ops = VaultOperationsAsync::with_shortening_threshold(&vault_path, &master_key, 50)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::with_shortening_threshold(&vault_path, Arc::new(master_key), 50);
 
     // Create a directory with a very long name that will be shortened (> 50 chars base64 encoded)
     let long_name = "this_is_a_very_long_directory_name_that_will_definitely_exceed_the_threshold";
@@ -2326,8 +2217,7 @@ async fn test_find_directory_shortened_name() {
 #[tokio::test]
 async fn test_find_file_vs_list_files_consistency() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create several files
     for i in 0..5 {
@@ -2354,8 +2244,7 @@ async fn test_find_file_vs_list_files_consistency() {
 #[tokio::test]
 async fn test_list_entries_combined() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create some files and directories
     ops.write_file(&DirId::root(), "entry_file1.txt", b"content1").await
@@ -2384,8 +2273,7 @@ async fn test_list_entries_combined() {
 #[tokio::test]
 async fn test_list_entries_consistency_with_separate_calls() {
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create mixed content
     ops.write_file(&DirId::root(), "combo_file.txt", b"data").await
@@ -2415,8 +2303,7 @@ async fn test_find_file_performance_vs_list() {
     use std::time::Instant;
 
     let (vault_path, master_key) = VaultBuilder::new().build();
-    let ops = VaultOperationsAsync::new(&vault_path, &master_key)
-        .expect("Failed to create async ops");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create many files
     for i in 0..20 {

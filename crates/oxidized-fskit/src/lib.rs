@@ -69,12 +69,15 @@
 //! oxmount-fskit /path/to/vault --mount-point /tmp/vault
 //! ```
 
+pub mod attr;
 pub mod backend;
 pub mod error;
 pub mod filesystem;
 pub mod handles;
 pub mod item_table;
+pub mod setup;
 
 pub use backend::{FSKitBackend, FSKitMountHandle};
 pub use filesystem::CryptomatorFSKit;
 pub use item_table::{ItemEntry, ItemKind, ItemTable, ROOT_ITEM_ID};
+pub use setup::{BridgeStatus, get_status, get_status_sync};

@@ -24,7 +24,7 @@ use crate::{
     fs::name::{create_c9s_filename, decrypt_filename, decrypt_parent_dir_id, encrypt_filename, hash_dir_id, NameError},
     fs::symlink::{decrypt_symlink_target, encrypt_symlink_target, SymlinkError},
     vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
-    vault::path::{DirId, VaultPath},
+    vault::path::{DirId, EntryType, VaultPath},
 };
 use std::{
     fs,
@@ -970,6 +970,80 @@ impl VaultOperations {
                 None
             }
         }
+    }
+
+    /// Get the type of an entry at the given path.
+    ///
+    /// This is a more ergonomic alternative to `exists_by_path()` that returns
+    /// a proper enum instead of confusing `Option<bool>`.
+    ///
+    /// # Arguments
+    /// * `path` - A path within the vault like "docs/readme.txt" or "docs"
+    ///
+    /// # Returns
+    /// - `Some(EntryType::File)` if a file exists at the path
+    /// - `Some(EntryType::Directory)` if a directory exists at the path
+    /// - `Some(EntryType::Symlink)` if a symlink exists at the path
+    /// - `None` if nothing exists at the path
+    ///
+    /// # Examples
+    /// ```ignore
+    /// use oxidized_cryptolib::vault::path::EntryType;
+    ///
+    /// match vault_ops.entry_type("documents/report.txt") {
+    ///     Some(EntryType::File) => println!("It's a file"),
+    ///     Some(EntryType::Directory) => println!("It's a directory"),
+    ///     Some(EntryType::Symlink) => println!("It's a symlink"),
+    ///     None => println!("Path doesn't exist"),
+    /// }
+    /// ```
+    #[instrument(level = "trace", skip(self), fields(path = %path.as_ref()))]
+    pub fn entry_type(&self, path: impl AsRef<str>) -> Option<EntryType> {
+        let vault_path = VaultPath::new(path.as_ref());
+
+        if vault_path.is_root() {
+            return Some(EntryType::Directory); // Root is always a directory
+        }
+
+        // Get the parent directory and the entry name
+        let (parent_path, entry_name) = vault_path.split()?;
+
+        // Resolve the parent directory
+        let parent_dir_id = if parent_path.is_root() {
+            DirId::root()
+        } else {
+            match self.resolve_path(parent_path.as_str()) {
+                Ok((dir_id, true)) => dir_id,
+                _ => return None, // Parent doesn't exist or isn't a directory
+            }
+        };
+
+        // Check for symlink first (symlinks can have same name as files/dirs in theory)
+        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id) {
+            if symlinks.iter().any(|s| s.name == entry_name) {
+                trace!(entry_type = "symlink", "Found symlink at path");
+                return Some(EntryType::Symlink);
+            }
+        }
+
+        // Check for directory
+        if let Ok(dirs) = self.list_directories(&parent_dir_id) {
+            if dirs.iter().any(|d| d.name == entry_name) {
+                trace!(entry_type = "directory", "Found directory at path");
+                return Some(EntryType::Directory);
+            }
+        }
+
+        // Check for file
+        if let Ok(files) = self.list_files(&parent_dir_id) {
+            if files.iter().any(|f| f.name == entry_name) {
+                trace!(entry_type = "file", "Found file at path");
+                return Some(EntryType::File);
+            }
+        }
+
+        trace!("Path does not exist");
+        None
     }
 
     /// Create a directory by its path.

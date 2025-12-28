@@ -17,7 +17,10 @@
 //! header nonce as additional authenticated data.
 
 use std::io::{self, SeekFrom};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+
+use lru::LruCache;
 
 use aead::Payload;
 use aes::cipher::{KeyIvInit, StreamCipher};
@@ -89,6 +92,10 @@ pub const CTRMAC_CHUNK_ENCRYPTED_SIZE: usize = CHUNK_PLAINTEXT_SIZE + CTRMAC_CHU
 
 /// Overhead per chunk for CTRMAC (nonce + MAC).
 pub const CTRMAC_CHUNK_OVERHEAD: usize = CTRMAC_CHUNK_NONCE_SIZE + CTRMAC_MAC_SIZE;
+
+/// Number of chunks to cache in the LRU cache for random access patterns.
+/// 4 chunks = 128 KB maximum memory per open file handle.
+pub const CHUNK_CACHE_CAPACITY: usize = 4;
 
 // ============================================================================
 // Chunk Math Helpers
@@ -373,8 +380,9 @@ pub struct VaultFileReader {
     plaintext_size: u64,
     /// Path to the file (for error context)
     path: PathBuf,
-    /// Cached chunk: (chunk_number, decrypted_data)
-    cached_chunk: Option<(u64, Zeroizing<Vec<u8>>)>,
+    /// LRU cache of recently-read chunks for random access patterns.
+    /// Key: chunk number, Value: decrypted chunk data.
+    chunk_cache: LruCache<u64, Zeroizing<Vec<u8>>>,
     /// Directory read lock guard (held for lifetime if set).
     /// This prevents the directory from being modified while reading.
     #[allow(dead_code)]
@@ -387,11 +395,12 @@ pub struct VaultFileReader {
 
 impl std::fmt::Debug for VaultFileReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cached_chunks: Vec<_> = self.chunk_cache.iter().map(|(k, _)| *k).collect();
         f.debug_struct("VaultFileReader")
             .field("path", &self.path)
             .field("cipher_combo", &self.cipher_combo)
             .field("plaintext_size", &self.plaintext_size)
-            .field("cached_chunk", &self.cached_chunk.as_ref().map(|(n, _)| n))
+            .field("cached_chunks", &cached_chunks)
             .finish_non_exhaustive()
     }
 }
@@ -516,7 +525,7 @@ impl VaultFileReader {
             cipher_combo,
             plaintext_size,
             path: path.to_path_buf(),
-            cached_chunk: None,
+            chunk_cache: LruCache::new(NonZeroUsize::new(CHUNK_CACHE_CAPACITY).unwrap()),
             dir_lock_guard: None,
             file_lock_guard: None,
         })
@@ -622,12 +631,10 @@ impl VaultFileReader {
 
     /// Read and decrypt a single chunk.
     ///
-    /// Uses the cache if the chunk was recently read.
+    /// Uses the LRU cache if the chunk was recently read.
     async fn read_chunk(&mut self, chunk_num: u64) -> Result<Zeroizing<Vec<u8>>, StreamingError> {
-        // Check cache
-        if let Some((cached_num, ref data)) = self.cached_chunk
-            && cached_num == chunk_num
-        {
+        // Check LRU cache
+        if let Some(data) = self.chunk_cache.get(&chunk_num) {
             trace!(chunk = chunk_num, "Cache hit");
             return Ok(data.clone());
         }
@@ -683,8 +690,8 @@ impl VaultFileReader {
         let decrypted = self.decrypt_chunk(chunk_num, &encrypted_chunk)?;
         let decrypted = Zeroizing::new(decrypted);
 
-        // Update cache
-        self.cached_chunk = Some((chunk_num, decrypted.clone()));
+        // Store in LRU cache (evicts oldest if at capacity)
+        self.chunk_cache.put(chunk_num, decrypted.clone());
 
         Ok(decrypted)
     }
@@ -802,8 +809,8 @@ impl VaultFileReader {
 impl Drop for VaultFileReader {
     fn drop(&mut self) {
         // Zeroizing handles content_key cleanup automatically
-        // Clear the cache
-        self.cached_chunk = None;
+        // Clear the LRU cache
+        self.chunk_cache.clear();
         trace!(path = %self.path.display(), "VaultFileReader dropped");
     }
 }

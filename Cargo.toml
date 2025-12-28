@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/oxidized-cryptolib", "crates/oxidized-cli", "crates/oxidized-fuse", "crates/oxidized-fskit", "crates/oxidized-gui", "crates/oxidized-bench"]
+members = ["crates/oxidized-cryptolib", "crates/oxidized-cli", "crates/oxidized-fuse", "crates/oxidized-fskit", "crates/oxidized-webdav", "crates/oxidized-gui", "crates/oxidized-bench"]
 # Note: oxidized-fuse requires macFUSE (macOS) or libfuse (Linux) to be installed
 # Note: oxidized-fskit requires macOS 15.4+ and FSKitBridge.app
+# Note: oxidized-webdav provides WebDAV mounting (no kernel extensions required)
 exclude = ["fuzz"]
 
 [workspace.package]
