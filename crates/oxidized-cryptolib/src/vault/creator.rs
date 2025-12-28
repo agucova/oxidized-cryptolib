@@ -37,7 +37,13 @@ pub enum VaultCreationError {
     KeyAccess(#[from] KeyAccessError),
 
     #[error("Vault operation error: {0}")]
-    VaultOperation(#[from] crate::vault::operations::VaultOperationError),
+    VaultOperation(Box<crate::vault::operations::VaultOperationError>),
+}
+
+impl From<crate::vault::operations::VaultOperationError> for VaultCreationError {
+    fn from(e: crate::vault::operations::VaultOperationError) -> Self {
+        VaultCreationError::VaultOperation(Box::new(e))
+    }
 }
 
 /// Builder for creating new Cryptomator vaults

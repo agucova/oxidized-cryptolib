@@ -54,7 +54,13 @@ pub enum AsyncVaultError {
 
     /// An error from the underlying vault operations
     #[error(transparent)]
-    VaultOperation(#[from] VaultOperationError),
+    VaultOperation(Box<VaultOperationError>),
+}
+
+impl From<VaultOperationError> for AsyncVaultError {
+    fn from(e: VaultOperationError) -> Self {
+        AsyncVaultError::VaultOperation(Box::new(e))
+    }
 }
 
 /// Asynchronous interface for vault operations.
@@ -883,7 +889,7 @@ impl VaultOperationsAsync {
         let reader = VaultFileReader::open(&file_info.encrypted_path, &self.master_key)
             .await
             .map_err(|e| VaultOperationError::Streaming {
-                source: e,
+                source: Box::new(e),
                 context: VaultOpContext::new()
                     .with_filename(filename)
                     .with_dir_id(directory_id.as_str())
@@ -1003,7 +1009,7 @@ impl VaultOperationsAsync {
         let writer = VaultFileWriter::create(&dest_path, &self.master_key)
             .await
             .map_err(|e| VaultWriteError::Streaming {
-                source: e,
+                source: Box::new(e),
                 context: VaultOpContext::new()
                     .with_filename(filename)
                     .with_dir_id(directory_id.as_str())
@@ -1774,6 +1780,119 @@ impl VaultOperationsAsync {
         Ok(())
     }
 
+    /// Move and rename a file atomically.
+    ///
+    /// This combines move and rename into a single atomic operation, avoiding the
+    /// race condition that would occur if move and rename were done separately.
+    /// Re-encrypts the filename with the new directory ID and new name.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_dir_id` - Source directory ID
+    /// * `src_name` - Source filename
+    /// * `dest_dir_id` - Destination directory ID
+    /// * `dest_name` - Destination filename (can be different from source)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Source file not found
+    /// - Destination file already exists
+    /// - IO error during copy/delete
+    #[instrument(level = "info", skip(self), fields(src_dir_id = %src_dir_id.as_str(), src_name = %src_name, dest_dir_id = %dest_dir_id.as_str(), dest_name = %dest_name))]
+    pub async fn move_and_rename_file(
+        &self,
+        src_dir_id: &DirId,
+        src_name: &str,
+        dest_dir_id: &DirId,
+        dest_name: &str,
+    ) -> Result<(), VaultWriteError> {
+        info!("Moving and renaming file in vault");
+
+        let src_ctx = VaultOpContext::new()
+            .with_filename(src_name)
+            .with_dir_id(src_dir_id.as_str());
+
+        // Same directory and same name is a no-op
+        if src_dir_id == dest_dir_id && src_name == dest_name {
+            return Err(VaultWriteError::SameSourceAndDestination { context: src_ctx });
+        }
+
+        // Acquire directory write locks in consistent order to prevent deadlocks
+        let _dir_guards = self
+            .lock_manager
+            .lock_directories_write_ordered(&[src_dir_id, dest_dir_id])
+            .await;
+
+        // Lock files in both directories (need all four combinations for safety)
+        let _src_file_guard = self.lock_manager.file_write(src_dir_id, src_name).await;
+        let _dest_file_guard = self.lock_manager.file_write(dest_dir_id, dest_name).await;
+        trace!("Acquired all locks for move_and_rename_file");
+
+        // Find source file
+        let source_info = self.find_file_unlocked(src_dir_id, src_name).await?.ok_or_else(|| {
+            VaultWriteError::FileNotFound {
+                filename: src_name.to_string(),
+                context: src_ctx.clone(),
+            }
+        })?;
+
+        // Check that target doesn't exist
+        if self.find_file_unlocked(dest_dir_id, dest_name).await?.is_some() {
+            return Err(VaultWriteError::FileAlreadyExists {
+                filename: dest_name.to_string(),
+                context: VaultOpContext::new()
+                    .with_filename(dest_name)
+                    .with_dir_id(dest_dir_id.as_str()),
+            });
+        }
+
+        // Ensure destination directory exists
+        let dest_storage_path = self.calculate_directory_storage_path(dest_dir_id)?;
+        fs::create_dir_all(&dest_storage_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: VaultOpContext::new().with_encrypted_path(&dest_storage_path),
+        })?;
+
+        // Read raw encrypted file data
+        let file_data = fs::read(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: src_ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+        })?;
+
+        // Encrypt filename with NEW directory ID and NEW name
+        let new_encrypted_name = encrypt_filename(dest_name, dest_dir_id.as_str(), &self.master_key)?;
+        let dest_is_long = new_encrypted_name.len() > self.shortening_threshold;
+
+        // Write to destination (create before delete for crash safety)
+        if dest_is_long {
+            self.write_shortened_file(&dest_storage_path, &new_encrypted_name, &file_data).await?;
+        } else {
+            let dest_path = dest_storage_path.join(format!("{new_encrypted_name}.c9r"));
+            self.safe_write(&dest_path, &file_data).await?;
+        }
+
+        // Remove from source
+        if source_info.is_shortened {
+            let parent = source_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
+                reason: "No parent directory".to_string(),
+                context: src_ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+            })?;
+            fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: VaultOpContext::new().with_encrypted_path(parent),
+            })?;
+        } else {
+            fs::remove_file(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path),
+            })?;
+        }
+
+        info!("File moved and renamed successfully");
+        Ok(())
+    }
+
     // ==================== Symlink Operations ====================
 
     /// List all symlinks in a directory (by directory ID).
@@ -2129,7 +2248,7 @@ mod tests {
 
     #[test]
     fn test_async_vault_error_display() {
-        let err = AsyncVaultError::VaultOperation(VaultOperationError::EmptyPath);
+        let err = AsyncVaultError::VaultOperation(Box::new(VaultOperationError::EmptyPath));
         assert!(err.to_string().contains("Empty path"));
     }
 

@@ -411,11 +411,141 @@ fn realistic_patterns(c: &mut Criterion) {
     group.finish();
 }
 
+/// End-to-end benchmarks with actual disk I/O and cryptographic operations.
+/// These measure the full FUSE operation path using a real vault.
+fn end_to_end_disk_io(c: &mut Criterion) {
+    use oxidized_cryptolib::vault::{extract_master_key, VaultOperations};
+    use std::path::PathBuf;
+
+    // Use the test vault - adjust path as needed
+    let vault_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test_vault")
+        .canonicalize()
+        .ok();
+
+    let vault_path = match vault_path {
+        Some(p) if p.exists() => p,
+        _ => {
+            eprintln!("Skipping disk I/O benchmarks: test_vault not found");
+            return;
+        }
+    };
+
+    let password = "123456789"; // Test vault password
+
+    let mut group = c.benchmark_group("end_to_end_disk_io");
+    // These are slower operations, adjust measurement time
+    group.sample_size(50);
+
+    // Benchmark: Vault unlock (includes scrypt key derivation)
+    group.bench_function("vault_unlock", |b| {
+        b.iter(|| {
+            let master_key = extract_master_key(&vault_path, password);
+            black_box(master_key)
+        });
+    });
+
+    // For remaining benchmarks, open the vault once
+    let master_key = match extract_master_key(&vault_path, password) {
+        Ok(key) => key,
+        Err(e) => {
+            eprintln!("Failed to extract master key: {:?}", e);
+            group.finish();
+            return;
+        }
+    };
+    let ops = VaultOperations::new(&vault_path, master_key);
+
+    let root_dir = DirId::root();
+
+    // Benchmark: List root directory (includes filename decryption)
+    group.bench_function("list_root_directory", |b| {
+        b.iter(|| {
+            let files = ops.list_files(&root_dir);
+            let dirs = ops.list_directories(&root_dir);
+            black_box((files, dirs))
+        });
+    });
+
+    // Benchmark: Read small file content (if exists)
+    group.bench_function("read_file", |b| {
+        let files = ops.list_files(&root_dir).unwrap_or_default();
+        if files.is_empty() {
+            eprintln!("No files in root directory, skipping read benchmark");
+            return;
+        }
+        let file_info = &files[0];
+
+        b.iter(|| {
+            let content = ops.read_file(&root_dir, &file_info.name);
+            black_box(content)
+        });
+    });
+
+    // Benchmark: Full path resolution (simulates lookup chain)
+    group.bench_function("resolve_nested_path", |b| {
+        // Try to find a nested path
+        let dirs = ops.list_directories(&root_dir).unwrap_or_default();
+        if dirs.is_empty() {
+            eprintln!("No directories in root, skipping nested path benchmark");
+            return;
+        }
+
+        let subdir = &dirs[0];
+
+        b.iter(|| {
+            // Resolve directory + list contents (simulates cd + ls)
+            let files = ops.list_files(&subdir.directory_id);
+            let subdirs = ops.list_directories(&subdir.directory_id);
+            black_box((files, subdirs))
+        });
+    });
+
+    // Benchmark: Combined FUSE-like operation pattern
+    // This simulates: lookup parent -> lookup file -> getattr -> open -> read
+    group.bench_function("fuse_read_pattern", |b| {
+        let inode_table = InodeTable::new();
+        let attr_cache = AttrCache::with_defaults();
+
+        let files = ops.list_files(&root_dir).unwrap_or_default();
+        if files.is_empty() {
+            eprintln!("No files for FUSE pattern benchmark");
+            return;
+        }
+        let file_info = &files[0];
+
+        b.iter(|| {
+            // 1. Lookup: allocate/get inode
+            let path = VaultPath::new(&file_info.name);
+            let kind = InodeKind::File {
+                dir_id: root_dir.clone(),
+                name: file_info.name.clone(),
+            };
+            let inode = inode_table.get_or_insert(path, kind);
+
+            // 2. Getattr: check cache, or fetch from list (in real FUSE, would be stat)
+            let _attr = if let Some(cached) = attr_cache.get(inode) {
+                cached.attr
+            } else {
+                // Cache miss - create attr from file info
+                make_test_attr(inode)
+            };
+
+            // 3. Read: actual file read
+            let content = ops.read_file(&root_dir, &file_info.name);
+            black_box(content)
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     inode_table_benchmarks,
     attr_cache_benchmarks,
     dir_cache_benchmarks,
     realistic_patterns,
+    end_to_end_disk_io,
 );
 criterion_main!(benches);

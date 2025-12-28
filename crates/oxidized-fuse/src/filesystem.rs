@@ -5,6 +5,7 @@
 
 use crate::attr::{AttrCache, DirCache, DirListingEntry, DEFAULT_ATTR_TTL};
 use crate::error::{FuseError, FuseResult};
+use crate::handles::{FuseHandle, FuseHandleTable, WriteBuffer};
 use crate::inode::{InodeKind, InodeTable};
 
 use fuser::{
@@ -12,12 +13,10 @@ use fuser::{
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
 };
 use libc::c_int;
-use oxidized_cryptolib::error::VaultWriteError;
-use oxidized_cryptolib::vault::{
-    extract_master_key, DirId, OpenHandle, VaultConfig, VaultOperationsAsync,
-};
+use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
+use oxidized_cryptolib::vault::{extract_master_key, DirId, VaultOperationsAsync};
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::runtime::Runtime;
 use tracing::{debug, error, info, trace};
@@ -44,12 +43,16 @@ pub struct CryptomatorFS {
     attr_cache: AttrCache,
     /// Directory listing cache.
     dir_cache: DirCache,
+    /// File handle table for open files.
+    handle_table: FuseHandleTable,
     /// Tokio runtime for async operations.
     runtime: Runtime,
     /// User ID to use for file ownership.
     uid: u32,
     /// Group ID to use for file ownership.
     gid: u32,
+    /// Path to the vault root (for statfs).
+    vault_path: PathBuf,
 }
 
 impl CryptomatorFS {
@@ -73,18 +76,8 @@ impl CryptomatorFS {
             )))
         })?;
 
-        // Load vault configuration
-        let config_path = vault_path.join("vault.cryptomator");
-        let config_data = std::fs::read_to_string(&config_path).map_err(FuseError::Io)?;
-        let _config: VaultConfig = serde_json::from_str(&config_data).map_err(|e| {
-            FuseError::Io(std::io::Error::other(format!(
-                "Failed to parse vault config: {e}"
-            )))
-        })?;
-
-        // Extract master key
-        let masterkey_path = vault_path.join("masterkey.cryptomator");
-        let master_key = extract_master_key(&masterkey_path, password).map_err(|e| {
+        // Extract master key (also validates vault.cryptomator JWT)
+        let master_key = extract_master_key(vault_path, password).map_err(|e| {
             FuseError::Io(std::io::Error::other(format!(
                 "Failed to extract master key: {e}"
             )))
@@ -113,9 +106,11 @@ impl CryptomatorFS {
             inodes: InodeTable::new(),
             attr_cache: AttrCache::with_defaults(),
             dir_cache: DirCache::default(),
+            handle_table: FuseHandleTable::new(),
             runtime,
             uid,
             gid,
+            vault_path: vault_path.to_path_buf(),
         })
     }
 
@@ -162,7 +157,7 @@ impl CryptomatorFS {
         FileAttr {
             ino: inode,
             size,
-            blocks: (size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64,
+            blocks: size.div_ceil(BLOCK_SIZE as u64),
             atime: now,
             mtime: now,
             ctime: now,
@@ -248,7 +243,7 @@ impl CryptomatorFS {
                         name: name.to_string(),
                     },
                 );
-                let attr = self.make_file_attr(inode, file_info.encrypted_size);
+                let attr = self.make_file_attr(inode, encrypted_to_plaintext_size_or_zero(file_info.encrypted_size));
                 self.attr_cache.insert(inode, attr);
                 return Ok((inode, attr, FileType::RegularFile));
             }
@@ -402,7 +397,7 @@ impl Filesystem for CryptomatorFS {
                     Ok(files) => {
                         let file_info = files.into_iter().find(|f| f.name == name);
                         match file_info {
-                            Some(info) => self.make_file_attr(ino, info.encrypted_size),
+                            Some(info) => self.make_file_attr(ino, encrypted_to_plaintext_size_or_zero(info.encrypted_size)),
                             None => {
                                 reply.error(libc::ENOENT);
                                 return;
@@ -514,25 +509,30 @@ impl Filesystem for CryptomatorFS {
 
         // Check if opening for write
         let is_write = (flags & libc::O_ACCMODE) != libc::O_RDONLY;
+        let is_trunc = (flags & libc::O_TRUNC) != 0;
 
         if is_write {
-            // Open for writing - create_file returns VaultFileWriter
-            match self.runtime.block_on(ops.create_file(&dir_id, &name)) {
-                Ok(writer) => {
-                    // Store in handle table and return the handle ID
-                    let fh = self.ops.handle_table().insert(OpenHandle::Writer(writer));
-                    reply.opened(fh, 0);
+            // Open for writing using WriteBuffer for random-access support
+            let existing_content = if is_trunc {
+                // O_TRUNC: start with empty buffer
+                Vec::new()
+            } else {
+                // Read existing content if file exists
+                match self.runtime.block_on(ops.read_file(&dir_id, &name)) {
+                    Ok(file) => file.content,
+                    Err(_) => Vec::new(), // File doesn't exist, start empty
                 }
-                Err(e) => {
-                    reply.error(crate::error::write_error_to_errno(&e));
-                }
-            }
+            };
+
+            let buffer = WriteBuffer::new(dir_id, name, existing_content);
+            let fh = self.handle_table.insert(FuseHandle::WriteBuffer(buffer));
+            reply.opened(fh, 0);
         } else {
             // Open for reading - open_file returns VaultFileReader
             match self.runtime.block_on(ops.open_file(&dir_id, &name)) {
                 Ok(reader) => {
                     // Store reader in handle table and return the handle ID
-                    let fh = self.ops.handle_table().insert(OpenHandle::Reader(reader));
+                    let fh = self.handle_table.insert(FuseHandle::Reader(reader));
                     reply.opened(fh, 0);
                 }
                 Err(e) => {
@@ -555,10 +555,8 @@ impl Filesystem for CryptomatorFS {
     ) {
         trace!(inode = ino, fh = fh, offset = offset, size = size, "read");
 
-        let handle_table = self.ops.handle_table();
-
-        // Get the reader from handle table
-        let mut handle = match handle_table.get_mut(fh) {
+        // Get the handle from our table
+        let mut handle = match self.handle_table.get_mut(fh) {
             Some(h) => h,
             None => {
                 reply.error(libc::EBADF);
@@ -566,25 +564,26 @@ impl Filesystem for CryptomatorFS {
             }
         };
 
-        let reader = match &mut *handle {
-            OpenHandle::Reader(r) => r,
-            OpenHandle::Writer(_) => {
-                reply.error(libc::EBADF);
-                return;
+        match &mut *handle {
+            FuseHandle::Reader(reader) => {
+                // Read from streaming reader
+                match self
+                    .runtime
+                    .block_on(reader.read_range(offset as u64, size as usize))
+                {
+                    Ok(data) => {
+                        reply.data(&data);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Read failed");
+                        reply.error(libc::EIO);
+                    }
+                }
             }
-        };
-
-        // Read data
-        match self
-            .runtime
-            .block_on(reader.read_range(offset as u64, size as usize))
-        {
-            Ok(data) => {
-                reply.data(&data);
-            }
-            Err(e) => {
-                error!(error = %e, "Read failed");
-                reply.error(libc::EIO);
+            FuseHandle::WriteBuffer(buffer) => {
+                // Read from write buffer (for read-after-write in same handle)
+                let data = buffer.read(offset as u64, size as usize);
+                reply.data(data);
             }
         }
     }
@@ -592,7 +591,7 @@ impl Filesystem for CryptomatorFS {
     fn release(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
@@ -601,21 +600,51 @@ impl Filesystem for CryptomatorFS {
     ) {
         trace!(fh = fh, "release");
 
-        let handle_table = self.ops.handle_table();
-
         // Remove handle from table
-        if let Some(handle) = handle_table.remove(fh) {
-            // If it was a writer, finish it
-            if let OpenHandle::Writer(writer) = handle {
-                match self.runtime.block_on(writer.finish()) {
-                    Ok(_) => {
-                        debug!(fh = fh, "Writer finished successfully");
+        let handle = match self.handle_table.remove(fh) {
+            Some(h) => h,
+            None => {
+                // Handle already released or never existed
+                reply.ok();
+                return;
+            }
+        };
+
+        match handle {
+            FuseHandle::Reader(_) => {
+                // Reader just needs to be dropped
+                debug!(fh = fh, "Reader released");
+            }
+            FuseHandle::WriteBuffer(buffer) => {
+                // Write buffer back to vault if dirty
+                if buffer.is_dirty() {
+                    let ops = match self.ops_clone() {
+                        Ok(ops) => ops,
+                        Err(e) => {
+                            error!(error = %e, "Failed to clone ops for write-back");
+                            reply.error(libc::EIO);
+                            return;
+                        }
+                    };
+
+                    let dir_id = buffer.dir_id().clone();
+                    let filename = buffer.filename().to_string();
+                    let content = buffer.into_content();
+
+                    match self.runtime.block_on(ops.write_file(&dir_id, &filename, &content)) {
+                        Ok(_) => {
+                            debug!(fh = fh, filename = %filename, size = content.len(), "WriteBuffer flushed");
+                            // Invalidate attr cache since file changed
+                            self.attr_cache.invalidate(ino);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to write buffer back to vault");
+                            reply.error(crate::error::write_error_to_errno(&e));
+                            return;
+                        }
                     }
-                    Err(e) => {
-                        error!(error = %e, "Failed to finish writer");
-                        reply.error(libc::EIO);
-                        return;
-                    }
+                } else {
+                    debug!(fh = fh, "WriteBuffer released (not dirty)");
                 }
             }
         }
@@ -671,8 +700,14 @@ impl Filesystem for CryptomatorFS {
                 return;
             }
         };
-        let _parent_path = entry.path.clone();
+        let current_path = entry.path.clone();
         drop(entry);
+
+        // Get parent inode (for ".." entry)
+        let parent_inode = current_path
+            .parent()
+            .and_then(|parent| self.inodes.get_inode(&parent))
+            .unwrap_or(crate::inode::ROOT_INODE);
 
         // Check dir cache first
         let entries = if let Some(cached) = self.dir_cache.get(ino) {
@@ -699,7 +734,7 @@ impl Filesystem for CryptomatorFS {
                 name: ".".to_string(),
             },
             DirListingEntry {
-                inode: 1, // Parent (simplified - would need proper tracking)
+                inode: parent_inode,
                 file_type: FileType::Directory,
                 name: "..".to_string(),
             },
@@ -712,7 +747,7 @@ impl Filesystem for CryptomatorFS {
             let entry_inode = if entry.name == "." {
                 ino
             } else if entry.name == ".." {
-                1 // Root inode for simplicity
+                parent_inode
             } else {
                 // We'll resolve the real inode on lookup
                 0
@@ -737,17 +772,35 @@ impl Filesystem for CryptomatorFS {
     }
 
     fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: fuser::ReplyStatfs) {
-        // Return some reasonable defaults
-        reply.statfs(
-            1000000,    // blocks
-            500000,     // bfree
-            500000,     // bavail
-            1000000,    // files
-            500000,     // ffree
-            BLOCK_SIZE, // bsize
-            255,        // namelen
-            BLOCK_SIZE, // frsize
-        );
+        // Query real filesystem statistics from underlying storage
+        match nix::sys::statvfs::statvfs(&self.vault_path) {
+            Ok(stat) => {
+                reply.statfs(
+                    stat.blocks() as u64,             // Total blocks
+                    stat.blocks_free() as u64,        // Free blocks
+                    stat.blocks_available() as u64,   // Available blocks (non-root)
+                    stat.files() as u64,              // Total inodes
+                    stat.files_free() as u64,         // Free inodes
+                    stat.fragment_size() as u32,      // Block size
+                    stat.name_max() as u32,           // Max filename length
+                    stat.fragment_size() as u32,      // Fragment size
+                );
+            }
+            Err(e) => {
+                debug!(error = %e, "Failed to get statfs, using defaults");
+                // Fallback to reasonable defaults
+                reply.statfs(
+                    1000000,    // blocks
+                    500000,     // bfree
+                    500000,     // bavail
+                    1000000,    // files
+                    500000,     // ffree
+                    BLOCK_SIZE, // bsize
+                    255,        // namelen
+                    BLOCK_SIZE, // frsize
+                );
+            }
+        }
     }
 
     // ==================== Write Operations ====================
@@ -791,43 +844,29 @@ impl Filesystem for CryptomatorFS {
         let parent_path = parent_entry.path.clone();
         drop(parent_entry);
 
-        let ops = match self.ops_clone() {
-            Ok(ops) => ops,
-            Err(e) => {
-                reply.error(e.to_errno());
-                return;
-            }
-        };
+        // Create the file with empty WriteBuffer
+        // (File will be written to vault on release if buffer is dirty)
+        let buffer = WriteBuffer::new_empty(dir_id.clone(), name_str.to_string());
+        let fh = self.handle_table.insert(FuseHandle::WriteBuffer(buffer));
 
-        // Create the file (get writer handle)
-        match self.runtime.block_on(ops.create_file(&dir_id, name_str)) {
-            Ok(writer) => {
-                // Store writer in handle table
-                let fh = self.ops.handle_table().insert(OpenHandle::Writer(writer));
+        // Allocate inode
+        let child_path = parent_path.join(name_str);
+        let inode = self.inodes.get_or_insert(
+            child_path,
+            InodeKind::File {
+                dir_id: dir_id.clone(),
+                name: name_str.to_string(),
+            },
+        );
 
-                // Allocate inode
-                let child_path = parent_path.join(name_str);
-                let inode = self.inodes.get_or_insert(
-                    child_path,
-                    InodeKind::File {
-                        dir_id: dir_id.clone(),
-                        name: name_str.to_string(),
-                    },
-                );
+        let attr = self.make_file_attr(inode, 0);
+        self.attr_cache.insert(inode, attr);
 
-                let attr = self.make_file_attr(inode, 0);
-                self.attr_cache.insert(inode, attr);
+        // Invalidate parent's negative cache and dir cache
+        self.attr_cache.remove_negative(parent, name_str);
+        self.dir_cache.invalidate(parent);
 
-                // Invalidate parent's negative cache and dir cache
-                self.attr_cache.remove_negative(parent, name_str);
-                self.dir_cache.invalidate(parent);
-
-                reply.created(&DEFAULT_ATTR_TTL, &attr, 0, fh, 0);
-            }
-            Err(e) => {
-                reply.error(crate::error::write_error_to_errno(&e));
-            }
-        }
+        reply.created(&DEFAULT_ATTR_TTL, &attr, 0, fh, 0);
     }
 
     fn write(
@@ -850,10 +889,8 @@ impl Filesystem for CryptomatorFS {
             "write"
         );
 
-        let handle_table = self.ops.handle_table();
-
-        // Get the writer from handle table
-        let mut handle = match handle_table.get_mut(fh) {
+        // Get the handle from our table
+        let mut handle = match self.handle_table.get_mut(fh) {
             Some(h) => h,
             None => {
                 reply.error(libc::EBADF);
@@ -861,26 +898,21 @@ impl Filesystem for CryptomatorFS {
             }
         };
 
-        let writer = match &mut *handle {
-            OpenHandle::Writer(w) => w,
-            OpenHandle::Reader(_) => {
+        let buffer = match handle.as_write_buffer_mut() {
+            Some(b) => b,
+            None => {
+                // Trying to write to a read-only handle
                 reply.error(libc::EBADF);
                 return;
             }
         };
 
-        // Write data
-        match self.runtime.block_on(writer.write(data)) {
-            Ok(bytes_written) => {
-                // Invalidate attr cache for this inode
-                self.attr_cache.invalidate(ino);
-                reply.written(bytes_written as u32);
-            }
-            Err(e) => {
-                error!(error = %e, "Write failed");
-                reply.error(libc::EIO);
-            }
-        }
+        // Write data at offset (WriteBuffer handles buffer expansion)
+        let bytes_written = buffer.write(offset as u64, data);
+
+        // Invalidate attr cache for this inode
+        self.attr_cache.invalidate(ino);
+        reply.written(bytes_written as u32);
     }
 
     fn mkdir(
@@ -1251,34 +1283,19 @@ impl Filesystem for CryptomatorFS {
             }
         };
 
-        // Perform rename/move
+        // Perform rename/move atomically
         let result = if parent == newparent {
-            // Same directory - rename
+            // Same directory - just rename
             self.runtime
                 .block_on(ops.rename_file(&src_dir_id, name_str, newname_str))
         } else if name_str == newname_str {
-            // Different directories, same name - move only
+            // Different directories, same name - just move
             self.runtime
                 .block_on(ops.move_file(&src_dir_id, name_str, &dest_dir_id))
         } else {
-            // Different directories, different name - move then rename
-            let move_result = self
-                .runtime
-                .block_on(ops.move_file(&src_dir_id, name_str, &dest_dir_id));
-            if move_result.is_ok() {
-                // Clone ops for second operation
-                match self.ops_clone() {
-                    Ok(ops2) => self
-                        .runtime
-                        .block_on(ops2.rename_file(&dest_dir_id, name_str, newname_str)),
-                    Err(e) => Err(VaultWriteError::Io {
-                        source: std::io::Error::other(format!("{e}")),
-                        context: Default::default(),
-                    }),
-                }
-            } else {
-                move_result
-            }
+            // Different directories, different name - atomic move+rename
+            self.runtime
+                .block_on(ops.move_and_rename_file(&src_dir_id, name_str, &dest_dir_id, newname_str))
         };
 
         match result {

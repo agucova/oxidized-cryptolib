@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Structure
 
-This is a Cargo workspace with two crates:
+This is a Cargo workspace with three crates:
 
 ```
 crates/
@@ -16,9 +16,17 @@ crates/
 │   │   └── error/         # Unified error types
 │   ├── benches/           # Performance and timing leak benchmarks
 │   └── tests/             # Integration tests
-└── oxidized-cli/          # CLI tool (oxcrypt binary)
-    └── src/
-        └── commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
+├── oxidized-cli/          # CLI tool (oxcrypt binary)
+│   └── src/
+│       └── commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
+└── oxidized-fuse/         # FUSE filesystem (oxmount binary)
+    ├── src/
+    │   ├── filesystem.rs  # FUSE Filesystem trait implementation
+    │   ├── inode.rs       # Inode table management
+    │   ├── attr.rs        # Attribute and directory caching
+    │   └── error.rs       # Error mapping to errno
+    ├── benches/           # Performance benchmarks
+    └── tests/             # Integration tests
 ```
 
 ## Commands
@@ -27,6 +35,7 @@ crates/
 - **Build all**: `cargo build` (builds entire workspace)
 - **Build library**: `cargo build -p oxidized-cryptolib`
 - **Build CLI**: `cargo build -p oxidized-cli`
+- **Build FUSE**: `cargo build -p oxidized-fuse`
 - **Check**: `cargo check` (fast compile check without generating binaries)
 - **Format**: `cargo fmt` (format all Rust code using rustfmt)
 - **Lint**: `cargo clippy` (static analysis and linting)
@@ -37,11 +46,21 @@ crates/
 - **Install CLI**: `cargo install --path crates/oxidized-cli`
 - **Example**: `oxcrypt --vault test_vault ls`
 
+### Running the FUSE Mount
+- **Run mount**: `cargo run -p oxidized-fuse -- <vault_path> <mountpoint>`
+- **Install mount**: `cargo install --path crates/oxidized-fuse`
+- **Example**: `oxmount ~/my_vault /mnt/vault`
+- **Unmount (macOS)**: `umount /mnt/vault`
+- **Unmount (Linux)**: `fusermount -u /mnt/vault`
+
 ### Testing
 Uses `cargo-nextest` for faster parallel test execution: `cargo install cargo-nextest`
 - **All tests**: `cargo nextest run` (runs all tests in parallel with better output)
 - **Library tests**: `cargo nextest run -p oxidized-cryptolib`
 - **CLI tests**: `cargo nextest run -p oxidized-cli`
+- **FUSE tests**: `cargo nextest run -p oxidized-fuse` (unit + integration tests)
+- **FUSE unit tests**: `cargo test -p oxidized-fuse --lib` (36 tests)
+- **FUSE integration tests**: `cargo test -p oxidized-fuse --test integration_tests` (18 tests)
 - **Integration tests**: `cargo nextest run -p oxidized-cryptolib -E 'test(crypto_tests)'`
 - **Specific test**: `cargo nextest run [test_name]`
 - **CI profile**: `cargo nextest run --profile ci` (used in GitHub Actions)
@@ -61,6 +80,7 @@ Requires `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
 
 ### Benchmarking
 - **All benchmarks**: `cargo bench -p oxidized-cryptolib` (runs all criterion-based performance benchmarks)
+- **FUSE benchmarks**: `cargo bench -p oxidized-fuse` (inode table, caches, end-to-end I/O)
 - **Quick benchmarks**: `cargo bench -p oxidized-cryptolib -- --quick` (faster execution for development)
 - **Baseline benchmarks**: `cargo bench -p oxidized-cryptolib -- --save-baseline [name]` (save performance baseline)
 - **Compare benchmarks**: `cargo bench -p oxidized-cryptolib -- --baseline [name]` (compare against saved baseline)
@@ -115,6 +135,35 @@ Command-line interface for interacting with Cryptomator vaults.
 - **`mv`**: Move or rename a file or directory
 - **`info`**: Show vault information
 
+### oxidized-fuse (FUSE Filesystem)
+
+FUSE implementation for mounting Cryptomator vaults as native filesystems.
+
+#### Core Modules (`crates/oxidized-fuse/src/`)
+- **`filesystem.rs`**: `CryptomatorFS` struct implementing fuser's `Filesystem` trait
+- **`inode.rs`**: `InodeTable` for bidirectional path↔inode mapping with `nlookup` tracking
+- **`attr.rs`**: `AttrCache` (TTL-based file attributes) and `DirCache` (directory listings)
+- **`error.rs`**: Conversion from `VaultOperationError`/`VaultWriteError` to libc errno codes
+
+#### Architecture
+```
+CryptomatorFS (implements fuser::Filesystem)
+        │
+        ├── InodeTable (DashMap, lock-free)
+        ├── AttrCache (TTL-based, 1s default)
+        └── VaultOperationsAsync (from oxidized-cryptolib)
+                │
+                ├── HandleTable (file I/O handles)
+                └── Crypto (AES-GCM, AES-SIV)
+```
+
+#### Performance Characteristics
+- Inode lookup: ~10 ns (in-memory hash)
+- Attribute cache hit: ~26 ns
+- Vault unlock: ~37 ms (one-time scrypt)
+- Directory listing: ~80 µs (filename decryption)
+- File read: ~82 µs (content decryption)
+
 ### Security Features
 - Uses `#![forbid(unsafe_code)]` in critical crypto modules
 - Memory protection via `memsafe` crate (mlock, mprotect, zeroization on drop)
@@ -135,6 +184,8 @@ Key cryptographic dependencies include:
 - `zeroize` for secure memory zeroization
 - `subtle` for constant-time primitives
 - `dudect-bencher` for timing leak detection (dev-dependency)
+- `fuser` for FUSE filesystem implementation (oxidized-fuse)
+- `dashmap` for lock-free concurrent data structures (oxidized-fuse)
 
 ### Development Notes
 - Property-based tests use 1000 test cases to verify cryptographic correctness

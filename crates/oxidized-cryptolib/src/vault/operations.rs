@@ -153,7 +153,7 @@ pub enum VaultOperationError {
     },
 
     #[error("Symlink error: {0}")]
-    Symlink(#[from] SymlinkError),
+    Symlink(Box<SymlinkError>),
 
     #[error("Symlink '{name}' not found {context}")]
     SymlinkNotFound {
@@ -169,9 +169,15 @@ pub enum VaultOperationError {
     #[error("Streaming error for {context}: {source}")]
     Streaming {
         #[source]
-        source: crate::fs::streaming::StreamingError,
+        source: Box<crate::fs::streaming::StreamingError>,
         context: VaultOpContext,
     },
+}
+
+impl From<SymlinkError> for VaultOperationError {
+    fn from(e: SymlinkError) -> Self {
+        VaultOperationError::Symlink(Box::new(e))
+    }
 }
 
 impl From<std::io::Error> for VaultOperationError {
@@ -236,7 +242,7 @@ pub enum VaultWriteError {
     SameSourceAndDestination { context: VaultOpContext },
 
     #[error("Symlink error: {0}")]
-    Symlink(#[from] SymlinkError),
+    Symlink(Box<SymlinkError>),
 
     #[error("Symlink '{name}' already exists {context}")]
     SymlinkAlreadyExists {
@@ -249,9 +255,15 @@ pub enum VaultWriteError {
     #[error("Streaming error for {context}: {source}")]
     Streaming {
         #[source]
-        source: crate::fs::streaming::StreamingError,
+        source: Box<crate::fs::streaming::StreamingError>,
         context: VaultOpContext,
     },
+}
+
+impl From<SymlinkError> for VaultWriteError {
+    fn from(e: SymlinkError) -> Self {
+        VaultWriteError::Symlink(Box::new(e))
+    }
 }
 
 impl From<std::io::Error> for VaultWriteError {

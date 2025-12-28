@@ -207,15 +207,13 @@ impl InodeTable {
             return false;
         }
 
-        if let Some(entry) = self.inode_to_entry.get(&inode) {
-            if let Some(remaining) = entry.dec_nlookup(nlookup) {
-                if remaining == 0 {
+        if let Some(entry) = self.inode_to_entry.get(&inode)
+            && let Some(remaining) = entry.dec_nlookup(nlookup)
+                && remaining == 0 {
                     // Safe to evict - drop the ref first
                     drop(entry);
                     return self.evict(inode);
                 }
-            }
-        }
         false
     }
 

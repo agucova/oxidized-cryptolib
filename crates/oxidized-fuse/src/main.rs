@@ -8,6 +8,7 @@ use oxidized_fuse::CryptomatorFS;
 use std::path::PathBuf;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(name = "oxmount")]
@@ -15,12 +16,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(version)]
 struct Cli {
     /// Path to the Cryptomator vault
-    #[arg(short, long)]
     vault: PathBuf,
 
     /// Mountpoint for the filesystem
-    #[arg(short, long)]
     mount: PathBuf,
+
+    /// Vault password (if not provided, will prompt or use VAULT_PASSWORD env var)
+    #[arg(short, long)]
+    password: Option<String>,
 
     /// Run in foreground (don't daemonize)
     #[arg(short, long)]
@@ -29,6 +32,10 @@ struct Cli {
     /// Enable debug logging
     #[arg(short, long)]
     debug: bool,
+
+    /// Mount as read-only (default: read-write)
+    #[arg(long)]
+    read_only: bool,
 }
 
 fn main() -> Result<()> {
@@ -55,9 +62,18 @@ fn main() -> Result<()> {
         anyhow::bail!("Mountpoint does not exist: {}", cli.mount.display());
     }
 
-    // Get password
-    let password = rpassword::prompt_password("Vault password: ")
-        .context("Failed to read password")?;
+    // Get password (automatically zeroized when dropped)
+    // Priority: CLI argument > environment variable > interactive prompt
+    let password = if let Some(pwd) = cli.password {
+        Zeroizing::new(pwd)
+    } else if let Ok(pwd) = std::env::var("VAULT_PASSWORD") {
+        Zeroizing::new(pwd)
+    } else {
+        Zeroizing::new(
+            rpassword::prompt_password("Vault password: ")
+                .context("Failed to read password")?,
+        )
+    };
 
     info!(vault = %cli.vault.display(), mount = %cli.mount.display(), "Mounting vault");
 
@@ -67,10 +83,15 @@ fn main() -> Result<()> {
 
     // Mount options
     let mut options = vec![
-        fuser::MountOption::RO,  // Start with read-only for safety during testing
         fuser::MountOption::FSName("cryptomator".to_string()),
         fuser::MountOption::Subtype("oxidized".to_string()),
     ];
+
+    if cli.read_only {
+        options.push(fuser::MountOption::RO);
+    } else {
+        options.push(fuser::MountOption::RW);
+    }
 
     if !cli.foreground {
         options.push(fuser::MountOption::AutoUnmount);

@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 
+use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
 use oxidized_cryptolib::vault::operations::VaultOperations;
 use oxidized_cryptolib::vault::path::DirId;
 
@@ -79,7 +80,7 @@ fn print_long_format(
         }
         table.add_row(vec![
             format_entry_type(false, false).to_string(),
-            format_size(file.encrypted_size),
+            format_size(encrypted_to_plaintext_size_or_zero(file.encrypted_size)),
             file.name.clone(),
         ]);
     }

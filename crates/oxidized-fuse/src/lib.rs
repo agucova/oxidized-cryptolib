@@ -22,9 +22,11 @@
 pub mod attr;
 pub mod error;
 pub mod filesystem;
+pub mod handles;
 pub mod inode;
 
 pub use attr::{AttrCache, CachedAttr, DirCache, DirListingEntry};
 pub use error::{FuseError, FuseResult, ToErrno};
 pub use filesystem::CryptomatorFS;
+pub use handles::{FuseHandle, FuseHandleTable, WriteBuffer};
 pub use inode::{InodeEntry, InodeKind, InodeTable, ROOT_INODE};

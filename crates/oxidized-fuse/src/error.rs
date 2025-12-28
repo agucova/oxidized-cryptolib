@@ -10,13 +10,13 @@ use thiserror::Error;
 /// FUSE-specific errors that can occur during filesystem operations.
 #[derive(Debug, Error)]
 pub enum FuseError {
-    /// Vault operation error.
+    /// Vault operation error (boxed to reduce enum size).
     #[error("Vault operation failed: {0}")]
-    Vault(#[from] VaultOperationError),
+    Vault(Box<VaultOperationError>),
 
-    /// Vault write error.
+    /// Vault write error (boxed to reduce enum size).
     #[error("Vault write failed: {0}")]
-    Write(#[from] VaultWriteError),
+    Write(Box<VaultWriteError>),
 
     /// IO error.
     #[error("IO error: {0}")]
@@ -55,8 +55,8 @@ impl FuseError {
     /// Converts this error to a libc error code for FUSE.
     pub fn to_errno(&self) -> i32 {
         match self {
-            FuseError::Vault(e) => vault_error_to_errno(e),
-            FuseError::Write(e) => write_error_to_errno(e),
+            FuseError::Vault(e) => vault_error_to_errno(e.as_ref()),
+            FuseError::Write(e) => write_error_to_errno(e.as_ref()),
             FuseError::Io(e) => io_error_to_errno(e),
             FuseError::InvalidInode(_) => libc::ENOENT,
             FuseError::InvalidHandle(_) => libc::EBADF,
@@ -138,6 +138,19 @@ impl ToErrno for VaultWriteError {
 impl ToErrno for io::Error {
     fn to_errno(&self) -> i32 {
         io_error_to_errno(self)
+    }
+}
+
+// Manual From implementations to box errors for smaller enum size
+impl From<VaultOperationError> for FuseError {
+    fn from(e: VaultOperationError) -> Self {
+        FuseError::Vault(Box::new(e))
+    }
+}
+
+impl From<VaultWriteError> for FuseError {
+    fn from(e: VaultWriteError) -> Self {
+        FuseError::Write(Box::new(e))
     }
 }
 
