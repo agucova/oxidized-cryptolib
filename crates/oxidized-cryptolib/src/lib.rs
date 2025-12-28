@@ -3,7 +3,11 @@
 pub mod crypto;
 pub mod error;
 pub mod fs;
+pub mod mount;
 pub mod vault;
+
+// Re-export commonly used types at crate root
+pub use mount::{BackendType, MountBackend, MountError, MountHandle};
 
 #[cfg(feature = "async")]
 pub use vault::VaultOperationsAsync;

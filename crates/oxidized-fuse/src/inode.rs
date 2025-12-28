@@ -49,7 +49,7 @@ pub struct InodeEntry {
 }
 
 impl InodeEntry {
-    /// Creates a new inode entry.
+    /// Creates a new inode entry with nlookup = 1.
     pub fn new(path: VaultPath, kind: InodeKind) -> Self {
         Self {
             path,
@@ -58,18 +58,36 @@ impl InodeEntry {
         }
     }
 
+    /// Creates a new inode entry with nlookup = 0.
+    /// Used for entries returned from `readdir()` which per FUSE spec
+    /// should NOT increment the lookup count.
+    pub fn new_no_lookup(path: VaultPath, kind: InodeKind) -> Self {
+        Self {
+            path,
+            kind,
+            nlookup: AtomicU64::new(0), // No lookup count for readdir entries
+        }
+    }
+
     /// Increments the lookup count and returns the new value.
+    ///
+    /// Uses `Relaxed` ordering since this is a simple counter with no
+    /// synchronization requirements - we only care that the increment is atomic.
     pub fn inc_nlookup(&self) -> u64 {
-        self.nlookup.fetch_add(1, Ordering::SeqCst) + 1
+        self.nlookup.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Decrements the lookup count by the given amount and returns the new value.
     /// Returns `None` if the count would go negative (shouldn't happen in normal operation).
+    ///
+    /// Uses `AcqRel` ordering to synchronize with the eviction check that follows.
+    /// The `Release` ensures our decrement is visible before eviction,
+    /// and `Acquire` ensures we see all prior increments.
     pub fn dec_nlookup(&self, count: u64) -> Option<u64> {
-        let old = self.nlookup.fetch_sub(count, Ordering::SeqCst);
+        let old = self.nlookup.fetch_sub(count, Ordering::AcqRel);
         if old < count {
             // This shouldn't happen - restore and return None
-            self.nlookup.fetch_add(count, Ordering::SeqCst);
+            self.nlookup.fetch_add(count, Ordering::Relaxed);
             None
         } else {
             Some(old - count)
@@ -77,8 +95,11 @@ impl InodeEntry {
     }
 
     /// Returns the current lookup count.
+    ///
+    /// Uses `Relaxed` ordering since this is a read-only operation
+    /// that doesn't synchronize with other operations.
     pub fn nlookup(&self) -> u64 {
-        self.nlookup.load(Ordering::SeqCst)
+        self.nlookup.load(Ordering::Relaxed)
     }
 
     /// Returns the parent directory ID if this is a file or symlink.
@@ -174,6 +195,35 @@ impl InodeTable {
                 let ino = self.next_inode.fetch_add(1, Ordering::SeqCst);
                 self.inode_to_entry
                     .insert(ino, InodeEntry::new(path.clone(), kind));
+                ino
+            });
+
+        *inode
+    }
+
+    /// Allocates a new inode for the given path and kind WITHOUT incrementing nlookup.
+    ///
+    /// Per FUSE specification, returning entries from `readdir()` should NOT affect
+    /// the lookup count. Only `lookup()`, `create()`, `mkdir()`, `symlink()`, `link()`,
+    /// and `readdirplus()` should increment nlookup.
+    ///
+    /// If the path already has an inode, returns the existing inode without incrementing.
+    /// If the path is new, creates an inode entry with nlookup = 0.
+    pub fn get_or_insert_no_lookup_inc(&self, path: VaultPath, kind: InodeKind) -> u64 {
+        // Fast path: check if already exists
+        if let Some(inode) = self.path_to_inode.get(&path) {
+            return *inode; // Return existing inode without incrementing nlookup
+        }
+
+        // Slow path: allocate new inode with nlookup = 0
+        // Use entry API to avoid TOCTOU race
+        let inode = self
+            .path_to_inode
+            .entry(path.clone())
+            .or_insert_with(|| {
+                let ino = self.next_inode.fetch_add(1, Ordering::SeqCst);
+                self.inode_to_entry
+                    .insert(ino, InodeEntry::new_no_lookup(path.clone(), kind));
                 ino
             });
 
@@ -456,6 +506,47 @@ mod tests {
 
         // Forget 1: nlookup = 0, evicted
         assert!(table.forget(inode, 1)); // Evicted
+        assert!(table.get(inode).is_none());
+    }
+
+    #[test]
+    fn test_get_or_insert_no_lookup_inc() {
+        let table = InodeTable::new();
+        let path = VaultPath::new("readdir_entry");
+
+        // First insert with no_lookup_inc: nlookup = 0
+        let inode = table.get_or_insert_no_lookup_inc(
+            path.clone(),
+            InodeKind::File {
+                dir_id: DirId::root(),
+                name: "readdir_entry".to_string(),
+            },
+        );
+        assert_eq!(table.get(inode).unwrap().nlookup(), 0);
+
+        // Second call: still nlookup = 0 (no increment)
+        let inode2 = table.get_or_insert_no_lookup_inc(
+            path.clone(),
+            InodeKind::File {
+                dir_id: DirId::root(),
+                name: "ignored".to_string(),
+            },
+        );
+        assert_eq!(inode, inode2);
+        assert_eq!(table.get(inode).unwrap().nlookup(), 0);
+
+        // Now use regular get_or_insert: nlookup = 1
+        table.get_or_insert(
+            path.clone(),
+            InodeKind::File {
+                dir_id: DirId::root(),
+                name: "ignored".to_string(),
+            },
+        );
+        assert_eq!(table.get(inode).unwrap().nlookup(), 1);
+
+        // Forget with nlookup=1 should evict
+        assert!(table.forget(inode, 1));
         assert!(table.get(inode).is_none());
     }
 

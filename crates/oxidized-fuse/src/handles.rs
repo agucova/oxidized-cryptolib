@@ -152,6 +152,30 @@ impl WriteBuffer {
     pub fn mark_clean(&mut self) {
         self.dirty = false;
     }
+
+    /// Mark the buffer as dirty (for re-marking after failed flush).
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Take the content for flushing, leaving the buffer temporarily empty.
+    ///
+    /// This moves the Vec instead of copying it. After the write operation,
+    /// call [`restore_content`] to put the content back.
+    ///
+    /// This is an optimization for the `flush` operation which may be called
+    /// multiple times before `release`. It avoids a full Vec copy.
+    pub fn take_content_for_flush(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.content)
+    }
+
+    /// Restore content after a successful flush.
+    ///
+    /// This puts the content back and marks the buffer as clean.
+    pub fn restore_content(&mut self, content: Vec<u8>) {
+        self.content = content;
+        self.dirty = false;
+    }
 }
 
 /// Handle type for FUSE file operations.
@@ -379,6 +403,23 @@ mod tests {
         buf.write(0, b"content");
         let content = buf.into_content();
         assert_eq!(content, b"content");
+    }
+
+    #[test]
+    fn test_write_buffer_take_and_restore_content() {
+        let mut buf = WriteBuffer::new_empty(test_dir_id(), "test.txt".to_string());
+        buf.write(0, b"content");
+        assert!(buf.is_dirty());
+
+        // Take content for flush (moves Vec, doesn't copy)
+        let content = buf.take_content_for_flush();
+        assert_eq!(content, b"content");
+        assert!(buf.is_empty()); // Buffer is empty after take
+
+        // Simulate successful write, restore content
+        buf.restore_content(content);
+        assert!(!buf.is_dirty()); // Marked clean after restore
+        assert_eq!(buf.content(), b"content"); // Content is back
     }
 
     #[test]

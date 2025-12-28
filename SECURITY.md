@@ -139,3 +139,41 @@ cargo bench --release --bench timing_leaks
 ```
 
 **Timing test interpretation:** t-value < 4.5 indicates no detectable timing leak.
+
+### Dependency Auditing
+
+The project uses `cargo-deny` for continuous dependency auditing. Run locally with:
+
+```bash
+# Full audit (advisories, licenses, bans, sources)
+cargo deny check
+
+# Individual checks
+cargo deny check advisories   # CVE/vulnerability scanning
+cargo deny check licenses     # License compliance
+cargo deny check bans         # Banned crate detection
+cargo deny check sources      # Source verification
+```
+
+Configuration is in `deny.toml`. The audit runs automatically in CI on every push and pull request.
+
+#### Audit Policy
+
+| Check | Policy |
+|-------|--------|
+| **Advisories** | Deny all known vulnerabilities; dev-only deps may be ignored with justification |
+| **Licenses** | Allow MIT, Apache-2.0, BSD, ISC, MPL-2.0; deny copyleft (GPL/LGPL) |
+| **Bans** | Deny deprecated crypto crates (rust-crypto, openssl) |
+| **Sources** | Deny non-crates.io sources (git dependencies, unknown registries) |
+
+#### Current Acknowledged Advisories
+
+The following advisories are acknowledged in `deny.toml`:
+
+| Advisory | Crate | Reason for Ignoring |
+|----------|-------|---------------------|
+| RUSTSEC-2021-0139 | ansi_term | Unmaintained; dev dependency only via dudect-bencher |
+| RUSTSEC-2021-0145 | atty | Unaligned read (Windows only); dev dependency only |
+| RUSTSEC-2024-0375 | atty | Unmaintained; dev dependency only via dudect-bencher |
+
+These are acceptable because they only affect development/benchmarking builds, not production code.

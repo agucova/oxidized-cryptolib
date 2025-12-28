@@ -1,0 +1,4 @@
+# Enable tokio_unstable for tokio-console task introspection
+# This is required for console-subscriber to collect task data
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

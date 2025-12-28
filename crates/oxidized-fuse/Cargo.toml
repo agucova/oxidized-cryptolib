@@ -22,10 +22,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde_json = "1"
 
 # FUSE
-async-trait = "0.1"
 libc = "0.2"
 
 # fuser: pure-rust on Linux, libfuse on macOS
@@ -44,8 +42,20 @@ dashmap = "6"
 # Security
 zeroize = "1"
 
+# Signal handling (termination feature enables SIGTERM/SIGHUP handling)
+ctrlc = { version = "3", features = ["termination"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "fs"] }
+
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
+
+[features]
+# Enable FUSE integration tests (requires FUSE installed + external test tools)
+fuse-tests = []
+# Enable tokio-console for async debugging (run `tokio-console` in another terminal)
+tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 
 [dev-dependencies]
 tempfile = "3"

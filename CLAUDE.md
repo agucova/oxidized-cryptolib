@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Structure
 
-This is a Cargo workspace with three crates:
+This is a Cargo workspace with six crates:
 
 ```
 crates/
@@ -13,20 +13,41 @@ crates/
 │   │   ├── crypto/        # MasterKey, RFC 3394 key wrapping
 │   │   ├── vault/         # VaultOperations, config, master key extraction
 │   │   ├── fs/            # File/directory/symlink encryption
+│   │   ├── mount/         # MountBackend trait for filesystem backends
 │   │   └── error/         # Unified error types
 │   ├── benches/           # Performance and timing leak benchmarks
 │   └── tests/             # Integration tests
 ├── oxidized-cli/          # CLI tool (oxcrypt binary)
 │   └── src/
 │       └── commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
-└── oxidized-fuse/         # FUSE filesystem (oxmount binary)
-    ├── src/
-    │   ├── filesystem.rs  # FUSE Filesystem trait implementation
-    │   ├── inode.rs       # Inode table management
-    │   ├── attr.rs        # Attribute and directory caching
-    │   └── error.rs       # Error mapping to errno
-    ├── benches/           # Performance benchmarks
-    └── tests/             # Integration tests
+├── oxidized-fuse/         # FUSE filesystem (oxmount binary)
+│   ├── src/
+│   │   ├── filesystem.rs  # FUSE Filesystem trait implementation
+│   │   ├── inode.rs       # Inode table management
+│   │   ├── backend.rs     # MountBackend implementation
+│   │   ├── attr.rs        # Attribute and directory caching
+│   │   └── error.rs       # Error mapping to errno
+│   ├── benches/           # Performance benchmarks
+│   └── tests/             # Integration tests
+├── oxidized-fskit/        # FSKit filesystem (oxmount-fskit binary, macOS 15.4+)
+│   ├── src/
+│   │   ├── filesystem.rs  # FSKit Filesystem trait implementation
+│   │   ├── item_table.rs  # Item ID management (like inodes)
+│   │   ├── backend.rs     # MountBackend implementation
+│   │   ├── handles.rs     # File handle and write buffer management
+│   │   └── error.rs       # Error mapping to errno
+│   └── tests/             # Unit tests
+├── oxidized-gui/          # Desktop GUI (oxvault binary)
+│   └── src/
+│       ├── backend/       # FUSE/FSKit backend integration
+│       ├── state/         # App state and vault management
+│       └── components/    # Dioxus UI components
+└── oxidized-bench/        # Cross-implementation benchmark harness (oxbench binary)
+    └── src/
+        ├── bench/         # Benchmark definitions, runner, suites
+        ├── mount/         # Uses MountBackend from oxidized-fuse/fskit
+        ├── results/       # Statistics, tables, and charts
+        └── platform/      # Platform-specific utilities (macOS version detection)
 ```
 
 ## Commands
@@ -36,6 +57,9 @@ crates/
 - **Build library**: `cargo build -p oxidized-cryptolib`
 - **Build CLI**: `cargo build -p oxidized-cli`
 - **Build FUSE**: `cargo build -p oxidized-fuse`
+- **Build FSKit**: `cargo build -p oxidized-fskit` (macOS 15.4+ only, requires `protoc`)
+- **Build GUI**: `cargo build -p oxidized-gui`
+- **Build GUI with FSKit**: `cargo build -p oxidized-gui --features fskit`
 - **Check**: `cargo check` (fast compile check without generating binaries)
 - **Format**: `cargo fmt` (format all Rust code using rustfmt)
 - **Lint**: `cargo clippy` (static analysis and linting)
@@ -53,26 +77,81 @@ crates/
 - **Unmount (macOS)**: `umount /mnt/vault`
 - **Unmount (Linux)**: `fusermount -u /mnt/vault`
 
+### Running the FSKit Mount (macOS 15.4+)
+Requires FSKitBridge.app installed and enabled in System Settings.
+- **Run mount**: `cargo run -p oxidized-fskit -- <vault_path> --mount-point <mountpoint>`
+- **Install mount**: `cargo install --path crates/oxidized-fskit`
+- **Example**: `oxmount-fskit ~/my_vault --mount-point /tmp/vault`
+- **Unmount**: `umount /tmp/vault` or Ctrl+C
+
+**Prerequisites**:
+1. macOS 15.4 (Sequoia) or later
+2. `protoc` installed (for building fskit-rs)
+3. FSKitBridge.app from [releases](https://github.com/debox-network/FSKitBridge/releases)
+4. Enable in System Settings → General → Login Items & Extensions → File System Extensions
+
+### Running the GUI
+- **Run GUI**: `cargo run -p oxidized-gui`
+- **Run GUI with FSKit**: `cargo run -p oxidized-gui --features fskit`
+- **Install GUI**: `cargo install --path crates/oxidized-gui`
+- **Binary name**: `oxvault`
+
+### Running the Benchmark Harness
+Cross-implementation benchmark tool for comparing FUSE, FSKit, and official Cryptomator performance.
+- **Run benchmarks**: `cargo run -p oxidized-bench --release -- /path/to/vault`
+- **Install**: `cargo install --path crates/oxidized-bench`
+- **Binary name**: `oxbench`
+
+**Basic usage**:
+```bash
+# Benchmark FUSE implementation only (default)
+oxbench /path/to/vault
+
+# Benchmark specific implementations
+oxbench /path/to/vault fuse fskit
+
+# Compare with official Cryptomator (user-mounted)
+oxbench /path/to/vault fuse --cryptomator /Volumes/MyVault
+```
+
+**Options**:
+- `-m, --mount-prefix <PATH>` - Mount point prefix (default: /tmp/oxbench)
+- `-c, --cryptomator <PATH>` - Path to already-mounted Cryptomator vault
+- `-p, --password <PASSWORD>` - Vault password (or OXBENCH_PASSWORD env)
+- `-s, --suite <SUITE>` - Benchmark suite: quick, read, write, full (default: full)
+- `--iterations <N>` - Iterations per benchmark (default: 10)
+- `-v, --verbose` - Verbose output
+
+**Cache clearing**: When benchmarking multiple implementations, oxbench will prompt for sudo access to clear OS caches between implementations for accurate results. Falls back to extended waits if sudo is unavailable.
+
 ### Testing
-Uses `cargo-nextest` for faster parallel test execution: `cargo install cargo-nextest`
+Uses `cargo-nextest` for faster parallel test execution (installed automatically by devenv):
 - **All tests**: `cargo nextest run` (runs all tests in parallel with better output)
 - **Library tests**: `cargo nextest run -p oxidized-cryptolib`
 - **CLI tests**: `cargo nextest run -p oxidized-cli`
-- **FUSE tests**: `cargo nextest run -p oxidized-fuse` (unit + integration tests)
-- **FUSE unit tests**: `cargo test -p oxidized-fuse --lib` (36 tests)
-- **FUSE integration tests**: `cargo test -p oxidized-fuse --test integration_tests` (18 tests)
+- **FUSE unit tests**: `cargo nextest run -p oxidized-fuse` (unit tests only)
+- **FSKit tests**: `cargo nextest run -p oxidized-fskit`
+- **GUI tests**: `cargo nextest run -p oxidized-gui`
 - **Integration tests**: `cargo nextest run -p oxidized-cryptolib -E 'test(crypto_tests)'`
 - **Specific test**: `cargo nextest run [test_name]`
 - **CI profile**: `cargo nextest run --profile ci` (used in GitHub Actions)
 - **List tests**: `cargo nextest list` (show all available tests)
 - **Retry flaky**: `cargo nextest run --retries 2` (retry failed tests)
 
+### FUSE Integration Tests
+Requires FUSE installed and external test tools (pjdfstest, fsx). Enable with `--features fuse-tests`:
+- **All FUSE tests**: `cargo nextest run -p oxidized-fuse --features fuse-tests`
+- **pjdfstest** (POSIX compliance): tests mkdir, open, symlink, rename, unlink, etc.
+- **fsx** (data integrity): random read/write/truncate with verification
+- **fsstress** (concurrency, Linux only): multi-process stress testing
+- **mount_tests**: basic mount/read/write operations
+
 Legacy `cargo test` still works but nextest is preferred:
 - **Fallback**: `cargo test` (standard test runner)
 - **With output**: `cargo test -- --nocapture`
 
 ### Code Coverage
-Requires `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
+Uses `cargo-llvm-cov` (installed automatically by devenv):
 - **Text summary**: `cargo llvm-cov nextest --workspace`
 - **HTML report**: `cargo llvm-cov nextest --workspace --html` (output in `target/llvm-cov/html/`)
 - **LCOV format**: `cargo llvm-cov nextest --workspace --lcov --output-path lcov.info`
@@ -98,6 +177,32 @@ Uses dudect statistical methodology to detect timing side-channels in cryptograp
 - HMAC verification (via ring)
 - AES-GCM file header/content decryption
 - AES-SIV filename decryption
+
+### Async Debugging with tokio-console
+Both `oxidized-fuse` and `oxidized-fskit` support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection during development. The `tokio-console` CLI is installed automatically by devenv.
+
+**Usage**:
+```bash
+# Build with console support (FUSE)
+cargo build -p oxidized-fuse --features tokio-console
+
+# Build with console support (FSKit)
+cargo build -p oxidized-fskit --features tokio-console
+
+# Run the mount (terminal 1)
+./target/debug/oxmount ~/vault /mnt/point
+
+# Connect console (terminal 2)
+tokio-console
+```
+
+**What you can observe**:
+- Active async tasks and their states
+- Task poll times and waker counts
+- Resource contention (mutexes, semaphores)
+- `spawn_blocking` threads for CPU-bound crypto
+
+**Note**: The `tokio-console` feature is opt-in and adds zero overhead to normal builds. The workspace `.cargo/config.toml` enables `tokio_unstable` required for task instrumentation.
 
 ## Architecture Overview
 
@@ -164,6 +269,97 @@ CryptomatorFS (implements fuser::Filesystem)
 - Directory listing: ~80 µs (filename decryption)
 - File read: ~82 µs (content decryption)
 
+### oxidized-fskit (FSKit Filesystem, macOS 15.4+)
+
+Native macOS filesystem using Apple's FSKit framework via [fskit-rs](https://github.com/debox-network/fskit-rs).
+
+#### Why FSKit?
+- FUSE on macOS is unmaintained (fuser maintainer [stopped macOS support](https://github.com/cberner/fuser/issues/306#issuecomment-2107438748))
+- FSKit provides better macOS integration (native Finder support, no kernel extension)
+- Requires FSKitBridge.app to bridge FSKit's XPC to Rust via TCP+Protobuf
+
+#### Architecture
+```
+VFS (Kernel)
+     │ XPC
+     ▼
+FSKitBridge.app/FSKitExt.appex (Swift, sandboxed)
+     │ TCP + Protobuf (127.0.0.1:35367)
+     ▼
+CryptomatorFSKit (implements fskit_rs::Filesystem)
+     │
+     ├── ItemTable (item_id ↔ VaultPath mapping)
+     ├── HandleTable (open file handles)
+     └── VaultOperationsAsync (from oxidized-cryptolib)
+```
+
+#### Core Modules (`crates/oxidized-fskit/src/`)
+- **`filesystem.rs`**: `CryptomatorFSKit` struct implementing fskit_rs's `Filesystem` trait
+- **`item_table.rs`**: `ItemTable` for bidirectional item_id↔path mapping (like FUSE inodes)
+- **`handles.rs`**: `HandleTable` and `WriteBuffer` for file I/O with random-access write support
+- **`backend.rs`**: `FSKitBackend` implementing `MountBackend` trait for GUI integration
+- **`error.rs`**: Conversion from vault errors to POSIX errno codes
+
+### oxidized-gui (Desktop GUI)
+
+Cross-platform desktop application using [Dioxus](https://dioxuslabs.com/) for vault management.
+
+#### Features
+- Vault creation, opening, and management
+- Backend selection (FUSE by default, FSKit on macOS 15.4+ with `--features fskit`)
+- Mount/unmount operations via MountManager
+
+#### Architecture
+```
+oxvault (Dioxus desktop app)
+     │
+     ├── MountManager (coordinates backends)
+     │        │
+     │        ├── FuseBackend (from oxidized-fuse)
+     │        └── FSKitBackend (stub or real from oxidized-fskit)
+     │
+     └── VaultState (app state management)
+```
+
+#### Core Modules (`crates/oxidized-gui/src/`)
+- **`backend/mod.rs`**: `MountManager` for coordinating filesystem backends
+- **`backend/fuse.rs`**: Re-exports `FuseBackend` from oxidized-fuse
+- **`backend/fskit.rs`**: Conditional `FSKitBackend` (real when `fskit` feature enabled, stub otherwise)
+- **`state/`**: Application state and vault management
+
+### oxidized-bench (Benchmark Harness)
+
+Cross-implementation benchmark tool for comparing filesystem performance across FUSE, FSKit, and official Cryptomator.
+
+#### Architecture
+```
+oxbench (BenchmarkRunner)
+     │
+     ├── mount_implementation()
+     │        │
+     │        ├── FuseBackend (from oxidized-fuse, via MountBackend trait)
+     │        ├── FSKitBackend (from oxidized-fskit, via MountBackend trait)
+     │        └── ExternalMount (validates user-mounted Cryptomator)
+     │
+     ├── CacheClearStrategy (Sudo or WaitOnly)
+     │
+     └── Benchmark suite (read/write/metadata operations)
+```
+
+#### Core Modules (`crates/oxidized-bench/src/`)
+- **`bench/runner.rs`**: `BenchmarkRunner` for sequential benchmark execution with cache clearing
+- **`bench/suite.rs`**: Suite definitions (quick, read, write, full)
+- **`bench/read.rs`**, **`write.rs`**, **`metadata.rs`**: Individual benchmark implementations
+- **`mount/mod.rs`**: Uses `MountBackend` trait from oxidized-fuse/fskit for unified mount handling
+- **`mount/external.rs`**: Validates external Cryptomator mounts
+- **`results/`**: Statistics calculation, table rendering, and chart output
+
+#### Sequential Mounting
+Benchmarks run one implementation at a time to avoid:
+- Concurrent access conflicts on the same vault
+- OS page cache cross-contamination between implementations
+- Write conflicts that could corrupt vault data
+
 ### Security Features
 - Uses `#![forbid(unsafe_code)]` in critical crypto modules
 - Memory protection via `memsafe` crate (mlock, mprotect, zeroization on drop)
@@ -185,7 +381,9 @@ Key cryptographic dependencies include:
 - `subtle` for constant-time primitives
 - `dudect-bencher` for timing leak detection (dev-dependency)
 - `fuser` for FUSE filesystem implementation (oxidized-fuse)
-- `dashmap` for lock-free concurrent data structures (oxidized-fuse)
+- `fskit-rs` for FSKit filesystem implementation (oxidized-fskit, macOS 15.4+)
+- `dioxus` for desktop GUI framework (oxidized-gui)
+- `dashmap` for lock-free concurrent data structures (oxidized-fuse, oxidized-fskit)
 
 ### Development Notes
 - Property-based tests use 1000 test cases to verify cryptographic correctness

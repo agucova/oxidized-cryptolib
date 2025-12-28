@@ -400,9 +400,11 @@ pub fn decrypt_file_content_with_context(
         let chunk_nonce = Nonce::from_slice(&chunk[0..12]);
         let ciphertext = &chunk[12..];
 
-        let mut aad = Vec::new();
-        aad.extend_from_slice(&(chunk_number as u64).to_be_bytes());
-        aad.extend_from_slice(header_nonce);
+        // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
+        // Use stack array to avoid heap allocation per chunk
+        let mut aad = [0u8; 20];
+        aad[..8].copy_from_slice(&(chunk_number as u64).to_be_bytes());
+        aad[8..].copy_from_slice(header_nonce);
 
         let payload = Payload {
             msg: ciphertext,
@@ -511,9 +513,11 @@ pub fn encrypt_file_content_with_context(
         let mut chunk_nonce = [0u8; 12];
         rand::rng().fill_bytes(&mut chunk_nonce);
 
-        let mut aad = Vec::new();
-        aad.extend_from_slice(&(chunk_number as u64).to_be_bytes());
-        aad.extend_from_slice(header_nonce);
+        // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
+        // Use stack array to avoid heap allocation per chunk
+        let mut aad = [0u8; 20];
+        aad[..8].copy_from_slice(&(chunk_number as u64).to_be_bytes());
+        aad[8..].copy_from_slice(header_nonce);
 
         let payload = Payload {
             msg: chunk,

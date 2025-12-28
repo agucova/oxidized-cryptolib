@@ -7,8 +7,10 @@
 //! - FUSE must be installed (fuse3 on Linux, macFUSE on macOS)
 //! - Tests must run with appropriate permissions
 //! - The test_vault directory must exist with password "123456789"
+//!
+//! Run: `cargo nextest run -p oxidized-fuse --features fuse-tests`
 
-#![cfg(unix)]
+#![cfg(all(unix, feature = "fuse-tests"))]
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -94,11 +96,19 @@ fn mount_test_vault(mount_dir: &Path) -> Result<MountGuard, String> {
     let session = fuser::spawn_mount2(fs, mount_dir, &options)
         .map_err(|e| format!("Failed to mount: {}", e))?;
 
-    // Wait for mount to become ready
+    // Wait for mount to become ready by checking for actual content
+    // Just checking read_dir().is_ok() is not enough - we need to see actual files
     let deadline = std::time::Instant::now() + MOUNT_READY_TIMEOUT;
     while std::time::Instant::now() < deadline {
-        if mount_dir.join(".").exists() && fs::read_dir(mount_dir).is_ok() {
-            return Ok(MountGuard::new(session, mount_dir.to_path_buf()));
+        if let Ok(entries) = fs::read_dir(mount_dir) {
+            let names: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            // Check for known test vault files
+            if names.iter().any(|n| n == "test_folder" || n == "aes-wrap.c" || n == "new_folder") {
+                return Ok(MountGuard::new(session, mount_dir.to_path_buf()));
+            }
         }
         thread::sleep(MOUNT_CHECK_INTERVAL);
     }
@@ -125,10 +135,18 @@ fn mount_test_vault_rw(mount_dir: &Path) -> Result<MountGuard, String> {
     let session = fuser::spawn_mount2(fs, mount_dir, &options)
         .map_err(|e| format!("Failed to mount: {}", e))?;
 
+    // Wait for mount to become ready by checking for actual content
     let deadline = std::time::Instant::now() + MOUNT_READY_TIMEOUT;
     while std::time::Instant::now() < deadline {
-        if mount_dir.join(".").exists() && fs::read_dir(mount_dir).is_ok() {
-            return Ok(MountGuard::new(session, mount_dir.to_path_buf()));
+        if let Ok(entries) = fs::read_dir(mount_dir) {
+            let names: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            // Check for known test vault files
+            if names.iter().any(|n| n == "test_folder" || n == "aes-wrap.c" || n == "new_folder") {
+                return Ok(MountGuard::new(session, mount_dir.to_path_buf()));
+            }
         }
         thread::sleep(MOUNT_CHECK_INTERVAL);
     }
@@ -169,7 +187,6 @@ macro_rules! require_fuse {
 // ============================================================================
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_mount_and_list_root() {
     require_fuse!();
 
@@ -208,7 +225,6 @@ fn test_mount_and_list_root() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_read_file_content() {
     require_fuse!();
 
@@ -256,7 +272,6 @@ fn test_read_file_content() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_file_attributes() {
     require_fuse!();
 
@@ -287,7 +302,6 @@ fn test_file_attributes() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_concurrent_reads() {
     require_fuse!();
 
@@ -341,7 +355,6 @@ fn test_concurrent_reads() {
 // ============================================================================
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_write_new_file() {
     require_fuse!();
 
@@ -387,7 +400,6 @@ fn test_write_new_file() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_mkdir_and_rmdir() {
     require_fuse!();
 
@@ -424,7 +436,6 @@ fn test_mkdir_and_rmdir() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_rename_file() {
     require_fuse!();
 
@@ -475,7 +486,6 @@ fn test_rename_file() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_symlink_roundtrip() {
     require_fuse!();
 
@@ -520,7 +530,6 @@ fn test_symlink_roundtrip() {
 }
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_large_file() {
     require_fuse!();
 
@@ -574,7 +583,6 @@ fn test_large_file() {
 // ============================================================================
 
 #[test]
-#[ignore = "requires FUSE and may need root"]
 fn test_rapid_open_close() {
     require_fuse!();
 

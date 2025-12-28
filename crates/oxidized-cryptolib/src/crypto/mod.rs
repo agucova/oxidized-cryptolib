@@ -2,6 +2,7 @@
 
 pub mod keys;
 pub mod key_wrap;
+mod thread_safety; // Send + Sync impls for MasterKey
 
 use thiserror::Error;
 

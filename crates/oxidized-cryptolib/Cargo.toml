@@ -29,9 +29,8 @@ base64 = "0.22"
 data-encoding = "2.9"
 generic-array = "0.14"
 hex = "0.4"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 rand = "0.9"
-rand_core = "0.9"
 relative-path = "2.0.1"
 ring = "0.17"
 scrypt = "0.11"
@@ -49,7 +48,7 @@ subtle = "2"
 tempfile = "3"
 memsafe = "0.4"
 tracing.workspace = true
-tokio = { version = "1", features = ["fs", "io-util", "sync", "rt"], optional = true }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "rt", "macros"], optional = true }
 dashmap = { version = "6", optional = true }
 
 [dev-dependencies]
@@ -57,9 +56,9 @@ assert_fs = "1"
 criterion = "0.8"
 dudect-bencher = "0.6"
 futures = "0.3"
-hex-literal = "0.4"
+hex-literal = "1"
 insta = "1"
-md5 = "0.7"
+md5 = "0.8"
 proptest = "1"
 rand_chacha = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util", "time"] }

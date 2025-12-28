@@ -1,12 +1,22 @@
 //! oxmount - Mount Cryptomator vaults as FUSE filesystems.
 //!
 //! Usage: oxmount --vault <path> --mount <mountpoint>
+//!
+//! ## Debugging with tokio-console
+//!
+//! Build with the `tokio-console` feature for async task introspection:
+//! ```bash
+//! cargo build -p oxidized-fuse --features tokio-console
+//! ```
+//!
+//! Then run `tokio-console` in another terminal to connect (default: 127.0.0.1:6669).
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use oxidized_fuse::CryptomatorFS;
 use std::path::PathBuf;
-use tracing::{error, info};
+use std::sync::mpsc;
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use zeroize::Zeroizing;
 
@@ -24,10 +34,6 @@ struct Cli {
     /// Vault password (if not provided, will prompt or use VAULT_PASSWORD env var)
     #[arg(short, long)]
     password: Option<String>,
-
-    /// Run in foreground (don't daemonize)
-    #[arg(short, long)]
-    foreground: bool,
 
     /// Enable debug logging
     #[arg(short, long)]
@@ -48,6 +54,21 @@ fn main() -> Result<()> {
         "info"
     };
 
+    #[cfg(feature = "tokio-console")]
+    {
+        // With tokio-console: layer console subscriber with fmt output
+        // Must be initialized BEFORE CryptomatorFS creates its runtime
+        let console_layer = console_subscriber::spawn();
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(tracing_subscriber::fmt::layer())
+            .with(tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)))
+            .init();
+        info!("tokio-console enabled, connect with: tokio-console");
+    }
+
+    #[cfg(not(feature = "tokio-console"))]
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .with(tracing_subscriber::EnvFilter::try_from_default_env()
@@ -82,9 +103,11 @@ fn main() -> Result<()> {
         .context("Failed to initialize filesystem")?;
 
     // Mount options
+    // Always use AutoUnmount as kernel-level fallback for unexpected termination
     let mut options = vec![
         fuser::MountOption::FSName("cryptomator".to_string()),
         fuser::MountOption::Subtype("oxidized".to_string()),
+        fuser::MountOption::AutoUnmount,
     ];
 
     if cli.read_only {
@@ -93,17 +116,40 @@ fn main() -> Result<()> {
         options.push(fuser::MountOption::RW);
     }
 
-    if !cli.foreground {
-        options.push(fuser::MountOption::AutoUnmount);
-    }
+    // Set up channel for signal handling
+    let (tx, rx) = mpsc::channel::<()>();
 
-    // Mount the filesystem
+    // Install Ctrl+C handler for graceful unmount
+    ctrlc::set_handler(move || {
+        // Send signal to main thread to trigger unmount
+        let _ = tx.send(());
+    })
+    .context("Failed to set signal handler")?;
+
+    // Mount the filesystem in background thread
     info!("Mounting filesystem (press Ctrl+C to unmount)");
 
-    if let Err(e) = fuser::mount2(fs, &cli.mount, &options) {
+    let session = fuser::spawn_mount2(fs, &cli.mount, &options).map_err(|e| {
         error!(error = %e, "Mount failed");
-        anyhow::bail!("Failed to mount filesystem: {}", e);
+        anyhow::anyhow!("Failed to mount filesystem: {}", e)
+    })?;
+
+    info!("Filesystem mounted at {}", cli.mount.display());
+
+    // Wait for Ctrl+C or external unmount signal
+    match rx.recv() {
+        Ok(()) => {
+            info!("Received interrupt signal, unmounting...");
+        }
+        Err(_) => {
+            // Channel closed unexpectedly - shouldn't happen in normal operation
+            warn!("Signal channel closed unexpectedly");
+        }
     }
+
+    // Explicitly drop session to trigger unmount
+    // (BackgroundSession::drop calls unmount)
+    drop(session);
 
     info!("Filesystem unmounted");
     Ok(())

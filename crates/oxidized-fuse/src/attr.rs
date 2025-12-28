@@ -13,6 +13,10 @@ pub const DEFAULT_ATTR_TTL: Duration = Duration::from_secs(1);
 /// Default time-to-live for negative cache entries (ENOENT).
 pub const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_millis(500);
 
+/// Threshold for triggering automatic cache cleanup.
+/// When cache exceeds this many entries, expired entries are removed.
+const CLEANUP_THRESHOLD: usize = 10_000;
+
 /// A cached file attribute with expiration time.
 #[derive(Debug, Clone)]
 pub struct CachedAttr {
@@ -108,14 +112,28 @@ impl AttrCache {
     }
 
     /// Inserts or updates a cached attribute.
+    ///
+    /// Triggers automatic cleanup when cache exceeds threshold.
     pub fn insert(&self, inode: u64, attr: FileAttr) {
         self.entries
             .insert(inode, CachedAttr::new(attr, self.attr_ttl));
+        self.maybe_cleanup();
     }
 
     /// Inserts or updates a cached attribute with a custom TTL.
+    ///
+    /// Triggers automatic cleanup when cache exceeds threshold.
     pub fn insert_with_ttl(&self, inode: u64, attr: FileAttr, ttl: Duration) {
         self.entries.insert(inode, CachedAttr::new(attr, ttl));
+        self.maybe_cleanup();
+    }
+
+    /// Triggers cleanup if cache exceeds the threshold.
+    fn maybe_cleanup(&self) {
+        let total = self.entries.len() + self.negative.len();
+        if total > CLEANUP_THRESHOLD {
+            self.cleanup_expired();
+        }
     }
 
     /// Invalidates a cached attribute.
@@ -137,11 +155,14 @@ impl AttrCache {
     }
 
     /// Adds a path to the negative cache.
+    ///
+    /// Triggers automatic cleanup when cache exceeds threshold.
     pub fn insert_negative(&self, parent: u64, name: String) {
         self.negative.insert(
             (parent, name),
             NegativeCacheEntry::new(self.negative_ttl),
         );
+        self.maybe_cleanup();
     }
 
     /// Removes a path from the negative cache (when it's created).
@@ -256,14 +277,24 @@ impl DirCache {
     }
 
     /// Inserts a directory listing into the cache.
+    ///
+    /// Triggers automatic cleanup when cache exceeds threshold.
     pub fn insert(&self, parent: u64, entries: Vec<DirListingEntry>) {
         self.listings
             .insert(parent, CachedDirListing::new(entries, self.ttl));
+        self.maybe_cleanup();
     }
 
     /// Invalidates a cached directory listing.
     pub fn invalidate(&self, parent: u64) {
         self.listings.remove(&parent);
+    }
+
+    /// Triggers cleanup if cache exceeds the threshold.
+    fn maybe_cleanup(&self) {
+        if self.listings.len() > CLEANUP_THRESHOLD {
+            self.cleanup_expired();
+        }
     }
 
     /// Clears all expired entries from the cache.

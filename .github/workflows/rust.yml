@@ -8,49 +8,234 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Build and Test
+  # =============================================================================
+  # Format and Lint - Run first to catch obvious issues
+  # =============================================================================
+  format:
+    name: Format Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup update nightly && rustup default nightly
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup default stable && rustup component add rustfmt
+      - name: Check formatting
+        # Exclude platform-specific crates that may have conditional compilation issues
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup default stable && rustup component add clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+      - name: Install FUSE (for oxidized-fuse)
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: Run Clippy (cross-platform crates)
+        # Exclude macOS-only crates and GUI (needs webkit2gtk on Linux)
+        run: |
+          cargo clippy --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui \
+            -- -D warnings
+
+  # =============================================================================
+  # Security Audit
+  # =============================================================================
+  security_audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup default stable
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Run cargo-deny
+        run: cargo deny check
+      - name: Run cargo-audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # =============================================================================
+  # MSRV Check - Verify minimum supported Rust version
+  # =============================================================================
+  msrv:
+    name: MSRV Check (Rust 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust 1.90
+        run: rustup install 1.90 && rustup default 1.90
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: Check MSRV (cross-platform crates)
+        run: |
+          cargo check --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui
+
+  # =============================================================================
+  # Build and Test - Linux
+  # =============================================================================
+  build_and_test_linux:
+    name: Build and Test (Linux)
+    runs-on: ubuntu-latest
+    needs: [format, clippy]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust nightly
+        run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-build
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
-      - name: Build and test (default features)
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: Build (default features)
         run: |
-          cargo build --verbose
-          cargo nextest run --profile ci
-      - name: Build and test (no default features)
+          cargo build --verbose --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui
+      - name: Test (default features)
         run: |
-          cargo build --verbose --no-default-features
-          cargo nextest run --profile ci --no-default-features
-      - name: Run stress tests (long-running concurrency tests)
-        run: cargo nextest run --profile ci -p oxidized-cryptolib --features stress -E 'test(stress_)'
+          cargo nextest run --profile ci --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui
+      - name: Build (no default features)
+        run: |
+          cargo build --verbose --no-default-features --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui \
+            --exclude oxidized-bench
+      - name: Test (no default features)
+        run: |
+          cargo nextest run --profile ci --no-default-features --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui \
+            --exclude oxidized-bench
+      - name: Run stress tests
+        run: |
+          cargo nextest run --profile ci -p oxidized-cryptolib \
+            --features stress -E 'test(stress_)'
 
+  # =============================================================================
+  # Build and Test - macOS
+  # =============================================================================
+  build_and_test_macos:
+    name: Build and Test (macOS)
+    runs-on: macos-latest
+    needs: [format]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust nightly
+        run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-build
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Install macFUSE
+        run: |
+          brew install --cask macfuse
+      - name: Build cross-platform crates
+        # Build crates that work on both platforms
+        # Note: oxidized-fskit requires macOS 15.4+ and FSKitBridge.app
+        # Note: oxidized-gui needs full Xcode for dioxus desktop
+        run: |
+          cargo build --verbose --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui
+      - name: Test cross-platform crates
+        run: |
+          cargo nextest run --profile ci --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui \
+            --exclude oxidized-fuse
+
+  # =============================================================================
+  # FSKit Build (macOS 26+)
+  # =============================================================================
+  fskit_build:
+    name: FSKit Build (macOS 26)
+    runs-on: macos-26
+    needs: [format]
+    # FSKit is experimental - don't block PRs on failures
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust nightly
+        run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-fskit
+      - name: Install protoc (for fskit-rs)
+        run: brew install protobuf
+      - name: Clone and build FSKitBridge
+        run: |
+          git clone --depth 1 https://github.com/debox-network/FSKitBridge.git /tmp/FSKitBridge
+          cd /tmp/FSKitBridge
+          xcodebuild -scheme FSKitBridge -configuration Release -derivedDataPath build
+          # Install to Applications
+          cp -R build/Build/Products/Release/FSKitBridge.app /Applications/
+          # Remove quarantine
+          xattr -cr /Applications/FSKitBridge.app
+      - name: Build oxidized-fskit
+        run: cargo build -p oxidized-fskit --verbose
+      - name: Run oxidized-fskit unit tests
+        run: cargo test -p oxidized-fskit --verbose
+
+  # =============================================================================
+  # FUSE Integration Tests (Linux)
+  # =============================================================================
   fuse_tests:
     name: FUSE Integration Tests
     runs-on: ubuntu-latest
+    needs: [build_and_test_linux]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rust toolchain
         run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-build
       - name: Install FUSE
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - name: Build oxidized-fuse (release)
         run: cargo build --release -p oxidized-fuse
       - name: Run Rust mount tests
         run: |
-          # Run the ignored mount tests (requires FUSE)
           cargo test -p oxidized-fuse --test mount_tests -- --ignored --test-threads=1 2>&1 || echo "Some mount tests failed (expected in CI without proper FUSE setup)"
         continue-on-error: true
 
   pjdfstest_rust:
     name: POSIX Compliance (Rust pjdfstest)
     runs-on: ubuntu-latest
+    needs: [build_and_test_linux]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rust toolchain
         run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-build
       - name: Install FUSE and pjdfstest dependencies
         run: |
           sudo apt-get update
@@ -67,22 +252,80 @@ jobs:
           PJDFSTEST_BIN: /tmp/pjdfstest/pjdfstest
         run: |
           # Run the pjdfstest tests that are known to pass
-          # mkdir: directory create/remove operations
           cargo test -p oxidized-fuse --test pjdfstest "mkdir" -- --ignored --test-threads=1 --nocapture
-          # open: file create/open operations
           cargo test -p oxidized-fuse --test pjdfstest "open" -- --ignored --test-threads=1 --nocapture
-          # symlink: symlink create/unlink operations
           cargo test -p oxidized-fuse --test pjdfstest "symlink" -- --ignored --test-threads=1 --nocapture
+
+  fsx_tests:
+    name: FSX Data Integrity Tests
+    runs-on: ubuntu-latest
+    needs: [build_and_test_linux]
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-fsx')
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-build
+      - name: Install FUSE
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev
+      - name: Install fsx
+        run: cargo install fsx
+      - name: Build oxidized-fuse (release)
+        run: cargo build --release -p oxidized-fuse
+      - name: Run FSX tests (known failures)
+        run: |
+          cargo test -p oxidized-fuse --test fsx_tests test_fsx_quick -- --ignored --nocapture || echo "FSX quick test failed (expected - file visibility bug)"
+        continue-on-error: true
+
+  fsstress_tests:
+    name: fsstress Concurrency Tests
+    runs-on: ubuntu-latest
+    needs: [build_and_test_linux]
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-fsstress')
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-build
+      - name: Install FUSE and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev build-essential
+      - name: Build fsstress
+        run: |
+          git clone --depth 1 https://github.com/billziss-gh/secfs.test.git /tmp/secfs.test
+          cd /tmp/secfs.test/fsstress
+          make
+      - name: Build oxidized-fuse (release)
+        run: cargo build --release -p oxidized-fuse
+      - name: Run fsstress tests
+        env:
+          FSSTRESS_BIN: /tmp/secfs.test/fsstress/fsstress
+        run: |
+          cargo test -p oxidized-fuse --test fsstress_tests -- --ignored --nocapture || echo "fsstress tests completed (may have failures)"
+        continue-on-error: true
 
   pjdfstest_shell:
     name: POSIX Compliance (Shell pjdfstest)
     runs-on: ubuntu-latest
-    # Only run on main branch or when explicitly requested (requires sudo)
+    needs: [build_and_test_linux]
     if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-pjdfstest')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rust toolchain
         run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-build
       - name: Install FUSE and dependencies
         run: |
           sudo apt-get update
@@ -100,27 +343,68 @@ jobs:
         run: sudo ./scripts/run-pjdfstest.sh --quick --pjdfstest ./pjdfstest
         continue-on-error: true
 
+  # =============================================================================
+  # Code Coverage
+  # =============================================================================
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: [build_and_test_linux]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rust toolchain
         run: rustup update nightly && rustup default nightly
       - name: Install llvm-tools-preview
         run: rustup component add llvm-tools-preview
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
       - name: Install cargo-llvm-cov and nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,nextest
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - name: Generate coverage report
         run: |
-          cargo llvm-cov nextest --workspace --html
-          cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+          cargo llvm-cov nextest --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui \
+            --html
+          cargo llvm-cov nextest --workspace \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui \
+            --lcov --output-path lcov.info
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-report
           path: |
             target/llvm-cov/html/
             lcov.info
+
+  # =============================================================================
+  # Documentation Build
+  # =============================================================================
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: docs
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: Build documentation
+        run: |
+          cargo doc --workspace --no-deps \
+            --exclude oxidized-fskit \
+            --exclude oxidized-gui
+        env:
+          RUSTDOCFLAGS: "-D warnings"

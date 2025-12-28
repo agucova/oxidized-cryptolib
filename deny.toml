@@ -1,0 +1,117 @@
+# cargo-deny configuration for oxidized-cryptolib
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+]
+all-features = true
+
+# =============================================================================
+# Advisories - CVE and security vulnerability detection
+# =============================================================================
+[advisories]
+# Ignore these advisories (with justification)
+ignore = [
+    # ansi_term and atty are pulled in by dudect-bencher's old clap 2.x
+    # These are dev dependencies only used for timing analysis benchmarks
+    # Risk: LOW - only affects dev/bench builds, not production
+    { id = "RUSTSEC-2021-0139", reason = "ansi_term unmaintained - dev dep only via dudect-bencher" },
+    { id = "RUSTSEC-2021-0145", reason = "atty unaligned read (Windows only) - dev dep only" },
+    { id = "RUSTSEC-2024-0375", reason = "atty unmaintained - dev dep only via dudect-bencher" },
+]
+
+# =============================================================================
+# Licenses - ensure all dependencies are compatibly licensed
+# =============================================================================
+[licenses]
+confidence-threshold = 0.93
+# Allow these licenses (compatible with MPL-2.0)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+    "OpenSSL",
+]
+
+# Handle special license cases
+[[licenses.clarify]]
+crate = "ring"
+expression = "Apache-2.0 AND ISC"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[[licenses.clarify]]
+crate = "aws-lc-rs"
+expression = "(Apache-2.0 OR ISC) AND ISC"
+license-files = [{ path = "LICENSE", hash = 0x2e8b0bf2 }]
+
+[[licenses.clarify]]
+crate = "aws-lc-sys"
+expression = "(Apache-2.0 OR ISC) AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0x4c12ab3a }]
+
+[licenses.private]
+ignore = false
+registries = []
+
+# =============================================================================
+# Bans - deny specific crates or versions
+# =============================================================================
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"  # Allow workspace dependencies using .workspace = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Deny known problematic crates
+deny = [
+    # Deprecated/insecure crypto implementations
+    { crate = "rust-crypto", reason = "Deprecated, known security issues" },
+    { crate = "openssl", reason = "Prefer ring/aws-lc-rs for this project" },
+
+    # Old rand versions with known issues
+    { crate = "rand@<0.7", reason = "Old version with known issues" },
+    { crate = "rand_core@<0.5", reason = "Old version with known issues" },
+]
+
+# Skip duplicate version warnings for these (expected due to dependency tree)
+skip = [
+    # Transitive dependencies with version splits
+    { crate = "getrandom@0.2", reason = "RustCrypto uses 0.2, rand 0.9 uses 0.3" },
+    { crate = "rand_core@0.6", reason = "RustCrypto transitives" },
+
+    # aws-lc-rs uses untrusted 0.7, ring uses 0.9
+    { crate = "untrusted@0.7", reason = "aws-lc-rs uses different version than ring" },
+]
+
+# Skip entire trees from duplicate detection
+skip-tree = [
+    # dudect-bencher's entire dependency tree uses older versions
+    { crate = "dudect-bencher", reason = "Dev-only timing analysis tool with old deps" },
+]
+
+# =============================================================================
+# Sources - ensure all dependencies come from trusted sources
+# =============================================================================
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"  # Warn instead of deny to allow fskit-rs during development
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    # FSKit Rust bindings - required for oxidized-fskit (macOS 15.4+)
+    "https://github.com/debox-network/fskit-rs",
+]
+
+[sources.allow-org]
+github = ["debox-network"]

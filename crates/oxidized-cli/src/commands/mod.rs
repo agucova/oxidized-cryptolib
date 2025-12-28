@@ -1,13 +1,16 @@
+pub mod backends;
 pub mod cat;
 pub mod cp;
 pub mod info;
 pub mod init;
 pub mod ls;
 pub mod mkdir;
+pub mod mount;
 pub mod mv;
 pub mod rm;
 pub mod touch;
 pub mod tree;
+pub mod unmount;
 pub mod write;
 
 /// Normalize a vault path to ensure it starts with `/`.

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use oxidized_cryptolib::vault::VaultCreator;
 
-#[derive(ClapArgs)]
+#[derive(ClapArgs, Clone)]
 pub struct Args {
     /// Path where the vault will be created
     pub path: String,

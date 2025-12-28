@@ -221,3 +221,49 @@ sudo ./scripts/run-pjdfstest.sh --quick
 | `test_symlink_roundtrip` | Create and read symlinks |
 | `test_large_file` | Multi-chunk file (>32KB) |
 | `test_rapid_open_close` | Stress test for handle management |
+
+### FSX (File System eXerciser) Tests
+
+Added in `crates/oxidized-fuse/tests/fsx_tests.rs`. FSX generates pseudorandom read/write/truncate operations and verifies data integrity on every read.
+
+**Installation**: Installed automatically by devenv.
+
+**Run**: `cargo test -p oxidized-fuse --test fsx_tests -- --ignored --nocapture`
+
+| Test | Operations | Status | Notes |
+|------|------------|--------|-------|
+| `test_fsx_quick` | 100 | ❌ Known bug | File visibility issue after create |
+| `test_fsx_medium` | 1000 | ❌ Known bug | Same issue |
+| `test_fsx_stress` | 10000 | ❌ Known bug | Same issue |
+| `test_fsx_multiple_seeds` | 5x500 | ❌ Known bug | Same issue |
+| `test_fsx_small_file` | 500, 4KB max | ❌ Known bug | Same issue |
+| `test_fsx_large_file` | 500, 128KB max | ❌ Known bug | Same issue |
+
+**Root Cause**: Created files are not immediately visible for subsequent operations. This is the same cache invalidation bug that affects pjdfstest's unlink/rename tests.
+
+### fsstress Tests (Linux only)
+
+Added in `crates/oxidized-fuse/tests/fsstress_tests.rs`. fsstress performs concurrent filesystem operations across multiple processes to find race conditions.
+
+**Available via**: devenv (Linux only)
+
+**Run**: `cargo test -p oxidized-fuse --test fsstress_tests -- --ignored --nocapture`
+
+| Test | Operations | Processes | Notes |
+|------|------------|-----------|-------|
+| `test_fsstress_quick` | 50 | 1 | Single-process smoke test |
+| `test_fsstress_concurrent` | 100 | 4 | Concurrency test |
+| `test_fsstress_stress` | 500 | 8 | Full stress test |
+| `test_fsstress_multiple_seeds` | 5x100 | 2 | Multiple seeds for coverage |
+
+### Additional Test Suites (Research)
+
+Other test suites considered for future integration:
+
+| Suite | Purpose | Integration Status |
+|-------|---------|-------------------|
+| [pjdfstest-rs](https://github.com/musikid/pjdfstest) | Rust rewrite of pjdfstest, no root required | Candidate |
+| [fsracer](https://github.com/billziss-gh/secfs.test) | Race condition detection | Candidate |
+| [Google fs-stress](https://github.com/google/file-system-stress-testing) | Monkey testing | Candidate |
+| [CrashMonkey](https://github.com/utsaslab/crashmonkey) | Crash consistency | Lower priority |
+

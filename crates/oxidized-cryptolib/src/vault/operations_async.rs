@@ -48,10 +48,6 @@ use super::operations::VaultOperations;
 /// Async-specific errors that can occur during vault operations.
 #[derive(Error, Debug)]
 pub enum AsyncVaultError {
-    /// Failed to clone the master key for async usage
-    #[error("Failed to clone master key: {0}")]
-    KeyCloneError(#[from] crate::crypto::keys::KeyAccessError),
-
     /// An error from the underlying vault operations
     #[error(transparent)]
     VaultOperation(Box<VaultOperationError>),
@@ -66,13 +62,25 @@ impl From<VaultOperationError> for AsyncVaultError {
 /// Asynchronous interface for vault operations.
 ///
 /// Provides the same functionality as [`VaultOperations`] with async methods.
-/// The `MasterKey` is cloned at construction (negligible overhead).
+/// The `MasterKey` is stored in an `Arc` for efficient sharing across threads.
 ///
 /// # Thread Safety
 ///
-/// `VaultOperationsAsync` is `Send` and can be safely shared across threads
-/// using `clone_shared()`. The internal lock manager and handle table are
-/// shared via `Arc` to enable concurrent access from multiple tasks.
+/// `VaultOperationsAsync` is both `Send` and `Sync`. For concurrent access from
+/// multiple tasks, wrap the instance in `Arc`:
+///
+/// ```ignore
+/// let ops = Arc::new(VaultOperationsAsync::open(&vault_path, "password")?);
+/// let ops1 = Arc::clone(&ops);
+/// let ops2 = Arc::clone(&ops);
+///
+/// tokio::join!(
+///     async move { ops1.read_file(&dir_id, "file1.txt").await },
+///     async move { ops2.read_file(&dir_id, "file2.txt").await },
+/// );
+/// ```
+///
+/// Or use the convenience method [`into_shared()`](Self::into_shared).
 ///
 /// # Locking
 ///
@@ -82,13 +90,13 @@ impl From<VaultOperationError> for AsyncVaultError {
 /// - Multi-resource operations (move, rename): ordered locking to prevent deadlocks
 pub struct VaultOperationsAsync {
     vault_path: PathBuf,
-    master_key: MasterKey,
+    master_key: Arc<MasterKey>,
     shortening_threshold: usize,
     /// The cipher combination used by this vault.
     cipher_combo: CipherCombo,
-    /// Lock manager for concurrent access (shared across clones).
+    /// Lock manager for concurrent access (shared across instances).
     lock_manager: Arc<VaultLockManager>,
-    /// Handle table for tracking open files (shared across clones).
+    /// Handle table for tracking open files (shared across instances).
     handle_table: Arc<VaultHandleTable>,
 }
 
@@ -136,11 +144,12 @@ impl VaultOperationsAsync {
             "Vault opened successfully"
         );
 
-        Self::with_options(vault_path, &master_key, shortening_threshold, cipher_combo)
-            .map_err(|e| match e {
-                AsyncVaultError::KeyCloneError(key_err) => VaultError::KeyClone(key_err),
-                AsyncVaultError::VaultOperation(_) => unreachable!("with_options only returns KeyCloneError"),
-            })
+        Ok(Self::with_options_arc(
+            vault_path,
+            Arc::new(master_key),
+            shortening_threshold,
+            cipher_combo,
+        ))
     }
 
     /// Create a new async vault operations instance with default SIV_GCM cipher.
@@ -152,14 +161,10 @@ impl VaultOperationsAsync {
     /// # Arguments
     ///
     /// * `vault_path` - Path to the vault root directory
-    /// * `master_key` - The master key for encryption/decryption (will be cloned)
-    ///
-    /// # Errors
-    ///
-    /// Returns `AsyncVaultError::KeyCloneError` if the master key cannot be cloned.
+    /// * `master_key` - The master key for encryption/decryption (will be wrapped in Arc)
     #[instrument(level = "info", skip(master_key), fields(vault_path = %vault_path.display()))]
-    pub fn new(vault_path: &Path, master_key: &MasterKey) -> Result<Self, AsyncVaultError> {
-        Self::with_options(vault_path, master_key, DEFAULT_SHORTENING_THRESHOLD, CipherCombo::SivGcm)
+    pub fn new(vault_path: &Path, master_key: Arc<MasterKey>) -> Self {
+        Self::with_options_arc(vault_path, master_key, DEFAULT_SHORTENING_THRESHOLD, CipherCombo::SivGcm)
     }
 
     /// Create a new async vault operations instance with a custom shortening threshold.
@@ -167,19 +172,15 @@ impl VaultOperationsAsync {
     /// # Arguments
     ///
     /// * `vault_path` - Path to the vault root directory
-    /// * `master_key` - The master key for encryption/decryption (will be cloned)
+    /// * `master_key` - The master key for encryption/decryption (will be wrapped in Arc)
     /// * `shortening_threshold` - Maximum length for encrypted filenames before shortening
-    ///
-    /// # Errors
-    ///
-    /// Returns `AsyncVaultError::KeyCloneError` if the master key cannot be cloned.
     #[instrument(level = "info", skip(master_key), fields(vault_path = %vault_path.display(), shortening_threshold = shortening_threshold))]
     pub fn with_shortening_threshold(
         vault_path: &Path,
-        master_key: &MasterKey,
+        master_key: Arc<MasterKey>,
         shortening_threshold: usize,
-    ) -> Result<Self, AsyncVaultError> {
-        Self::with_options(vault_path, master_key, shortening_threshold, CipherCombo::SivGcm)
+    ) -> Self {
+        Self::with_options_arc(vault_path, master_key, shortening_threshold, CipherCombo::SivGcm)
     }
 
     /// Create a new async vault operations instance with full configuration.
@@ -187,33 +188,38 @@ impl VaultOperationsAsync {
     /// # Arguments
     ///
     /// * `vault_path` - Path to the vault root directory
-    /// * `master_key` - The master key for encryption/decryption (will be cloned)
+    /// * `master_key` - The master key for encryption/decryption (will be wrapped in Arc)
     /// * `shortening_threshold` - Maximum length for encrypted filenames before shortening
     /// * `cipher_combo` - The cipher combination used by this vault (SIV_GCM or SIV_CTRMAC)
-    ///
-    /// # Errors
-    ///
-    /// Returns `AsyncVaultError::KeyCloneError` if the master key cannot be cloned.
     #[instrument(level = "info", skip(master_key), fields(vault_path = %vault_path.display(), shortening_threshold = shortening_threshold, cipher_combo = ?cipher_combo))]
     pub fn with_options(
         vault_path: &Path,
-        master_key: &MasterKey,
+        master_key: Arc<MasterKey>,
         shortening_threshold: usize,
         cipher_combo: CipherCombo,
-    ) -> Result<Self, AsyncVaultError> {
+    ) -> Self {
+        Self::with_options_arc(vault_path, master_key, shortening_threshold, cipher_combo)
+    }
+
+    /// Internal constructor with Arc<MasterKey>.
+    fn with_options_arc(
+        vault_path: &Path,
+        master_key: Arc<MasterKey>,
+        shortening_threshold: usize,
+        cipher_combo: CipherCombo,
+    ) -> Self {
         info!("Initializing VaultOperationsAsync");
-        let cloned_key = master_key.try_clone()?;
         // Use the global registry to get a shared lock manager for this vault path.
         // This ensures multiple instances operating on the same vault share locks.
         let lock_manager = VaultLockRegistry::global().get_or_create(vault_path);
-        Ok(Self {
+        Self {
             vault_path: vault_path.to_path_buf(),
-            master_key: cloned_key,
+            master_key,
             shortening_threshold,
             cipher_combo,
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
-        })
+        }
     }
 
     /// Create an async operations instance from an existing sync instance.
@@ -221,17 +227,19 @@ impl VaultOperationsAsync {
     /// This is useful when you already have a configured `VaultOperations` instance
     /// and want to use it in an async context. The cipher combo is preserved.
     ///
+    /// The master key is cloned from the sync instance and wrapped in an Arc.
+    ///
     /// # Arguments
     ///
     /// * `sync_ops` - The synchronous vault operations instance
     ///
     /// # Errors
     ///
-    /// Returns `AsyncVaultError::KeyCloneError` if the master key cannot be cloned.
+    /// Returns an error if the master key cannot be cloned.
     #[instrument(level = "info", skip(sync_ops))]
-    pub fn from_sync(sync_ops: &VaultOperations) -> Result<Self, AsyncVaultError> {
+    pub fn from_sync(sync_ops: &VaultOperations) -> Result<Self, crate::crypto::keys::KeyAccessError> {
         info!("Creating VaultOperationsAsync from sync instance");
-        let cloned_key = sync_ops.master_key().try_clone()?;
+        let cloned_key = Arc::new(sync_ops.master_key().try_clone()?);
         // Use the global registry to get a shared lock manager for this vault path.
         let lock_manager = VaultLockRegistry::global().get_or_create(sync_ops.vault_path());
         Ok(Self {
@@ -244,33 +252,33 @@ impl VaultOperationsAsync {
         })
     }
 
-    /// Create a clone that shares the lock manager and handle table.
+    /// Convert this instance into an `Arc` for sharing across tasks.
     ///
-    /// This allows concurrent access from multiple tasks while ensuring
-    /// proper synchronization. The master key is cloned.
+    /// This is a convenience method for `Arc::new(self)`. For concurrent access
+    /// from multiple tasks, wrap the instance in an Arc and clone it:
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let ops = VaultOperationsAsync::new(&vault_path, &master_key)?;
-    /// let ops_clone = ops.clone_shared()?;
+    /// let ops = VaultOperationsAsync::open(&vault_path, "password")?.into_shared();
+    /// let ops1 = Arc::clone(&ops);
+    /// let ops2 = Arc::clone(&ops);
     ///
     /// // Both can be used concurrently
     /// tokio::join!(
-    ///     ops.read_file(&dir_id, "file1.txt"),
-    ///     ops_clone.read_file(&dir_id, "file2.txt"),
+    ///     async move { ops1.read_file(&dir_id, "file1.txt").await },
+    ///     async move { ops2.read_file(&dir_id, "file2.txt").await },
     /// );
     /// ```
-    pub fn clone_shared(&self) -> Result<Self, AsyncVaultError> {
-        let cloned_key = self.master_key.try_clone()?;
-        Ok(Self {
-            vault_path: self.vault_path.clone(),
-            master_key: cloned_key,
-            shortening_threshold: self.shortening_threshold,
-            cipher_combo: self.cipher_combo,
-            lock_manager: Arc::clone(&self.lock_manager),
-            handle_table: Arc::clone(&self.handle_table),
-        })
+    pub fn into_shared(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    /// Get a reference to the master key.
+    ///
+    /// Returns an `Arc` reference for efficient sharing.
+    pub fn master_key(&self) -> &Arc<MasterKey> {
+        &self.master_key
     }
 
     /// Get a reference to the lock manager.
@@ -420,16 +428,13 @@ impl VaultOperationsAsync {
 
         // Phase 2: Decrypt regular filenames in spawn_blocking to avoid blocking async runtime
         let dir_id_str = directory_id.as_str().to_string();
-        let master_key = self.master_key.try_clone().map_err(|e| VaultOperationError::Io {
-            source: std::io::Error::other(format!("Failed to clone key for filename decryption: {e}")),
-            context: VaultOpContext::new().with_dir_id(directory_id.as_str()),
-        })?;
+        let master_key = Arc::clone(&self.master_key);
 
         let decrypted_regular = tokio::task::spawn_blocking(move || {
             regular_files
                 .into_iter()
                 .filter_map(|(path, encrypted_name, size)| {
-                    match decrypt_filename(&encrypted_name, &dir_id_str, &master_key) {
+                    match decrypt_filename(&encrypted_name, &dir_id_str, &*master_key) {
                         Ok(decrypted_name) => Some(VaultFileInfo {
                             name: decrypted_name,
                             encrypted_name,
@@ -553,16 +558,13 @@ impl VaultOperationsAsync {
         // Phase 2: Decrypt regular directory names in spawn_blocking
         let dir_id_str = directory_id.as_str().to_string();
         let parent_dir_id = directory_id.clone();
-        let master_key = self.master_key.try_clone().map_err(|e| VaultOperationError::Io {
-            source: std::io::Error::other(format!("Failed to clone key for directory name decryption: {e}")),
-            context: VaultOpContext::new().with_dir_id(directory_id.as_str()),
-        })?;
+        let master_key = Arc::clone(&self.master_key);
 
         let decrypted_regular = tokio::task::spawn_blocking(move || {
             regular_dirs
                 .into_iter()
                 .filter_map(|(path, encrypted_name, dir_id_content)| {
-                    match decrypt_filename(&encrypted_name, &dir_id_str, &master_key) {
+                    match decrypt_filename(&encrypted_name, &dir_id_str, &*master_key) {
                         Ok(decrypted_name) => Some(VaultDirectoryInfo {
                             name: decrypted_name,
                             directory_id: DirId::from_raw(dir_id_content.trim()),
@@ -822,6 +824,49 @@ impl VaultOperationsAsync {
 
         debug!(file_count = files.len(), dir_count = directories.len(), "Listed all entries");
         Ok((files, directories))
+    }
+
+    /// List all files, directories, and symlinks in a single operation.
+    ///
+    /// This is the most efficient way to list all directory contents, as it acquires
+    /// the lock once and runs all three listing operations concurrently.
+    ///
+    /// Designed for FUSE `readdir`/`readdirplus` and `lookup` operations which need
+    /// to search across all entry types.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The directory to list
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (files, directories, symlinks).
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str()))]
+    pub async fn list_all(
+        &self,
+        directory_id: &DirId,
+    ) -> Result<(Vec<VaultFileInfo>, Vec<VaultDirectoryInfo>, Vec<VaultSymlinkInfo>), VaultOperationError> {
+        let _guard = self.lock_manager.directory_read(directory_id).await;
+        trace!("Acquired directory read lock for list_all");
+
+        // Run all three listings concurrently - they're all read-only directory scans
+        let (files_result, dirs_result, symlinks_result) = tokio::join!(
+            self.list_files_unlocked(directory_id),
+            self.list_directories_unlocked(directory_id),
+            self.list_symlinks_unlocked(directory_id)
+        );
+
+        let files = files_result?;
+        let directories = dirs_result?;
+        let symlinks = symlinks_result?;
+
+        debug!(
+            file_count = files.len(),
+            dir_count = directories.len(),
+            symlink_count = symlinks.len(),
+            "Listed all entries"
+        );
+        Ok((files, directories, symlinks))
     }
 
     /// Read and decrypt a file by name within a directory.

@@ -1,0 +1,56 @@
+[package]
+name = "oxidized-fskit"
+version = "0.1.0"
+description = "FSKit filesystem for Cryptomator vaults using oxidized-cryptolib (macOS 15.4+)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["cryptomator", "fskit", "encryption", "filesystem", "macos"]
+categories = ["filesystem", "cryptography", "os::macos-apis"]
+
+[[bin]]
+name = "oxmount-fskit"
+path = "src/main.rs"
+
+[features]
+default = []
+tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+
+[dependencies]
+oxidized-cryptolib = { workspace = true, features = ["async"] }
+clap = { workspace = true }
+rpassword = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# FSKit bindings
+fskit-rs = { git = "https://github.com/debox-network/fskit-rs", branch = "main" }
+async-trait = "0.1"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros"] }
+
+# Concurrent data structures
+dashmap = "6"
+
+# POSIX types
+libc = "0.2"
+
+# UUID generation for volume IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Protobuf types for FSKit timestamps
+prost-types = "0.14"
+
+# Unix filesystem types
+nix = { version = "0.30", features = ["fs"] }
+
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -15,7 +15,7 @@ use oxidized_cryptolib::vault::config::{extract_master_key, validate_vault_claim
 use oxidized_cryptolib::vault::operations::VaultOperations;
 
 use crate::auth::prompt_passphrase;
-use crate::commands::{cat, cp, info, init, ls, mkdir, mv, rm, touch, tree, write};
+use crate::commands::{backends, cat, cp, info, init, ls, mkdir, mount, mv, rm, touch, tree, unmount, write};
 
 #[derive(Parser)]
 #[command(name = "oxcrypt")]
@@ -72,6 +72,15 @@ enum Commands {
 
     /// Show vault information
     Info(info::Args),
+
+    /// Mount the vault as a filesystem
+    Mount(mount::Args),
+
+    /// Unmount a mounted vault
+    Unmount(unmount::Args),
+
+    /// List available mount backends
+    Backends(backends::Args),
 }
 
 fn main() -> Result<()> {
@@ -89,9 +98,13 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // Handle init command separately (doesn't require existing vault)
-    if let Commands::Init(args) = cli.command {
-        return init::execute(args);
+    // Handle commands that don't require an unlocked vault
+    match &cli.command {
+        Commands::Init(args) => return init::execute(args.clone()),
+        Commands::Mount(args) => return mount::execute(args.clone(), cli.vault.clone()),
+        Commands::Unmount(args) => return unmount::execute(args.clone()),
+        Commands::Backends(args) => return backends::execute(args.clone()),
+        _ => {}
     }
 
     // All other commands require a vault path
@@ -138,7 +151,10 @@ fn main() -> Result<()> {
 
     // Execute command
     match cli.command {
-        Commands::Init(_) => unreachable!(), // Handled above
+        // These are handled above (before vault unlock)
+        Commands::Init(_) | Commands::Mount(_) | Commands::Unmount(_) | Commands::Backends(_) => {
+            unreachable!()
+        }
         Commands::Ls(args) => ls::execute(&vault_ops, args),
         Commands::Cat(args) => cat::execute(&vault_ops, args),
         Commands::Tree(args) => tree::execute(&vault_ops, args),

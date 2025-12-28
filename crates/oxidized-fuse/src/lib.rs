@@ -20,12 +20,14 @@
 //! ```
 
 pub mod attr;
+pub mod backend;
 pub mod error;
 pub mod filesystem;
 pub mod handles;
 pub mod inode;
 
 pub use attr::{AttrCache, CachedAttr, DirCache, DirListingEntry};
+pub use backend::{FuseBackend, FuseMountHandle};
 pub use error::{FuseError, FuseResult, ToErrno};
 pub use filesystem::CryptomatorFS;
 pub use handles::{FuseHandle, FuseHandleTable, WriteBuffer};

@@ -708,9 +708,10 @@ impl VaultFileReader {
         let ciphertext = &encrypted[CHUNK_NONCE_SIZE..];
 
         // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
-        let mut aad = Vec::with_capacity(8 + self.header_nonce.len());
-        aad.extend_from_slice(&chunk_num.to_be_bytes());
-        aad.extend_from_slice(&self.header_nonce);
+        // Use stack array to avoid heap allocation per chunk
+        let mut aad = [0u8; 8 + HEADER_NONCE_SIZE];
+        aad[..8].copy_from_slice(&chunk_num.to_be_bytes());
+        aad[8..].copy_from_slice(&self.header_nonce);
 
         let key = Key::<Aes256Gcm>::from_slice(&*self.content_key);
         let cipher = Aes256Gcm::new(key);
@@ -1013,9 +1014,10 @@ impl VaultFileWriter {
         rand::rng().fill_bytes(&mut chunk_nonce);
 
         // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
-        let mut aad = Vec::with_capacity(8 + HEADER_NONCE_SIZE);
-        aad.extend_from_slice(&chunk_num.to_be_bytes());
-        aad.extend_from_slice(&self.header_nonce);
+        // Use stack array to avoid heap allocation per chunk
+        let mut aad = [0u8; 8 + HEADER_NONCE_SIZE];
+        aad[..8].copy_from_slice(&chunk_num.to_be_bytes());
+        aad[8..].copy_from_slice(&self.header_nonce);
 
         let key = Key::<Aes256Gcm>::from_slice(&*self.content_key);
         let cipher = Aes256Gcm::new(key);

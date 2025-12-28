@@ -16,7 +16,7 @@ jobs:
     # in noisy CI environments. We run them for visibility but don't block on failures.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust nightly
         run: rustup update nightly && rustup default nightly

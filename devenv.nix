@@ -26,6 +26,38 @@ let
       platforms = platforms.unix;
     };
   };
+
+  # fsstress - filesystem stress testing tool
+  # Originally from SGI/XFS, ported via secfs.test
+  fsstress = pkgs.stdenv.mkDerivation rec {
+    pname = "fsstress";
+    version = "1.0";
+
+    src = pkgs.fetchFromGitHub {
+      owner = "billziss-gh";
+      repo = "secfs.test";
+      rev = "edf5eb4a108bfb41073f765aef0cdd32bb3ee1ed";
+      sha256 = "0gv8g44slbmf503mv4b8ndhrm3k2qhnpgrqdd0y2z7d2pxjj2lwh";
+    };
+
+    sourceRoot = "source/fsstress";
+
+    buildPhase = ''
+      $CC -Wall -DNO_XFS -D_LARGEFILE64_SOURCE -D_GNU_SOURCE fsstress.c -o fsstress
+    '';
+
+    installPhase = ''
+      mkdir -p $out/bin
+      cp fsstress $out/bin/
+    '';
+
+    meta = with lib; {
+      description = "Filesystem stress testing tool from XFS/LTP";
+      homepage = "https://github.com/billziss-gh/secfs.test";
+      license = licenses.gpl2;
+      platforms = platforms.linux;  # Linux-specific syscalls
+    };
+  };
 in
 {
   languages.rust = {
@@ -41,14 +73,16 @@ in
     cargo-fuzz
     cargo-nextest
   ]
-  # Add pjdfstest on Linux (requires FUSE which is native there)
+  # Add pjdfstest and fsstress on Linux (requires FUSE which is native there)
   ++ lib.optionals stdenv.isLinux [
     pjdfstest
+    fsstress
     fuse3
   ]
   # On macOS, add macfuse build dependencies (macfuse itself must be installed via brew)
   ++ lib.optionals stdenv.isDarwin [
     pjdfstest  # Can still build pjdfstest, just needs macFUSE at runtime
+    protobuf   # Required for fskit-rs (FSKit filesystem support)
   ];
 
   env = {
@@ -65,6 +99,18 @@ in
     if ! command -v cargo-llvm-cov &> /dev/null; then
       echo "Installing cargo-llvm-cov..."
       cargo install cargo-llvm-cov --quiet
+    fi
+
+    # Install fsx (File System eXerciser) for data integrity testing
+    if ! command -v fsx &> /dev/null; then
+      echo "Installing fsx..."
+      cargo install fsx --quiet
+    fi
+
+    # Install tokio-console for async debugging (use with --features tokio-console)
+    if ! command -v tokio-console &> /dev/null; then
+      echo "Installing tokio-console..."
+      cargo install tokio-console --locked --quiet
     fi
   '';
 }

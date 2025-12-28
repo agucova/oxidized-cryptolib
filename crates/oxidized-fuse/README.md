@@ -99,6 +99,44 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+### Using FuseBackend (MountBackend trait)
+
+For applications that need to manage mounts programmatically, use the `FuseBackend` which implements the `MountBackend` trait from oxidized-cryptolib:
+
+```rust
+use oxidized_fuse::FuseBackend;
+use oxidized_cryptolib::MountBackend;
+use std::path::Path;
+
+fn main() -> anyhow::Result<()> {
+    let backend = FuseBackend::new();
+
+    // Check if FUSE is available
+    if !backend.is_available() {
+        eprintln!("FUSE not available: {:?}", backend.unavailable_reason());
+        return Ok(());
+    }
+
+    // Mount the vault (returns a handle for lifecycle management)
+    let handle = backend.mount(
+        "my-vault",
+        Path::new("/path/to/vault"),
+        "password",
+        Path::new("/path/to/mountpoint"),
+    )?;
+
+    println!("Mounted at: {:?}", handle.mountpoint());
+
+    // The mount is automatically unmounted when handle is dropped
+    // Or explicitly unmount:
+    // handle.unmount()?;
+
+    Ok(())
+}
+```
+
+This is how `oxidized-gui` and `oxidized-bench` manage FUSE mounts.
+
 ## Architecture
 
 ```
@@ -185,6 +223,23 @@ cargo test -p oxidized-fuse --test integration_tests
 cargo test -p oxidized-fuse
 ```
 
+## Debugging with tokio-console
+
+For async debugging during development, oxmount supports [tokio-console](https://github.com/tokio-rs/console). The CLI is installed automatically by devenv.
+
+```bash
+# Build with console support
+cargo build -p oxidized-fuse --features tokio-console
+
+# Run the mount (terminal 1)
+./target/debug/oxmount ~/vault /mnt/point
+
+# Connect console (terminal 2)
+tokio-console
+```
+
+This shows real-time task states, poll times, and resource contention. The feature is opt-in with zero overhead in normal builds.
+
 ## Security Considerations
 
 - **Password handling**: Passwords are passed to scrypt for key derivation and then zeroized from memory.
@@ -206,6 +261,8 @@ MIT License - see the repository root for details.
 
 ## Related
 
-- [oxidized-cryptolib](../oxidized-cryptolib) - Core cryptographic library
+- [oxidized-cryptolib](../oxidized-cryptolib) - Core cryptographic library (includes `MountBackend` trait)
+- [oxidized-bench](../oxidized-bench) - Benchmark harness using `FuseBackend`
+- [oxidized-gui](../oxidized-gui) - Desktop GUI using `FuseBackend`
 - [Cryptomator](https://cryptomator.org/) - The original cross-platform encryption tool
 - [fuser](https://github.com/cberner/fuser) - Rust FUSE library used by this crate

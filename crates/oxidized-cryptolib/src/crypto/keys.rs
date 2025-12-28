@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::cell::RefCell;
+use std::sync::RwLock;
 
 use generic_array::{typenum::U64, GenericArray};
 use memsafe::MemSafe;
@@ -11,16 +11,16 @@ use zeroize::Zeroize;
 /// Error type for key access operations.
 ///
 /// This error can occur when accessing protected key material, either due to
-/// memory protection failures or concurrent borrow attempts.
+/// memory protection failures or lock poisoning (a thread panicked while holding the lock).
 #[derive(Debug, Error)]
 pub enum KeyAccessError {
     /// Memory protection operation failed (mlock, mprotect, etc.)
     #[error("Memory protection operation failed: {0}")]
     MemoryProtection(#[source] Box<dyn std::error::Error + Send + Sync>),
 
-    /// Key is already borrowed (RefCell borrow conflict)
-    #[error("Key is already borrowed")]
-    BorrowError,
+    /// Lock was poisoned (a thread panicked while holding it)
+    #[error("Key lock was poisoned")]
+    LockPoisoned,
 }
 
 impl KeyAccessError {
@@ -68,12 +68,14 @@ pub enum JwtValidationError {
 ///
 /// # Thread Safety
 ///
-/// `MasterKey` uses `RefCell` for interior mutability, which means it is **not**
-/// thread-safe. For multi-threaded use, wrap in `Arc<Mutex<MasterKey>>`.
+/// `MasterKey` is thread-safe (`Send + Sync`) and can be shared across threads
+/// using `Arc<MasterKey>`. The internal `RwLock` ensures safe concurrent access.
+/// If a thread panics while holding the lock, the key becomes inaccessible
+/// (lock poisoning) as a safety measure.
 #[derive(Debug)]
 pub struct MasterKey {
-    aes_master_key: RefCell<MemSafe<[u8; 32]>>,
-    mac_master_key: RefCell<MemSafe<[u8; 32]>>,
+    aes_master_key: RwLock<MemSafe<[u8; 32]>>,
+    mac_master_key: RwLock<MemSafe<[u8; 32]>>,
 }
 
 impl Clone for MasterKey {
@@ -93,19 +95,19 @@ impl MasterKey {
     /// Try to clone the master key, returning an error on failure.
     pub fn try_clone(&self) -> Result<Self, KeyAccessError> {
         let aes_key = {
-            let mut cell = self
+            let mut lock = self
                 .aes_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             *guard
         };
         let mac_key = {
-            let mut cell = self
+            let mut lock = self
                 .mac_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             *guard
         };
         Self::new(aes_key, mac_key)
@@ -163,10 +165,10 @@ impl MasterKey {
     /// ```
     pub fn new(aes_key: [u8; 32], mac_key: [u8; 32]) -> Result<Self, KeyAccessError> {
         Ok(MasterKey {
-            aes_master_key: RefCell::new(
+            aes_master_key: RwLock::new(
                 MemSafe::new(aes_key).map_err(KeyAccessError::memory_protection)?,
             ),
-            mac_master_key: RefCell::new(
+            mac_master_key: RwLock::new(
                 MemSafe::new(mac_key).map_err(KeyAccessError::memory_protection)?,
             ),
         })
@@ -188,7 +190,7 @@ impl MasterKey {
     ///
     /// # Errors
     ///
-    /// Returns a `KeyAccessError` if the key is already borrowed or if
+    /// Returns a `KeyAccessError` if the lock is poisoned or if
     /// memory protection operations fail.
     ///
     /// # Example
@@ -221,21 +223,21 @@ impl MasterKey {
 
         // Read AES key
         {
-            let mut cell = self
+            let mut lock = self
                 .aes_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             key.0[..32].copy_from_slice(&*guard);
         }
 
         // Read MAC key
         {
-            let mut cell = self
+            let mut lock = self
                 .mac_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             key.0[32..].copy_from_slice(&*guard);
         }
 
@@ -254,7 +256,7 @@ impl MasterKey {
     ///
     /// # Errors
     ///
-    /// Returns a `KeyAccessError` if the key is already borrowed or if
+    /// Returns a `KeyAccessError` if the lock is poisoned or if
     /// memory protection operations fail.
     pub fn with_raw_key_array<F, R>(&self, f: F) -> Result<R, KeyAccessError>
     where
@@ -273,21 +275,21 @@ impl MasterKey {
 
         // Read AES key
         {
-            let mut cell = self
+            let mut lock = self
                 .aes_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             key.0[..32].copy_from_slice(&*guard);
         }
 
         // Read MAC key
         {
-            let mut cell = self
+            let mut lock = self
                 .mac_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             key.0[32..].copy_from_slice(&*guard);
         }
 
@@ -301,7 +303,7 @@ impl MasterKey {
     ///
     /// # Errors
     ///
-    /// Returns a `KeyAccessError` if the key is already borrowed or if
+    /// Returns a `KeyAccessError` if the lock is poisoned or if
     /// memory protection operations fail.
     ///
     /// # Example
@@ -320,11 +322,11 @@ impl MasterKey {
     where
         F: FnOnce(&[u8; 32]) -> R,
     {
-        let mut cell = self
+        let mut lock = self
             .aes_master_key
-            .try_borrow_mut()
-            .map_err(|_| KeyAccessError::BorrowError)?;
-        let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+            .write()
+            .map_err(|_| KeyAccessError::LockPoisoned)?;
+        let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
         Ok(f(&guard))
     }
 
@@ -335,17 +337,17 @@ impl MasterKey {
     ///
     /// # Errors
     ///
-    /// Returns a `KeyAccessError` if the key is already borrowed or if
+    /// Returns a `KeyAccessError` if the lock is poisoned or if
     /// memory protection operations fail.
     pub fn with_mac_key<F, R>(&self, f: F) -> Result<R, KeyAccessError>
     where
         F: FnOnce(&[u8; 32]) -> R,
     {
-        let mut cell = self
+        let mut lock = self
             .mac_master_key
-            .try_borrow_mut()
-            .map_err(|_| KeyAccessError::BorrowError)?;
-        let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+            .write()
+            .map_err(|_| KeyAccessError::LockPoisoned)?;
+        let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
         Ok(f(&guard))
     }
 
@@ -360,7 +362,7 @@ impl MasterKey {
     ///
     /// # Errors
     ///
-    /// Returns a `KeyAccessError` if the key is already borrowed or if
+    /// Returns a `KeyAccessError` if the lock is poisoned or if
     /// memory protection operations fail.
     ///
     /// # Example
@@ -392,21 +394,21 @@ impl MasterKey {
         // Note: SIV uses MAC key first, then AES key
         // Read MAC key
         {
-            let mut cell = self
+            let mut lock = self
                 .mac_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             key.0[..32].copy_from_slice(&*guard);
         }
 
         // Read AES key
         {
-            let mut cell = self
+            let mut lock = self
                 .aes_master_key
-                .try_borrow_mut()
-                .map_err(|_| KeyAccessError::BorrowError)?;
-            let guard = cell.read().map_err(KeyAccessError::memory_protection)?;
+                .write()
+                .map_err(|_| KeyAccessError::LockPoisoned)?;
+            let guard = lock.read().map_err(KeyAccessError::memory_protection)?;
             key.0[32..].copy_from_slice(&*guard);
         }
 
