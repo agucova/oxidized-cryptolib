@@ -130,51 +130,26 @@ in
   };
 
   enterShell = ''
-    echo "oxidized-cryptolib dev environment"
-    echo "Rust: $(rustc --version)"
-
-    # Install cargo-llvm-cov if not present (nixpkgs version is broken)
-    if ! command -v cargo-llvm-cov &> /dev/null; then
-      echo "Installing cargo-llvm-cov..."
-      cargo install cargo-llvm-cov --quiet
-    fi
-
-    # Install fsx (File System eXerciser) for data integrity testing
-    if ! command -v fsx &> /dev/null; then
-      echo "Installing fsx..."
-      cargo install fsx --quiet
-    fi
-
-    # Install tokio-console for async debugging (use with --features tokio-console)
-    if ! command -v tokio-console &> /dev/null; then
-      echo "Installing tokio-console..."
-      cargo install tokio-console --locked --quiet
-    fi
+    # Install cargo tools silently if missing
+    command -v cargo-llvm-cov &> /dev/null || cargo install cargo-llvm-cov --quiet
+    command -v fsx &> /dev/null || cargo install fsx --quiet
+    command -v tokio-console &> /dev/null || cargo install tokio-console --locked --quiet
 
     # FSKitBridge installation for macOS 15.4+
     if [[ "$(uname)" == "Darwin" ]] && [[ -d "${fskitbridge}/Applications/FSKitBridge.app" ]]; then
       if [[ ! -d ~/Applications/FSKitBridge.app ]]; then
-        echo "Installing FSKitBridge.app to ~/Applications..."
         mkdir -p ~/Applications
         cp -Ra "${fskitbridge}/Applications/FSKitBridge.app" ~/Applications/
         xattr -cr ~/Applications/FSKitBridge.app 2>/dev/null || true
-        echo ""
-        echo "FSKitBridge.app installed. To enable FSKit support:"
-        echo "  1. Open FSKitBridge.app once to register the extension"
-        echo "  2. Go to System Settings → General → Login Items & Extensions"
-        echo "  3. Enable 'FSKitBridge' under File System Extensions"
-        echo ""
       fi
     fi
 
-    echo ""
-    echo "Local CI testing with act (requires Docker):"
-    echo "  act -l                        # List available jobs"
-    echo "  act push -j format            # Run format check"
-    echo "  act push -j clippy            # Run clippy"
-    echo "  act push -j build_and_test_linux  # Run build & test"
-    echo "  act push                      # Run all Linux jobs"
-    echo ""
-    echo "Note: macOS/FSKit jobs only run in GitHub Actions."
+    # Auto-detect podman and set DOCKER_HOST for act
+    if command -v podman &> /dev/null && ! test -S /var/run/docker.sock; then
+      PODMAN_SOCKET=$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null || true)
+      if [[ -n "$PODMAN_SOCKET" ]] && [[ -S "$PODMAN_SOCKET" ]]; then
+        export DOCKER_HOST="unix://$PODMAN_SOCKET"
+      fi
+    fi
   '';
 }

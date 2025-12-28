@@ -13,7 +13,6 @@ use fskit_rs::{
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error, trace};
 use uuid::Uuid;
 
@@ -34,20 +33,14 @@ const DEFAULT_FILE_PERM: u16 = 0o644;
 /// Default directory permissions (rwxr-xr-x).
 const DEFAULT_DIR_PERM: u16 = 0o755;
 
-/// Internal state that needs interior mutability.
-struct FsKitInner {
-    /// Async vault operations (shared via Arc).
-    ops: Arc<VaultOperationsAsync>,
-}
-
 /// FSKit filesystem for Cryptomator vaults.
 ///
 /// Implements the `fskit_rs::Filesystem` trait to provide a mountable filesystem
 /// backed by an encrypted Cryptomator vault.
 #[derive(Clone)]
 pub struct CryptomatorFSKit {
-    /// Internal state with vault operations (behind Mutex for Send).
-    inner: Arc<Mutex<FsKitInner>>,
+    /// Async vault operations (thread-safe with internal locking).
+    ops: Arc<VaultOperationsAsync>,
     /// Item table for path/item_id mapping (DashMap is already Send+Sync).
     items: Arc<ItemTable>,
     /// File handle table for open files (DashMap is already Send+Sync).
@@ -99,7 +92,7 @@ impl CryptomatorFSKit {
         );
 
         Ok(Self {
-            inner: Arc::new(Mutex::new(FsKitInner { ops })),
+            ops,
             items: Arc::new(ItemTable::new()),
             handles: Arc::new(HandleTable::new()),
             attr_cache: Arc::new(AttrCache::with_defaults()),
@@ -221,24 +214,18 @@ impl CryptomatorFSKit {
         }
     }
 
-    /// Get a clone of the vault operations Arc from the inner state.
-    async fn get_ops(&self) -> Arc<VaultOperationsAsync> {
-        let inner = self.inner.lock().await;
-        Arc::clone(&inner.ops)
-    }
-
     /// Run an async vault operation in spawn_blocking with a current-thread runtime.
     ///
-    /// Note: With VaultOperationsAsync now being Send+Sync, this pattern could
-    /// be simplified in the future. The spawn_blocking is kept for now to
-    /// maintain consistent behavior.
+    /// Note: With VaultOperationsAsync now being Send+Sync, this could potentially
+    /// be simplified further. The spawn_blocking is kept for now to avoid blocking
+    /// the FSKit dispatch threads during potentially slow vault I/O.
     async fn run_vault_op<T, F, Fut>(&self, f: F) -> Result<T, FsKitError>
     where
         T: Send + 'static,
         F: FnOnce(Arc<VaultOperationsAsync>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = T>,
     {
-        let ops = self.get_ops().await;
+        let ops = Arc::clone(&self.ops);
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -850,6 +837,7 @@ impl Filesystem for CryptomatorFSKit {
             }
         }
 
+        self.attr_cache.invalidate(item_id);
         self.items.invalidate_path(&path);
         Ok(())
     }
@@ -940,9 +928,10 @@ impl Filesystem for CryptomatorFSKit {
             .map_err(|e| FsKitError::Posix(write_error_to_errno(&e)))?;
         }
 
-        // Update item table
+        // Update item table and invalidate cache
         let new_path = dest_parent_path.join(dest_name_str);
         self.items.update_path(item_id, &old_path, new_path);
+        self.attr_cache.invalidate(item_id);
 
         Ok(dest_name_str.as_bytes().to_vec())
     }

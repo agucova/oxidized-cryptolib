@@ -13,12 +13,15 @@ path = "src/main.rs"
 
 [dependencies]
 # GUI framework
-dioxus = { version = "0.6", features = ["desktop"] }
+dioxus = { version = "0.7", features = ["desktop"] }
 
 # Backend integration
 oxidized-cryptolib = { path = "../oxidized-cryptolib" }
-oxidized-fuse = { path = "../oxidized-fuse" }
+
+# Mount backends (all optional for cross-platform support)
+oxidized-fuse = { path = "../oxidized-fuse", optional = true }
 oxidized-fskit = { path = "../oxidized-fskit", optional = true }
+oxidized-webdav = { path = "../oxidized-webdav", optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -28,7 +31,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # System integration
-directories = "5"        # XDG config paths
+directories = "6"        # XDG config paths
+dirs = "6"               # Home directory detection
 open = "5"               # Open file manager
 rfd = "0.15"             # Native file dialogs
 
@@ -39,8 +43,24 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror.workspace = true
 
 [features]
-# Enable FSKit backend (macOS 15.4+ only, requires protoc at build time)
-fskit = ["dep:oxidized-fskit"]
+# No default backend - platform-specific features should be enabled at build time
+# Linux/macOS: --features fuse (or fskit on macOS 15.4+)
+# Windows: --features webdav
+default = []
+
+# FUSE backend (macOS with macFUSE, Linux with libfuse)
+# Not available on Windows
+fuse = ["dep:oxidized-fuse"]
+
+# FSKit backend (macOS 15.4+ only, requires protoc at build time)
+# Also enables the setup feature for download/install wizard
+fskit = ["dep:oxidized-fskit", "oxidized-fskit/setup"]
+
+# WebDAV backend (cross-platform, no kernel extensions required)
+webdav = ["dep:oxidized-webdav"]
+
+# All Unix backends
+unix-backends = ["fuse", "fskit", "webdav"]
 
 [dev-dependencies]
 tempfile = "3"

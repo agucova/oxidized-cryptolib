@@ -17,7 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
-        run: rustup update stable && rustup default stable && rustup component add rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - name: Check formatting
         # Exclude platform-specific crates that may have conditional compilation issues
         run: cargo fmt --all -- --check
@@ -28,7 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
-        run: rustup update stable && rustup default stable && rustup component add clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -52,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
-        run: rustup update stable && rustup default stable
+        uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-deny
         uses: taiki-e/install-action@v2
         with:
@@ -73,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust 1.90
-        run: rustup install 1.90 && rustup default 1.90
+        uses: dtolnay/rust-toolchain@1.90
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -96,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust nightly
-        run: rustup update nightly && rustup default nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -142,7 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust nightly
-        run: rustup update nightly && rustup default nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -168,55 +172,215 @@ jobs:
             --exclude oxidized-fuse
 
   # =============================================================================
-  # FSKit Build (macOS 26+)
+  # Build and Test - Windows (experimental)
+  # =============================================================================
+  build_windows:
+    name: Build and Test (Windows)
+    runs-on: windows-latest
+    needs: [format]
+    # Windows is not first-party - don't block PRs
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-build
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Build cryptolib
+        run: cargo build -p oxidized-cryptolib --verbose
+      - name: Test cryptolib
+        run: cargo nextest run -p oxidized-cryptolib
+
+  # =============================================================================
+  # FSKit Build and Test (macOS 15+)
+  # =============================================================================
+  # Note: FSKit extension registration requires code signing and user approval,
+  # which can't be fully automated in CI. We test what we can:
+  # - Build verification (compile check)
+  # - Unit tests (don't require running FSKitBridge)
+  # - Setup module tests (detection logic)
+  #
+  # Full integration testing requires a signed FSKitBridge.app and manual
+  # extension approval in System Settings.
   # =============================================================================
   fskit_build:
-    name: FSKit Build (macOS 26)
-    runs-on: macos-26
+    name: FSKit Build (macOS 15)
+    runs-on: macos-15
     needs: [format]
     # FSKit is experimental - don't block PRs on failures
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
+
+      - name: Check macOS version
+        run: |
+          echo "macOS version: $(sw_vers -productVersion)"
+          echo "Build version: $(sw_vers -buildVersion)"
+
       - name: Install Rust nightly
-        run: rustup update nightly && rustup default nightly
+        uses: dtolnay/rust-toolchain@nightly
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: macos-fskit
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Install protoc (for fskit-rs)
         run: brew install protobuf
-      - name: Clone and build FSKitBridge
+
+      - name: Download FSKitBridge from GitHub releases
         run: |
-          git clone --depth 1 https://github.com/debox-network/FSKitBridge.git /tmp/FSKitBridge
-          cd /tmp/FSKitBridge
-          xcodebuild -scheme FSKitBridge -configuration Release -derivedDataPath build \
-            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO
-          # Install to Applications
-          cp -R build/Build/Products/Release/FSKitBridge.app /Applications/
-          # Remove quarantine
+          # Get latest release info
+          RELEASE_URL="https://api.github.com/repos/debox-network/FSKitBridge/releases/latest"
+          DOWNLOAD_URL=$(curl -sL "$RELEASE_URL" | grep -o '"browser_download_url":[^"]*"[^"]*\.zip"' | head -1 | cut -d'"' -f4)
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Could not find release download URL, trying direct v0.1.0 URL..."
+            DOWNLOAD_URL="https://github.com/debox-network/FSKitBridge/releases/download/v0.1.0/FSKitBridge-0.1.0.zip"
+          fi
+
+          echo "Downloading from: $DOWNLOAD_URL"
+          curl -L -o /tmp/FSKitBridge.zip "$DOWNLOAD_URL"
+
+          # Extract and install
+          cd /tmp
+          unzip -o FSKitBridge.zip
+          cp -R FSKitBridge.app /Applications/
+
+          # Remove quarantine attribute
           xattr -cr /Applications/FSKitBridge.app
-      - name: Register FSKitBridge extension
+
+          echo "FSKitBridge installed to /Applications/"
+          ls -la /Applications/FSKitBridge.app/
+
+      - name: Attempt FSKitBridge registration
+        # This step is best-effort - full registration requires signing and user approval
+        continue-on-error: true
         run: |
-          # Run the app once to register with PlugInKit
+          echo "=== Attempting FSKitBridge registration ==="
+
+          # Launch the app to trigger extension registration
           open -a /Applications/FSKitBridge.app
-          sleep 2
-          # Register the extension explicitly
+          sleep 3
+
+          # Check if extension is registered (it likely won't be fully enabled)
           APPEX_PATH="/Applications/FSKitBridge.app/Contents/Extensions/FSKitExt.appex"
           if [ -d "$APPEX_PATH" ]; then
-            pluginkit -a "$APPEX_PATH" || echo "pluginkit -a failed (may need signing)"
-            # Try to enable the extension
+            echo "Extension bundle found at: $APPEX_PATH"
+
+            # Try to register with pluginkit
+            pluginkit -a "$APPEX_PATH" 2>&1 || echo "pluginkit -a returned non-zero (expected without signing)"
+
+            # Get bundle ID
             BUNDLE_ID=$(defaults read "$APPEX_PATH/Contents/Info.plist" CFBundleIdentifier 2>/dev/null || echo "")
             if [ -n "$BUNDLE_ID" ]; then
-              pluginkit -e use -i "$BUNDLE_ID" || echo "pluginkit -e failed (expected in CI)"
+              echo "Extension bundle ID: $BUNDLE_ID"
+              pluginkit -e use -i "$BUNDLE_ID" 2>&1 || echo "pluginkit -e returned non-zero (expected)"
             fi
+          else
+            echo "Extension bundle not found at expected path"
           fi
-          # List registered extensions for debugging
-          pluginkit -m -v | grep -i fskit || echo "No FSKit extensions found"
+
+          # List any registered FSKit extensions
+          echo ""
+          echo "=== Registered FSKit extensions ==="
+          pluginkit -m -v 2>/dev/null | grep -i fskit || echo "No FSKit extensions registered"
+
+          # Check if TCP port is listening (FSKitBridge uses port 35367)
+          echo ""
+          echo "=== Checking FSKitBridge TCP status ==="
+          lsof -i :35367 2>/dev/null || echo "Port 35367 not listening (extension not running)"
+
       - name: Build oxidized-fskit
         run: cargo build -p oxidized-fskit --verbose
+
+      - name: Build oxidized-fskit with setup feature
+        run: cargo build -p oxidized-fskit --features setup --verbose
+
       - name: Run oxidized-fskit unit tests
-        run: cargo test -p oxidized-fskit --verbose
+        run: cargo nextest run -p oxidized-fskit --profile ci
+
+      - name: Run oxidized-fskit setup module tests
+        run: cargo nextest run -p oxidized-fskit --features setup --profile ci
+
+      - name: Run clippy on oxidized-fskit
+        run: cargo clippy -p oxidized-fskit --features setup -- -D warnings
+        continue-on-error: true
+
+  # =============================================================================
+  # FSKit Integration Tests (macOS 15+ with full setup)
+  # =============================================================================
+  # This job runs more comprehensive tests but requires:
+  # - macOS 15.4+ runner
+  # - FSKitBridge installed and extension enabled
+  # Currently experimental and expected to fail in most CI environments.
+  # =============================================================================
+  fskit_integration:
+    name: FSKit Integration Tests (macOS 15)
+    runs-on: macos-15
+    needs: [fskit_build]
+    # Integration tests require extension approval - expected to fail
+    continue-on-error: true
+    # Only run on main branch or with explicit label
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-fskit-integration')
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-fskit
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Download and install FSKitBridge
+        run: |
+          DOWNLOAD_URL="https://github.com/debox-network/FSKitBridge/releases/download/v0.1.0/FSKitBridge-0.1.0.zip"
+          curl -L -o /tmp/FSKitBridge.zip "$DOWNLOAD_URL"
+          cd /tmp && unzip -o FSKitBridge.zip
+          cp -R FSKitBridge.app /Applications/
+          xattr -cr /Applications/FSKitBridge.app
+          open -a /Applications/FSKitBridge.app
+          sleep 5
+
+      - name: Check FSKitBridge status
+        run: |
+          echo "Checking if FSKitBridge is responding..."
+          # Try to connect to the TCP port
+          if nc -z 127.0.0.1 35367 2>/dev/null; then
+            echo "FSKitBridge is listening on port 35367!"
+          else
+            echo "FSKitBridge is NOT listening - extension may not be enabled"
+            echo "Full integration tests will likely fail"
+          fi
+
+      - name: Build release binary
+        run: cargo build -p oxidized-fskit --release
+
+      - name: Run mount test (if FSKitBridge available)
+        continue-on-error: true
+        run: |
+          # Check if FSKitBridge is responding
+          if ! nc -z 127.0.0.1 35367 2>/dev/null; then
+            echo "FSKitBridge not available, skipping mount test"
+            exit 0
+          fi
+
+          echo "FSKitBridge available, attempting mount test..."
+          # TODO: Add actual mount integration test here
+          # For now, just verify the binary runs
+          cargo run -p oxidized-fskit --bin oxmount-fskit -- --help || true
 
   # =============================================================================
   # FUSE Integration Tests (Linux)
@@ -227,8 +391,8 @@ jobs:
     needs: [build_and_test_linux]
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -248,8 +412,8 @@ jobs:
     needs: [build_and_test_linux]
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -281,8 +445,8 @@ jobs:
     if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-fsx')
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -307,8 +471,8 @@ jobs:
     if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-fsstress')
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -338,8 +502,8 @@ jobs:
     if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-pjdfstest')
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -370,10 +534,10 @@ jobs:
     needs: [build_and_test_linux]
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
-      - name: Install llvm-tools-preview
-        run: rustup component add llvm-tools-preview
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -411,8 +575,8 @@ jobs:
     needs: [format]
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup update nightly && rustup default nightly
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:

@@ -35,7 +35,7 @@ fn main() {
                         .with_min_inner_size(dioxus::desktop::LogicalSize::new(600.0, 400.0))
                         .with_resizable(true),
                 )
-                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::LastWindowHides),
+                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
         )
         .launch(app::App);
 }

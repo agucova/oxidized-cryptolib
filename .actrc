@@ -1,11 +1,11 @@
 # act configuration for local GitHub Actions testing
 # https://nektosact.com/
 
-# Use full GitHub runner image (has rustup, cargo, etc pre-installed)
-# Options:
-#   catthehacker/ubuntu:act-latest (~500MB, minimal)
-#   catthehacker/ubuntu:full-latest (~12GB, full GitHub runner with most tools)
--P ubuntu-latest=catthehacker/ubuntu:full-latest
+# Image options:
+# - act-latest: Medium size (~1.6GB), has basic tools
+#   Works because we use dtolnay/rust-toolchain action which installs rustup
+# - full-22.04: Full GitHub runner (~12GB), has everything
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
 
 # For Apple Silicon Macs, use amd64 architecture
 --container-architecture linux/amd64

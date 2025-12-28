@@ -186,6 +186,21 @@ pub enum BackendType {
     /// - Better system integration
     /// - Survives sleep/wake cycles more reliably
     FSKit,
+
+    /// WebDAV-based mounting
+    ///
+    /// Starts a local WebDAV server instead of kernel-level mounting.
+    /// Users mount via:
+    /// - macOS Finder: Cmd+K → enter server URL
+    /// - Windows Explorer: Map Network Drive → enter URL
+    /// - Linux: File manager or mount.davfs
+    ///
+    /// Benefits:
+    /// - No kernel extensions required (no macFUSE)
+    /// - No macOS version requirements (unlike FSKit)
+    /// - Cross-platform (works anywhere with WebDAV client)
+    /// - Easier debugging (standard HTTP tools)
+    WebDav,
 }
 
 impl BackendType {
@@ -194,6 +209,7 @@ impl BackendType {
         match self {
             BackendType::Fuse => "FUSE",
             BackendType::FSKit => "FSKit",
+            BackendType::WebDav => "WebDAV",
         }
     }
 
@@ -202,12 +218,13 @@ impl BackendType {
         match self {
             BackendType::Fuse => "Uses macFUSE (macOS) or libfuse (Linux) for filesystem mounting",
             BackendType::FSKit => "Uses Apple's native FSKit framework (macOS 15.4+)",
+            BackendType::WebDav => "Starts a local WebDAV server (no kernel extensions required)",
         }
     }
 
     /// Get all backend types
     pub fn all() -> &'static [BackendType] {
-        &[BackendType::Fuse, BackendType::FSKit]
+        &[BackendType::Fuse, BackendType::FSKit, BackendType::WebDav]
     }
 }
 
@@ -248,6 +265,7 @@ pub fn select_backend<'a>(
     let id = match backend_type {
         BackendType::Fuse => "fuse",
         BackendType::FSKit => "fskit",
+        BackendType::WebDav => "webdav",
     };
 
     backends
@@ -322,6 +340,10 @@ mod tests {
             serde_json::to_string(&BackendType::FSKit).unwrap(),
             "\"fskit\""
         );
+        assert_eq!(
+            serde_json::to_string(&BackendType::WebDav).unwrap(),
+            "\"webdav\""
+        );
     }
 
     #[test]
@@ -333,6 +355,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<BackendType>("\"fskit\"").unwrap(),
             BackendType::FSKit
+        );
+        assert_eq!(
+            serde_json::from_str::<BackendType>("\"webdav\"").unwrap(),
+            BackendType::WebDav
         );
     }
 

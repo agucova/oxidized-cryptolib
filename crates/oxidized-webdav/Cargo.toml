@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # WebDAV server
-dav-server = "0.7"
+dav-server = "0.8"
 
 # HTTP server
 hyper = { version = "1.5", features = ["server", "http1"] }
@@ -34,7 +34,10 @@ pin-project-lite = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.12", features = ["blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+sha2 = "0.10"
+rand = "0.8"
+tokio-test = "0.4"
 
 [features]
 default = []

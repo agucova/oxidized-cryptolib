@@ -3,6 +3,7 @@
 //! This module provides the `DavFileSystem` trait implementation that wraps
 //! `VaultOperationsAsync` to expose vault contents via WebDAV.
 
+use crate::cache::MetadataCache;
 use crate::dir_entry::CryptomatorDirEntry;
 use crate::error::{vault_error_to_fs_error, write_error_to_fs_error, WebDavError};
 use crate::file::CryptomatorFile;
@@ -30,6 +31,8 @@ pub struct CryptomatorWebDav {
     ops: Arc<VaultOperationsAsync>,
     /// Write buffer table for pending PUT operations.
     write_buffers: Arc<WriteBufferTable>,
+    /// Metadata cache to reduce vault operations.
+    metadata_cache: Arc<MetadataCache>,
 }
 
 impl CryptomatorWebDav {
@@ -38,6 +41,7 @@ impl CryptomatorWebDav {
         Self {
             ops,
             write_buffers: Arc::new(WriteBufferTable::new()),
+            metadata_cache: Arc::new(MetadataCache::with_defaults()),
         }
     }
 
@@ -95,6 +99,7 @@ impl CryptomatorWebDav {
         self.ops
             .resolve_path(path)
             .await
+            .map(|(dir_id, _is_root)| dir_id)
             .map_err(vault_error_to_fs_error)
     }
 
@@ -102,6 +107,12 @@ impl CryptomatorWebDav {
     async fn find_entry(&self, path: &str) -> Result<CryptomatorMetaData, FsError> {
         if path.is_empty() || path == "/" {
             return Ok(CryptomatorMetaData::root());
+        }
+
+        // Check cache first
+        if let Some(cached) = self.metadata_cache.get(path) {
+            trace!(path = %path, "metadata cache hit");
+            return Ok(cached.metadata);
         }
 
         let (parent_dir_id, name) = self.resolve_path(path).await?;
@@ -113,7 +124,9 @@ impl CryptomatorWebDav {
             .await
             .map_err(vault_error_to_fs_error)?;
         if let Some(dir_info) = dirs.into_iter().find(|d| d.name == name) {
-            return Ok(CryptomatorMetaData::from_directory(&dir_info));
+            let meta = CryptomatorMetaData::from_directory(&dir_info);
+            self.metadata_cache.insert(path.to_string(), meta.clone());
+            return Ok(meta);
         }
 
         // Try to find as file
@@ -123,7 +136,9 @@ impl CryptomatorWebDav {
             .await
             .map_err(vault_error_to_fs_error)?;
         if let Some(file_info) = files.into_iter().find(|f| f.name == name) {
-            return Ok(CryptomatorMetaData::from_file(&file_info));
+            let meta = CryptomatorMetaData::from_file(&file_info);
+            self.metadata_cache.insert(path.to_string(), meta.clone());
+            return Ok(meta);
         }
 
         // Try symlinks
@@ -133,7 +148,9 @@ impl CryptomatorWebDav {
             .await
             .map_err(vault_error_to_fs_error)?;
         if let Some(symlink_info) = symlinks.into_iter().find(|s| s.name == name) {
-            return Ok(CryptomatorMetaData::from_symlink(&symlink_info));
+            let meta = CryptomatorMetaData::from_symlink(&symlink_info);
+            self.metadata_cache.insert(path.to_string(), meta.clone());
+            return Ok(meta);
         }
 
         Err(FsError::NotFound)
@@ -141,19 +158,20 @@ impl CryptomatorWebDav {
 
     /// Flush a write buffer to the vault.
     async fn flush_write_buffer(&self, path: &str) -> Result<(), FsError> {
-        if let Some(buffer) = self.write_buffers.remove(path) {
-            if buffer.is_dirty() {
-                let dir_id = buffer.dir_id().clone();
-                let filename = buffer.filename().to_string();
-                let content = buffer.into_content();
+        if let Some(buffer) = self.write_buffers.remove(path) && buffer.is_dirty() {
+            let dir_id = buffer.dir_id().clone();
+            let filename = buffer.filename().to_string();
+            let content = buffer.into_content();
 
-                debug!(path = %path, size = content.len(), "Flushing write buffer to vault");
+            debug!(path = %path, size = content.len(), "Flushing write buffer to vault");
 
-                self.ops
-                    .write_file(&dir_id, &filename, &content)
-                    .await
-                    .map_err(write_error_to_fs_error)?;
-            }
+            self.ops
+                .write_file(&dir_id, &filename, &content)
+                .await
+                .map_err(write_error_to_fs_error)?;
+
+            // Invalidate cache since file size has changed
+            self.metadata_cache.invalidate(path);
         }
         Ok(())
     }
@@ -161,7 +179,7 @@ impl CryptomatorWebDav {
 
 impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
-    fn open<'a>(&'a self, path: &'a DavPath, options: OpenOptions) -> FsFuture<Box<dyn DavFile>> {
+    fn open<'a>(&'a self, path: &'a DavPath, options: OpenOptions) -> FsFuture<'a, Box<dyn DavFile>> {
         Box::pin(async move {
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, options = ?options, "Opening file");
@@ -196,7 +214,7 @@ impl DavFileSystem for CryptomatorWebDav {
                             // File doesn't exist, create new
                             WriteBuffer::new_for_create(dir_id, filename.clone())
                         }
-                        Err(e) => return Err(vault_error_to_fs_error(&e)),
+                        Err(e) => return Err(vault_error_to_fs_error(e)),
                     }
                 };
 
@@ -223,7 +241,7 @@ impl DavFileSystem for CryptomatorWebDav {
         &'a self,
         path: &'a DavPath,
         _meta: ReadDirMeta,
-    ) -> FsFuture<FsStream<Box<dyn DavDirEntry>>> {
+    ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
         Box::pin(async move {
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Reading directory");
@@ -261,7 +279,7 @@ impl DavFileSystem for CryptomatorWebDav {
     }
 
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
-    fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<Box<dyn DavMetaData>> {
+    fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
             let vault_path = Self::parse_path(path);
             trace!(vault_path = %vault_path, "Getting metadata");
@@ -272,7 +290,7 @@ impl DavFileSystem for CryptomatorWebDav {
     }
 
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
-    fn create_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<()> {
+    fn create_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Creating directory");
@@ -284,12 +302,15 @@ impl DavFileSystem for CryptomatorWebDav {
                 .await
                 .map_err(write_error_to_fs_error)?;
 
+            // Invalidate cache for the new directory
+            self.metadata_cache.invalidate(&vault_path);
+
             Ok(())
         })
     }
 
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
-    fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<()> {
+    fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Removing directory");
@@ -301,12 +322,15 @@ impl DavFileSystem for CryptomatorWebDav {
                 .await
                 .map_err(write_error_to_fs_error)?;
 
+            // Invalidate cache for the directory and all children
+            self.metadata_cache.invalidate_prefix(&vault_path);
+
             Ok(())
         })
     }
 
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
-    fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<()> {
+    fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Removing file");
@@ -317,7 +341,7 @@ impl DavFileSystem for CryptomatorWebDav {
             let (parent_dir_id, name) = self.resolve_path(&vault_path).await?;
 
             // Try to delete as file first
-            match self.ops.delete_file(&parent_dir_id, &name).await {
+            let result = match self.ops.delete_file(&parent_dir_id, &name).await {
                 Ok(()) => Ok(()),
                 Err(_) => {
                     // Try as symlink
@@ -326,12 +350,17 @@ impl DavFileSystem for CryptomatorWebDav {
                         .await
                         .map_err(write_error_to_fs_error)
                 }
-            }
+            };
+
+            // Invalidate cache for the removed file
+            self.metadata_cache.invalidate(&vault_path);
+
+            result
         })
     }
 
     #[instrument(level = "debug", skip(self), fields(from = %from.as_url_string(), to = %to.as_url_string()))]
-    fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<()> {
+    fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
             let from_path = Self::parse_path(from);
             let to_path = Self::parse_path(to);
@@ -363,12 +392,16 @@ impl DavFileSystem for CryptomatorWebDav {
                     .map_err(write_error_to_fs_error)?;
             }
 
+            // Invalidate cache for both source and destination
+            self.metadata_cache.invalidate(&from_path);
+            self.metadata_cache.invalidate(&to_path);
+
             Ok(())
         })
     }
 
     #[instrument(level = "debug", skip(self), fields(from = %from.as_url_string(), to = %to.as_url_string()))]
-    fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<()> {
+    fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
             let from_path = Self::parse_path(from);
             let to_path = Self::parse_path(to);
@@ -389,6 +422,9 @@ impl DavFileSystem for CryptomatorWebDav {
                 .write_file(&to_dir_id, &to_name, &content.content)
                 .await
                 .map_err(write_error_to_fs_error)?;
+
+            // Invalidate cache for the destination
+            self.metadata_cache.invalidate(&to_path);
 
             Ok(())
         })

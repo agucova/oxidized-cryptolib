@@ -7,9 +7,15 @@ mod add_vault_dialog;
 mod create_vault_dialog;
 mod unlock_dialog;
 
+#[cfg(all(target_os = "macos", feature = "fskit"))]
+mod fskit_setup_dialog;
+
 pub use add_vault_dialog::AddVaultDialog;
 pub use create_vault_dialog::CreateVaultDialog;
 pub use unlock_dialog::{UnlockDialog, UnlockState};
+
+#[cfg(all(target_os = "macos", feature = "fskit"))]
+pub use fskit_setup_dialog::FSKitSetupDialog;
 
 // TODO: Phase 5 - Implement password change dialog
 // mod change_password;

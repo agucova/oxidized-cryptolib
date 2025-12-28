@@ -39,7 +39,12 @@ pub fn execute(args: Args) -> Result<()> {
         unmount_linux(mountpoint, args.force)?;
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        unmount_windows(mountpoint, args.force)?;
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         anyhow::bail!("Unmount is not supported on this platform");
     }
@@ -120,4 +125,36 @@ fn unmount_linux(mountpoint: &PathBuf, force: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn unmount_windows(mountpoint: &PathBuf, _force: bool) -> Result<()> {
+    // On Windows, WebDAV mounts are typically mapped as network drives
+    // Try `net use /delete` for network drives
+    let mountpoint_str = mountpoint.to_string_lossy();
+
+    // Check if it looks like a drive letter (e.g., "Z:" or "Z:\")
+    if mountpoint_str.len() >= 2 && mountpoint_str.chars().nth(1) == Some(':') {
+        let drive = &mountpoint_str[..2];
+        let mut cmd = Command::new("net");
+        cmd.args(["use", drive, "/delete", "/yes"]);
+
+        let output = cmd.output().context("Failed to execute net use")?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // If it's not a network drive, the error is expected
+        if !stderr.contains("network connection could not be found") {
+            anyhow::bail!("Failed to unmount: {}", stderr.trim());
+        }
+    }
+
+    // For non-drive paths or if net use failed, inform the user
+    anyhow::bail!(
+        "Cannot unmount {}: On Windows, unmount network drives via File Explorer or use 'net use X: /delete'",
+        mountpoint.display()
+    );
 }

@@ -106,6 +106,7 @@ pub fn write_error_to_errno(e: &VaultWriteError) -> i32 {
         VaultWriteError::Symlink(_) => libc::EIO,
         VaultWriteError::SymlinkAlreadyExists { .. } => libc::EEXIST,
         VaultWriteError::Streaming { .. } => libc::EIO,
+        VaultWriteError::PathExists { .. } => libc::EEXIST,
     }
 }
 

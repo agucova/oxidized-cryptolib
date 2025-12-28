@@ -184,10 +184,8 @@ impl MountHandle for WebDavMountHandle {
         info!(url = %self.url, "Unmounting WebDAV");
 
         // Unmount from macOS if we auto-mounted
-        if self.auto_mounted {
-            if let Err(e) = unmount_macos(&self.mountpoint) {
-                warn!(error = %e, "Failed to unmount from macOS");
-            }
+        if self.auto_mounted && let Err(e) = unmount_macos(&self.mountpoint) {
+            warn!(error = %e, "Failed to unmount from macOS");
         }
 
         // Stop the server

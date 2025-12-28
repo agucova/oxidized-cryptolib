@@ -1,0 +1,16 @@
+[package]
+name = "oxidized-mount-common"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared utilities for Cryptomator vault mount backends (FUSE, FSKit, WebDAV)"
+
+[dependencies]
+dashmap = "6"
+libc = "0.2.178"
+oxidized-cryptolib = { path = "../oxidized-cryptolib" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }

@@ -3,7 +3,7 @@
 //! This module provides the `DavMetaData` trait implementation for vault
 //! files, directories, and symlinks.
 
-use dav_server::fs::{DavMetaData, FsError, FsFuture};
+use dav_server::fs::{DavMetaData, FsError};
 use oxidized_cryptolib::vault::operations::{VaultDirectoryInfo, VaultFileInfo, VaultSymlinkInfo};
 use std::time::SystemTime;
 
@@ -127,7 +127,7 @@ impl CryptomatorMetaData {
         }
         let content_size = encrypted_size - 68;
         let chunk_size = 32768u64 + 28 + 16; // plaintext + nonce + tag
-        let num_chunks = (content_size + chunk_size - 1) / chunk_size;
+        let num_chunks = content_size.div_ceil(chunk_size);
 
         // For the last chunk, we don't know exact size, so estimate
         if num_chunks == 0 {
@@ -151,14 +151,14 @@ impl DavMetaData for CryptomatorMetaData {
         }
     }
 
-    fn modified(&self) -> FsFuture<'_, SystemTime> {
+    fn modified(&self) -> Result<SystemTime, FsError> {
         let time = match self {
             CryptomatorMetaData::Root => SystemTime::now(),
             CryptomatorMetaData::File(f) => f.modified,
             CryptomatorMetaData::Directory(d) => d.modified,
             CryptomatorMetaData::Symlink(s) => s.modified,
         };
-        Box::pin(async move { Ok(time) })
+        Ok(time)
     }
 
     fn is_dir(&self) -> bool {
@@ -180,24 +180,24 @@ impl DavMetaData for CryptomatorMetaData {
         false
     }
 
-    fn created(&self) -> FsFuture<'_, SystemTime> {
+    fn created(&self) -> Result<SystemTime, FsError> {
         // Cryptomator doesn't store creation time, return modification time
         self.modified()
     }
 
-    fn accessed(&self) -> FsFuture<'_, SystemTime> {
+    fn accessed(&self) -> Result<SystemTime, FsError> {
         // Cryptomator doesn't store access time, return modification time
         self.modified()
     }
 
-    fn status_changed(&self) -> FsFuture<'_, SystemTime> {
+    fn status_changed(&self) -> Result<SystemTime, FsError> {
         // Cryptomator doesn't store status change time, return modification time
         self.modified()
     }
 
-    fn executable(&self) -> FsFuture<'_, bool> {
+    fn executable(&self) -> Result<bool, FsError> {
         // Cryptomator doesn't store executable bit
-        Box::pin(async { Ok(false) })
+        Ok(false)
     }
 }
 

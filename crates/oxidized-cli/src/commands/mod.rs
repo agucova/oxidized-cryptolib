@@ -1,17 +1,22 @@
-pub mod backends;
 pub mod cat;
 pub mod cp;
 pub mod info;
 pub mod init;
 pub mod ls;
 pub mod mkdir;
-pub mod mount;
 pub mod mv;
 pub mod rm;
 pub mod touch;
 pub mod tree;
-pub mod unmount;
 pub mod write;
+
+// Mount-related modules require at least one backend feature
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+pub mod backends;
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+pub mod mount;
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+pub mod unmount;
 
 /// Normalize a vault path to ensure it starts with `/`.
 /// This makes paths like `test.txt` work the same as `/test.txt`.

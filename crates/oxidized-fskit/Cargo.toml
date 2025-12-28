@@ -59,7 +59,7 @@ console-subscriber = { workspace = true, optional = true }
 
 # Optional: FSKitBridge download/setup functionality
 reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
-zip = { version = "2", optional = true }
+zip = { version = "7", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 tempfile = { version = "3", optional = true }
 

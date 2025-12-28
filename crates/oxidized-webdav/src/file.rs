@@ -24,6 +24,24 @@ pub enum CryptomatorFile {
     Writer(WriterHandle),
 }
 
+impl std::fmt::Debug for CryptomatorFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CryptomatorFile::Reader(h) => f
+                .debug_struct("CryptomatorFile::Reader")
+                .field("filename", &h.filename)
+                .field("position", &h.position)
+                .field("size", &h.size)
+                .finish(),
+            CryptomatorFile::Writer(h) => f
+                .debug_struct("CryptomatorFile::Writer")
+                .field("filename", &h.filename)
+                .field("position", &h.position)
+                .finish(),
+        }
+    }
+}
+
 /// Handle for read-only file access.
 pub struct ReaderHandle {
     /// The streaming reader (wrapped in Mutex for interior mutability).

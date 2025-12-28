@@ -52,8 +52,8 @@ impl WebDavError {
     /// Converts this error to a dav-server FsError.
     pub fn to_fs_error(&self) -> FsError {
         match self {
-            WebDavError::Vault(e) => vault_error_to_fs_error(e.as_ref()),
-            WebDavError::Write(e) => write_error_to_fs_error(e.as_ref()),
+            WebDavError::Vault(e) => vault_error_to_fs_error_ref(e.as_ref()),
+            WebDavError::Write(e) => write_error_to_fs_error_ref(e.as_ref()),
             WebDavError::Io(e) => io_error_to_fs_error(e),
             WebDavError::InvalidPath(_) => FsError::GeneralFailure,
             WebDavError::NotFound(_) => FsError::NotFound,
@@ -65,8 +65,8 @@ impl WebDavError {
     }
 }
 
-/// Converts a vault operation error to a dav-server FsError.
-pub fn vault_error_to_fs_error(e: &VaultOperationError) -> FsError {
+/// Helper that takes a reference (for use in WebDavError::to_fs_error).
+fn vault_error_to_fs_error_ref(e: &VaultOperationError) -> FsError {
     match e {
         VaultOperationError::Io { source, .. } => io_error_to_fs_error(source),
         VaultOperationError::FileDecryption(_) => FsError::GeneralFailure,
@@ -86,8 +86,8 @@ pub fn vault_error_to_fs_error(e: &VaultOperationError) -> FsError {
     }
 }
 
-/// Converts a vault write error to a dav-server FsError.
-pub fn write_error_to_fs_error(e: &VaultWriteError) -> FsError {
+/// Helper that takes a reference (for use in WebDavError::to_fs_error).
+fn write_error_to_fs_error_ref(e: &VaultWriteError) -> FsError {
     match e {
         VaultWriteError::Io { source, .. } => io_error_to_fs_error(source),
         VaultWriteError::Encryption(_) => FsError::GeneralFailure,
@@ -102,6 +102,48 @@ pub fn write_error_to_fs_error(e: &VaultWriteError) -> FsError {
         VaultWriteError::Symlink(_) => FsError::GeneralFailure,
         VaultWriteError::SymlinkAlreadyExists { .. } => FsError::Exists,
         VaultWriteError::Streaming { .. } => FsError::GeneralFailure,
+        VaultWriteError::PathExists { .. } => FsError::Exists,
+    }
+}
+
+/// Converts a vault operation error to a dav-server FsError.
+pub fn vault_error_to_fs_error(e: VaultOperationError) -> FsError {
+    match &e {
+        VaultOperationError::Io { source, .. } => io_error_to_fs_error(source),
+        VaultOperationError::FileDecryption(_) => FsError::GeneralFailure,
+        VaultOperationError::FileContentDecryption(_) => FsError::GeneralFailure,
+        VaultOperationError::Filename(_) => FsError::GeneralFailure,
+        VaultOperationError::DirectoryNotFound { .. } => FsError::NotFound,
+        VaultOperationError::InvalidVaultStructure { .. } => FsError::GeneralFailure,
+        VaultOperationError::PathNotFound { .. } => FsError::NotFound,
+        VaultOperationError::NotAFile { .. } => FsError::Forbidden,
+        VaultOperationError::NotADirectory { .. } => FsError::Forbidden,
+        VaultOperationError::EmptyPath => FsError::GeneralFailure,
+        VaultOperationError::FileNotFound { .. } => FsError::NotFound,
+        VaultOperationError::Symlink(_) => FsError::GeneralFailure,
+        VaultOperationError::SymlinkNotFound { .. } => FsError::NotFound,
+        VaultOperationError::NotASymlink { .. } => FsError::GeneralFailure,
+        VaultOperationError::Streaming { .. } => FsError::GeneralFailure,
+    }
+}
+
+/// Converts a vault write error to a dav-server FsError.
+pub fn write_error_to_fs_error(e: VaultWriteError) -> FsError {
+    match &e {
+        VaultWriteError::Io { source, .. } => io_error_to_fs_error(source),
+        VaultWriteError::Encryption(_) => FsError::GeneralFailure,
+        VaultWriteError::Filename(_) => FsError::GeneralFailure,
+        VaultWriteError::DirectoryNotFound { .. } => FsError::NotFound,
+        VaultWriteError::FileAlreadyExists { .. } => FsError::Exists,
+        VaultWriteError::DirectoryAlreadyExists { .. } => FsError::Exists,
+        VaultWriteError::DirectoryNotEmpty { .. } => FsError::Forbidden,
+        VaultWriteError::AtomicWriteFailed { .. } => FsError::GeneralFailure,
+        VaultWriteError::FileNotFound { .. } => FsError::NotFound,
+        VaultWriteError::SameSourceAndDestination { .. } => FsError::GeneralFailure,
+        VaultWriteError::Symlink(_) => FsError::GeneralFailure,
+        VaultWriteError::SymlinkAlreadyExists { .. } => FsError::Exists,
+        VaultWriteError::Streaming { .. } => FsError::GeneralFailure,
+        VaultWriteError::PathExists { .. } => FsError::Exists,
     }
 }
 

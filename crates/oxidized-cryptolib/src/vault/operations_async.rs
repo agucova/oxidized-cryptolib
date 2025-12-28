@@ -40,10 +40,11 @@ use tokio::fs;
 use tracing::{debug, info, instrument, trace, warn};
 
 pub use super::operations::{
-    VaultDirectoryInfo, VaultFileInfo, VaultOpContext, VaultOperationError, VaultSymlinkInfo,
-    VaultWriteError, DEFAULT_SHORTENING_THRESHOLD,
+    DirEntry, VaultDirectoryInfo, VaultFileInfo, VaultOpContext, VaultOperationError,
+    VaultSymlinkInfo, VaultWriteError, DEFAULT_SHORTENING_THRESHOLD,
 };
 use super::operations::VaultOperations;
+use super::path::EntryType;
 
 /// Async-specific errors that can occur during vault operations.
 #[derive(Error, Debug)]
@@ -1788,6 +1789,108 @@ impl VaultOperationsAsync {
         Ok(())
     }
 
+    /// Rename a directory.
+    ///
+    /// Changes the directory's name within its parent directory. The directory ID
+    /// remains unchanged, only the encrypted directory entry is updated.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_dir_id` - The directory ID of the parent directory
+    /// * `old_name` - Current name of the directory
+    /// * `new_name` - New name for the directory
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The source directory doesn't exist
+    /// - A directory with the new name already exists
+    /// - old_name equals new_name
+    #[instrument(level = "info", skip(self), fields(parent_dir_id = %parent_dir_id.as_str(), old_name = %old_name, new_name = %new_name))]
+    pub async fn rename_directory(
+        &self,
+        parent_dir_id: &DirId,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), VaultWriteError> {
+        info!("Renaming directory in vault");
+
+        let ctx = VaultOpContext::new()
+            .with_filename(old_name)
+            .with_dir_id(parent_dir_id.as_str());
+
+        // Fast path: no-op if names are identical
+        if old_name == new_name {
+            return Err(VaultWriteError::SameSourceAndDestination { context: ctx });
+        }
+
+        // Acquire parent directory write lock
+        let _parent_guard = self.lock_manager.directory_write(parent_dir_id).await;
+        trace!("Acquired parent directory write lock for rename_directory");
+
+        // Find the source directory using optimized lookup
+        let source_info = self
+            .find_directory_unlocked(parent_dir_id, old_name)
+            .await
+            .map_err(|e| match e {
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+                other => VaultWriteError::Io {
+                    source: std::io::Error::other(other.to_string()),
+                    context: ctx.clone(),
+                },
+            })?
+            .ok_or_else(|| VaultWriteError::DirectoryNotFound {
+                name: old_name.to_string(),
+                context: ctx.clone(),
+            })?;
+
+        // Check that target doesn't exist using optimized lookup
+        if self
+            .find_directory_unlocked(parent_dir_id, new_name)
+            .await?
+            .is_some()
+        {
+            return Err(VaultWriteError::DirectoryAlreadyExists {
+                name: new_name.to_string(),
+                context: ctx.clone().with_filename(new_name),
+            });
+        }
+
+        let parent_storage_path = self.calculate_directory_storage_path(parent_dir_id)?;
+
+        // Encrypt the new directory name
+        let new_encrypted_name = encrypt_filename(new_name, parent_dir_id.as_str(), &self.master_key)?;
+        let new_is_long = new_encrypted_name.len() > self.shortening_threshold;
+
+        // The directory ID stays the same - we're just renaming the entry
+        let dir_id = &source_info.directory_id;
+
+        // Create new directory entry first (crash-safe)
+        if new_is_long {
+            self.create_shortened_directory(&parent_storage_path, &new_encrypted_name, dir_id)
+                .await?;
+        } else {
+            let new_path = parent_storage_path.join(format!("{new_encrypted_name}.c9r"));
+            fs::create_dir_all(&new_path).await.map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: VaultOpContext::new().with_encrypted_path(&new_path),
+            })?;
+            self.safe_write(&new_path.join("dir.c9r"), dir_id.as_str().as_bytes())
+                .await?;
+        }
+
+        // Remove the old directory entry (not the storage directory - that stays!)
+        fs::remove_dir_all(&source_info.encrypted_path)
+            .await
+            .map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path),
+            })?;
+
+        info!("Directory renamed successfully");
+        Ok(())
+    }
+
     /// Move a file from one directory to another.
     ///
     /// Re-encrypts the filename (uses directory ID as associated data),
@@ -2022,6 +2125,44 @@ impl VaultOperationsAsync {
         let _guard = self.lock_manager.directory_read(directory_id).await;
         trace!("Acquired directory read lock for list_symlinks");
         self.list_symlinks_unlocked(directory_id).await
+    }
+
+    /// List all entries in a directory (files, directories, symlinks).
+    ///
+    /// Returns a unified list of all entries as `DirEntry` enum variants.
+    /// This is the async equivalent of `VaultOperations::list()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The directory ID to list entries from
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if listing any entry type fails.
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str()))]
+    pub async fn list(
+        &self,
+        directory_id: &DirId,
+    ) -> Result<Vec<DirEntry>, VaultOperationError> {
+        let mut entries = Vec::new();
+
+        // Collect files
+        for file in self.list_files(directory_id).await? {
+            entries.push(DirEntry::File(file));
+        }
+
+        // Collect directories
+        for dir in self.list_directories(directory_id).await? {
+            entries.push(DirEntry::Directory(dir));
+        }
+
+        // Collect symlinks
+        for symlink in self.list_symlinks(directory_id).await? {
+            entries.push(DirEntry::Symlink(symlink));
+        }
+
+        debug!(entry_count = entries.len(), "Listed all entries in directory");
+        Ok(entries)
     }
 
     /// Internal implementation of list_symlinks without locking.
@@ -2342,6 +2483,257 @@ impl VaultOperationsAsync {
                 .with_filename(name)
                 .with_dir_id(directory_id.as_str()),
         })
+    }
+
+    // ==================== Path-Based Operations ====================
+
+    /// Check what type of entry exists at a path.
+    ///
+    /// Returns `Some(EntryType)` if an entry exists, `None` if nothing exists at the path.
+    /// This is the async equivalent of `VaultOperations::entry_type()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path within the vault (e.g., "documents/file.txt")
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// match ops.entry_type("documents/readme.txt").await {
+    ///     Some(EntryType::File) => println!("It's a file"),
+    ///     Some(EntryType::Directory) => println!("It's a directory"),
+    ///     Some(EntryType::Symlink) => println!("It's a symlink"),
+    ///     None => println!("Nothing exists at this path"),
+    /// }
+    /// ```
+    #[instrument(level = "trace", skip(self), fields(path = %path.as_ref()))]
+    pub async fn entry_type(&self, path: impl AsRef<str>) -> Option<EntryType> {
+        let vault_path = VaultPath::new(path.as_ref());
+
+        if vault_path.is_root() {
+            return Some(EntryType::Directory);
+        }
+
+        let (parent_path, entry_name) = vault_path.split()?;
+
+        // Resolve parent directory to get its DirId
+        let parent_dir_id = if parent_path.is_root() {
+            DirId::root()
+        } else {
+            match self.resolve_path(parent_path.as_str()).await {
+                Ok((dir_id, true)) => dir_id,
+                _ => return None,
+            }
+        };
+
+        // Check for symlink first (symlinks are the least common)
+        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id).await {
+            if symlinks.iter().any(|s| s.name == entry_name) {
+                return Some(EntryType::Symlink);
+            }
+        }
+
+        // Check for directory
+        if let Ok(dirs) = self.list_directories(&parent_dir_id).await {
+            if dirs.iter().any(|d| d.name == entry_name) {
+                return Some(EntryType::Directory);
+            }
+        }
+
+        // Check for file
+        if let Ok(files) = self.list_files(&parent_dir_id).await {
+            if files.iter().any(|f| f.name == entry_name) {
+                return Some(EntryType::File);
+            }
+        }
+
+        None
+    }
+
+    /// List all entries in a directory by path.
+    ///
+    /// Returns a unified list of files, directories, and symlinks as `DirEntry` enum variants.
+    /// This is the async equivalent of `VaultOperations::list_by_path()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the directory within the vault (e.g., "" for root, "documents" for a subdirectory)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path doesn't exist or isn't a directory.
+    #[instrument(level = "debug", skip(self), fields(path = path.as_ref()))]
+    pub async fn list_by_path(
+        &self,
+        path: impl AsRef<str>,
+    ) -> Result<Vec<DirEntry>, VaultOperationError> {
+        let vault_path = VaultPath::new(path.as_ref());
+
+        let dir_id = if vault_path.is_root() {
+            DirId::root()
+        } else {
+            let (resolved_id, is_dir) = self.resolve_path(vault_path.as_str()).await?;
+            if !is_dir {
+                return Err(VaultOperationError::NotADirectory {
+                    path: vault_path.to_string(),
+                });
+            }
+            resolved_id
+        };
+
+        self.list(&dir_id).await
+    }
+
+    /// Get entry information by path.
+    ///
+    /// Returns a `DirEntry` with full metadata for the entry at the given path.
+    /// This is more informative than `entry_type()` as it includes the full info struct.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path within the vault (e.g., "documents/file.txt")
+    ///
+    /// # Returns
+    ///
+    /// - `Some(DirEntry::File(info))` for files
+    /// - `Some(DirEntry::Directory(info))` for directories
+    /// - `Some(DirEntry::Symlink(info))` for symlinks
+    /// - `None` if nothing exists at the path
+    #[instrument(level = "trace", skip(self), fields(path = %path.as_ref()))]
+    pub async fn get_entry(&self, path: impl AsRef<str>) -> Option<DirEntry> {
+        let vault_path = VaultPath::new(path.as_ref());
+
+        if vault_path.is_root() {
+            return Some(DirEntry::Directory(VaultDirectoryInfo {
+                name: String::new(),
+                directory_id: DirId::root(),
+                encrypted_path: self.vault_path.join("d"),
+                parent_directory_id: DirId::root(),
+            }));
+        }
+
+        let (parent_path, entry_name) = vault_path.split()?;
+
+        // Resolve parent directory
+        let parent_dir_id = if parent_path.is_root() {
+            DirId::root()
+        } else {
+            match self.resolve_path(parent_path.as_str()).await {
+                Ok((dir_id, true)) => dir_id,
+                _ => return None,
+            }
+        };
+
+        // Check symlink first
+        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id).await {
+            if let Some(symlink) = symlinks.into_iter().find(|s| s.name == entry_name) {
+                return Some(DirEntry::Symlink(symlink));
+            }
+        }
+
+        // Check directory
+        if let Ok(dirs) = self.list_directories(&parent_dir_id).await {
+            if let Some(dir) = dirs.into_iter().find(|d| d.name == entry_name) {
+                return Some(DirEntry::Directory(dir));
+            }
+        }
+
+        // Check file
+        if let Ok(files) = self.list_files(&parent_dir_id).await {
+            if let Some(file) = files.into_iter().find(|f| f.name == entry_name) {
+                return Some(DirEntry::File(file));
+            }
+        }
+
+        None
+    }
+
+    /// Rename a directory by its path.
+    ///
+    /// Convenience wrapper that accepts a path string instead of a DirId.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the directory to rename (e.g., "projects/old_name")
+    /// * `new_name` - New name for the directory
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory doesn't exist or the rename fails.
+    #[instrument(level = "debug", skip(self), fields(path = path.as_ref(), new_name = new_name))]
+    pub async fn rename_directory_by_path(
+        &self,
+        path: impl AsRef<str>,
+        new_name: &str,
+    ) -> Result<(), VaultWriteError> {
+        let (parent_dir_id, old_name) = self.resolve_parent_path(path.as_ref()).await?;
+        debug!(parent_dir_id = %parent_dir_id, old_name = %old_name, "Resolved path for directory rename");
+        self.rename_directory(&parent_dir_id, &old_name, new_name).await
+    }
+
+    /// Read a symlink target by its path.
+    ///
+    /// Convenience wrapper that accepts a path string instead of a DirId.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the symlink (e.g., "links/my_symlink")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the symlink doesn't exist.
+    #[instrument(level = "debug", skip(self), fields(path = path.as_ref()))]
+    pub async fn read_symlink_by_path(
+        &self,
+        path: impl AsRef<str>,
+    ) -> Result<String, VaultOperationError> {
+        let (dir_id, name) = self.resolve_parent_path(path.as_ref()).await?;
+        debug!(dir_id = %dir_id, name = %name, "Resolved path for symlink read");
+        self.read_symlink(&dir_id, &name).await
+    }
+
+    /// Create a symlink by its path.
+    ///
+    /// Convenience wrapper that accepts a path string instead of a DirId.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path for the new symlink (e.g., "links/my_symlink")
+    /// * `target` - Target path the symlink should point to
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent directory doesn't exist or a symlink already exists.
+    #[instrument(level = "debug", skip(self), fields(path = path.as_ref(), target = target))]
+    pub async fn create_symlink_by_path(
+        &self,
+        path: impl AsRef<str>,
+        target: &str,
+    ) -> Result<(), VaultWriteError> {
+        let (dir_id, name) = self.resolve_parent_path(path.as_ref()).await?;
+        debug!(dir_id = %dir_id, name = %name, "Resolved path for symlink creation");
+        self.create_symlink(&dir_id, &name, target).await
+    }
+
+    /// Delete a symlink by its path.
+    ///
+    /// Convenience wrapper that accepts a path string instead of a DirId.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the symlink to delete (e.g., "links/my_symlink")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the symlink doesn't exist.
+    #[instrument(level = "debug", skip(self), fields(path = path.as_ref()))]
+    pub async fn delete_symlink_by_path(
+        &self,
+        path: impl AsRef<str>,
+    ) -> Result<(), VaultWriteError> {
+        let (dir_id, name) = self.resolve_parent_path(path.as_ref()).await?;
+        debug!(dir_id = %dir_id, name = %name, "Resolved path for symlink deletion");
+        self.delete_symlink(&dir_id, &name).await
     }
 }
 

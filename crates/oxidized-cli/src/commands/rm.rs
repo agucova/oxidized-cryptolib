@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 
+use oxidized_cryptolib::vault::path::EntryType;
 use oxidized_cryptolib::vault::operations::VaultOperations;
 
 use super::normalize_path;
@@ -21,11 +22,9 @@ pub struct Args {
 
 pub fn execute(vault_ops: &VaultOperations, args: Args) -> Result<()> {
     let path = normalize_path(&args.path);
-    let exists = vault_ops.exists_by_path(&path);
 
-    match exists {
-        Some(true) => {
-            // It's a directory
+    match vault_ops.entry_type(&path) {
+        Some(EntryType::Directory) => {
             if args.recursive {
                 let stats = vault_ops.delete_directory_recursive_by_path(&path)?;
                 eprintln!(
@@ -36,9 +35,11 @@ pub fn execute(vault_ops: &VaultOperations, args: Args) -> Result<()> {
                 vault_ops.delete_directory_by_path(&path)?;
             }
         }
-        Some(false) => {
-            // It's a file
+        Some(EntryType::File) => {
             vault_ops.delete_by_path(&path)?;
+        }
+        Some(EntryType::Symlink) => {
+            vault_ops.delete_symlink_by_path(&path)?;
         }
         None => {
             if !args.force {

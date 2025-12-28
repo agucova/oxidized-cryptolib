@@ -29,8 +29,8 @@ base64 = "0.22"
 data-encoding = "2.9"
 generic-array = "0.14"
 hex = "0.4"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
-lru = "0.12"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+lru = "0.16"
 rand = "0.9"
 relative-path = "2.0.1"
 ring = "0.17"

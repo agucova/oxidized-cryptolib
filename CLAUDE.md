@@ -19,6 +19,12 @@ This is a jujutsu (jj) hybrid repo. Prefer `jj` over `git` for all VCS operation
 
 Standard Cargo commands work: `cargo build`, `cargo check`, `cargo clippy`, `cargo fmt`.
 
+**Adding dependencies**: Always use `cargo add` instead of manually editing `Cargo.toml` to ensure the latest version is used:
+```bash
+cargo add serde -p oxidized-cryptolib              # Add to specific crate
+cargo add tokio -p oxidized-cli --features full    # With features
+```
+
 **Testing** (uses `cargo-nextest`):
 ```bash
 cargo nextest run                    # All tests

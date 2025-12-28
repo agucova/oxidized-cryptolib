@@ -59,7 +59,7 @@ impl WebDavServer {
 
         // Build the DAV handler with FakeLs (minimal lock support for macOS/Windows)
         let dav_handler = DavHandler::builder()
-            .filesystem(fs)
+            .filesystem(Box::new(fs))
             .locksystem(FakeLs::new())
             .build_handler();
 
@@ -139,10 +139,9 @@ async fn run_server(listener: TcpListener, handler: Arc<DavHandler>) {
                     if let Err(e) = http1::Builder::new()
                         .serve_connection(io, service)
                         .await
+                        && !e.is_incomplete_message()
                     {
-                        if !e.is_incomplete_message() {
-                            warn!(peer = %peer_addr, error = %e, "HTTP connection error");
-                        }
+                        warn!(peer = %peer_addr, error = %e, "HTTP connection error");
                     }
                 });
             }
@@ -182,10 +181,7 @@ pub async fn auto_mount_macos(
             status = ?status,
             "Auto-mount failed, user can mount manually via Finder"
         );
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "mount_webdav failed",
-        ))
+        Err(std::io::Error::other("mount_webdav failed"))
     }
 }
 
@@ -212,10 +208,7 @@ pub fn unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error>
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "unmount failed",
-        ))
+        Err(std::io::Error::other("unmount failed"))
     }
 }
 

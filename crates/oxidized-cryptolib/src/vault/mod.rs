@@ -29,5 +29,8 @@ pub use creator::{VaultCreationError, VaultCreator};
 pub use master_key::{
     create_masterkey_file, create_masterkey_file_with_pepper, MasterKeyCreationError, MasterKeyFile,
 };
-pub use operations::{debug_read_files_in_tree, VaultOperationError, VaultOperations, VaultWriteError};
+pub use operations::{
+    debug_read_files_in_tree, DirEntry, VaultDirectoryInfo, VaultFileInfo, VaultOperationError,
+    VaultOperations, VaultSymlinkInfo, VaultWriteError,
+};
 pub use path::{DirId, EntryType, VaultPath};

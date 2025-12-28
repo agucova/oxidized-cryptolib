@@ -14,8 +14,8 @@ pub struct Args {
 pub fn execute(vault_ops: &VaultOperations, args: Args) -> Result<()> {
     let path = normalize_path(&args.path);
 
-    // Check if file already exists (Some(true) = dir, Some(false) = file, None = doesn't exist)
-    if vault_ops.exists_by_path(&path).is_some() {
+    // Check if path already exists
+    if vault_ops.entry_type(&path).is_some() {
         // Path exists, nothing to do (real touch would update mtime, but we can't)
         return Ok(());
     }

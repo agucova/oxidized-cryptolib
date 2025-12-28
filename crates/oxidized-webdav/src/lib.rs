@@ -46,6 +46,7 @@
 //! No authentication is required since only local connections are accepted.
 
 mod backend;
+mod cache;
 mod dir_entry;
 mod error;
 mod file;

@@ -77,6 +77,9 @@ pub struct AppConfig {
     /// Start application minimized to tray
     #[serde(default)]
     pub start_minimized: bool,
+    /// User dismissed the FSKit setup wizard (don't show again)
+    #[serde(default)]
+    pub fskit_setup_dismissed: bool,
 }
 
 impl AppConfig {

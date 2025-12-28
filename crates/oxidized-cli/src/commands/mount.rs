@@ -21,6 +21,9 @@ use oxidized_fuse::FuseBackend;
 #[cfg(feature = "fskit")]
 use oxidized_fskit::FSKitBackend;
 
+#[cfg(feature = "webdav")]
+use oxidized_webdav::WebDavBackend;
+
 /// Backend selection for mount command
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum BackendArg {
@@ -30,6 +33,9 @@ pub enum BackendArg {
     /// Use FSKit backend (macOS 15.4+ only)
     #[cfg(feature = "fskit")]
     Fskit,
+    /// Use WebDAV backend (no kernel extensions required)
+    #[cfg(feature = "webdav")]
+    Webdav,
 }
 
 impl From<BackendArg> for BackendType {
@@ -39,6 +45,8 @@ impl From<BackendArg> for BackendType {
             BackendArg::Fuse => BackendType::Fuse,
             #[cfg(feature = "fskit")]
             BackendArg::Fskit => BackendType::FSKit,
+            #[cfg(feature = "webdav")]
+            BackendArg::Webdav => BackendType::WebDav,
         }
     }
 }
@@ -69,7 +77,7 @@ pub struct Args {
 /// Build the list of available backends based on enabled features
 ///
 /// Backends are ordered by preference: FSKit first (better macOS integration),
-/// then FUSE as fallback. This order is used when `BackendType::Auto` is selected.
+/// then FUSE, then WebDAV as fallback. This order is used for auto-selection.
 fn build_backends() -> Vec<Box<dyn MountBackend>> {
     let mut backends: Vec<Box<dyn MountBackend>> = Vec::new();
 
@@ -79,10 +87,16 @@ fn build_backends() -> Vec<Box<dyn MountBackend>> {
         backends.push(Box::new(FSKitBackend::new()));
     }
 
-    // FUSE as fallback (cross-platform)
+    // FUSE as second choice (cross-platform, requires kernel extension)
     #[cfg(feature = "fuse")]
     {
         backends.push(Box::new(FuseBackend::new()));
+    }
+
+    // WebDAV as last fallback (no kernel extensions, HTTP-based)
+    #[cfg(feature = "webdav")]
+    {
+        backends.push(Box::new(WebDavBackend::new()));
     }
 
     backends
@@ -126,7 +140,7 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
     // Get backend
     let backends = build_backends();
     if backends.is_empty() {
-        anyhow::bail!("No mount backends enabled. Rebuild with --features fuse or --features fskit");
+        anyhow::bail!("No mount backends enabled. Rebuild with --features fuse, --features fskit, or --features webdav");
     }
 
     let backend = match args.backend {

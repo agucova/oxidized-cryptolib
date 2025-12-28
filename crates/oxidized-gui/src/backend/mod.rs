@@ -3,12 +3,24 @@
 //! This module provides concrete implementations of the [`MountBackend`] trait
 //! from `oxidized-cryptolib`, as well as a [`MountManager`] for coordinating
 //! active mounts.
+//!
+//! # Backend Availability
+//!
+//! Backends are compiled as stubs when their features are disabled, allowing
+//! the GUI to compile on all platforms while showing appropriate availability
+//! status at runtime.
+//!
+//! - `fuse`: FUSE backend (Linux, macOS) - requires macFUSE or libfuse
+//! - `fskit`: FSKit backend (macOS 15.4+) - native Apple framework
+//! - `webdav`: WebDAV backend (all platforms) - no kernel extensions needed
 
 mod fuse;
 mod fskit;
+mod webdav;
 
 pub use fuse::FuseBackend;
 pub use fskit::FSKitBackend;
+pub use webdav::WebDavBackend;
 
 // Re-export traits and types from cryptolib
 pub use oxidized_cryptolib::{
@@ -41,15 +53,20 @@ impl MountManager {
     /// Create a new mount manager with default backends
     ///
     /// Backends are ordered by preference: FSKit first (better macOS integration),
-    /// then FUSE as fallback. This order is used by `first_available_backend()`.
+    /// then FUSE, then WebDAV as fallback. This order is used by `first_available_backend()`.
+    ///
+    /// On platforms where a backend isn't available (e.g., FUSE on Windows),
+    /// a stub is included that reports itself as unavailable.
     pub fn new() -> Self {
         Self {
             mounts: Mutex::new(HashMap::new()),
             backends: vec![
                 // FSKit preferred on macOS 15.4+ (better integration, no kernel extension)
                 Box::new(FSKitBackend::default()),
-                // FUSE as fallback (cross-platform)
+                // FUSE as second choice (cross-platform Unix)
                 Box::new(FuseBackend::new()),
+                // WebDAV as fallback (works everywhere, no kernel extensions)
+                Box::new(WebDavBackend::new()),
             ],
         }
     }
@@ -119,7 +136,7 @@ impl MountManager {
     ///
     /// This is the simplified 4-parameter API for callers that don't need
     /// explicit backend selection. Uses the first available backend based on
-    /// the order defined in `new()` (FSKit preferred, then FUSE).
+    /// the order defined in `new()` (FSKit preferred, then FUSE, then WebDAV).
     pub fn mount(
         &self,
         vault_id: &str,
@@ -212,7 +229,13 @@ pub fn generate_mountpoint(vault_name: &str) -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(home).join("mnt").join(vault_name)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, WebDAV mounts are typically mapped to drive letters
+        // Return a placeholder; actual drive letter is chosen at mount time
+        PathBuf::from(format!("{}:", vault_name.chars().next().unwrap_or('Z').to_ascii_uppercase()))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         PathBuf::from("/tmp").join("oxidized").join(vault_name)
     }
