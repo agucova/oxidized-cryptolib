@@ -1,7 +1,7 @@
 mod common;
 
 use insta::assert_debug_snapshot;
-use oxidized_cryptolib::vault::operations::VaultOperations;
+use oxidized_cryptolib::vault::{operations::VaultOperations, DirId};
 use common::{
     vault_builder::VaultBuilder,
     test_structures::{nested_structure, edge_case_structure},
@@ -22,7 +22,7 @@ fn test_vault_structure_snapshot() {
     let mut vault_structure = VaultStructure::default();
     
     // Recursively collect all files and directories
-    collect_directory_structure(&vault_ops, "", &mut vault_structure);
+    collect_directory_structure(&vault_ops, &DirId::root(), &mut vault_structure);
     
     // Sort for deterministic snapshots
     vault_structure.directories.sort_by(|a, b| a.path.cmp(&b.path));
@@ -41,7 +41,7 @@ fn test_edge_case_vault_snapshot() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     let mut vault_structure = VaultStructure::default();
     
-    collect_directory_structure(&vault_ops, "", &mut vault_structure);
+    collect_directory_structure(&vault_ops, &DirId::root(), &mut vault_structure);
     
     // Sort for deterministic snapshots
     vault_structure.directories.sort_by(|a, b| a.path.cmp(&b.path));
@@ -75,7 +75,7 @@ fn test_file_content_patterns_snapshot() {
     let mut file_summary = Vec::new();
     for (name, _) in patterns_data {
         let filename = format!("{name}.bin");
-        let decrypted = vault_ops.read_file("", &filename).unwrap();
+        let decrypted = vault_ops.read_file(&DirId::root(), &filename).unwrap();
         
         file_summary.push(FileSummary {
             name: filename,
@@ -119,7 +119,7 @@ fn test_filename_encryption_snapshot() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // Collect file metadata for snapshot
-    let files = vault_ops.list_files("").unwrap();
+    let files = vault_ops.list_files(&DirId::root()).unwrap();
     let mut file_metadata: Vec<FileMetadata> = files.into_iter().map(|f| FileMetadata {
         decrypted_name: f.name,
         encrypted_name: f.encrypted_name,
@@ -177,31 +177,34 @@ struct FileMetadata {
 
 fn collect_directory_structure(
     vault_ops: &VaultOperations,
+    dir_id: &DirId,
+    structure: &mut VaultStructure,
+) {
+    collect_directory_structure_with_path(vault_ops, dir_id, "", structure);
+}
+
+fn collect_directory_structure_with_path(
+    vault_ops: &VaultOperations,
+    dir_id: &DirId,
     dir_path: &str,
     structure: &mut VaultStructure,
 ) {
-    let dir_id = if dir_path.is_empty() {
-        "".to_string()
-    } else {
-        vault_ops.resolve_path(dir_path).unwrap().0
-    };
-    
     // Collect files in this directory
-    if let Ok(files) = vault_ops.list_files(&dir_id) {
+    if let Ok(files) = vault_ops.list_files(dir_id) {
         for file in files {
             let full_path = if dir_path.is_empty() {
                 file.name.clone()
             } else {
                 format!("{}/{}", dir_path, file.name)
             };
-            
+
             // Read file to compute hash
-            let content_hash = if let Ok(decrypted) = vault_ops.read_file(&dir_id, &file.name) {
+            let content_hash = if let Ok(decrypted) = vault_ops.read_file(dir_id, &file.name) {
                 format!("{:x}", md5::compute(&decrypted.content))
             } else {
                 "error".to_string()
             };
-            
+
             structure.files.push(FileInfo {
                 path: full_path,
                 name: file.name,
@@ -210,28 +213,28 @@ fn collect_directory_structure(
             });
         }
     }
-    
+
     // Collect subdirectories
-    if let Ok(dirs) = vault_ops.list_directories(&dir_id) {
+    if let Ok(dirs) = vault_ops.list_directories(dir_id) {
         for dir in dirs {
             let full_path = if dir_path.is_empty() {
                 dir.name.clone()
             } else {
                 format!("{}/{}", dir_path, dir.name)
             };
-            
+
             // Count children
             let children_files = vault_ops.list_files(&dir.directory_id).unwrap_or_default().len();
             let children_dirs = vault_ops.list_directories(&dir.directory_id).unwrap_or_default().len();
-            
+
             structure.directories.push(DirectoryInfo {
                 path: full_path.clone(),
                 name: dir.name,
                 children_count: children_files + children_dirs,
             });
-            
+
             // Recurse into subdirectory
-            collect_directory_structure(vault_ops, &full_path, structure);
+            collect_directory_structure_with_path(vault_ops, &dir.directory_id, &full_path, structure);
         }
     }
 }

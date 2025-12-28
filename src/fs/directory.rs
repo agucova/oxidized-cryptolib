@@ -1,16 +1,116 @@
 use crate::crypto::keys::MasterKey;
-use crate::fs::name::{decrypt_filename, hash_dir_id};
+use crate::fs::name::{decrypt_filename, hash_dir_id, NameError};
+use crate::fs::symlink::decrypt_symlink_target;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 
+/// Errors that can occur during directory exploration operations.
+#[derive(Error, Debug)]
+pub enum DirectoryError {
+    /// IO error during directory operations.
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Filename or directory ID encryption/decryption error.
+    ///
+    /// Note: Decryption failures may indicate **integrity violations** -
+    /// see `NameError` documentation for security classification.
+    #[error("Name error: {0}")]
+    Name(#[from] NameError),
+
+    /// The vault structure is invalid or corrupted.
+    #[error("Invalid vault structure: {0}")]
+    InvalidStructure(String),
+
+    /// A required file is missing from the vault.
+    #[error("Missing file: {0}")]
+    MissingFile(PathBuf),
+}
+
+/// The type of a directory entry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntryKind {
+    /// A regular file.
+    File,
+    /// A directory with its unique ID.
+    Directory { id: String },
+    /// A symbolic link with its target path.
+    Symlink { target: String },
+}
+
+impl EntryKind {
+    /// Returns true if this is a directory.
+    pub fn is_directory(&self) -> bool {
+        matches!(self, EntryKind::Directory { .. })
+    }
+
+    /// Returns true if this is a file.
+    pub fn is_file(&self) -> bool {
+        matches!(self, EntryKind::File)
+    }
+
+    /// Returns true if this is a symlink.
+    pub fn is_symlink(&self) -> bool {
+        matches!(self, EntryKind::Symlink { .. })
+    }
+
+    /// Returns the directory ID if this is a directory.
+    pub fn directory_id(&self) -> Option<&str> {
+        match self {
+            EntryKind::Directory { id } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Returns the symlink target if this is a symlink.
+    pub fn symlink_target(&self) -> Option<&str> {
+        match self {
+            EntryKind::Symlink { target } => Some(target),
+            _ => None,
+        }
+    }
+}
+
+/// A decrypted directory entry in the vault.
 #[derive(Debug)]
 pub struct DirectoryEntry {
+    /// The decrypted name of this entry.
     pub name: String,
+    /// The encrypted path on disk.
     pub path: PathBuf,
-    pub is_directory: bool,
-    pub directory_id: Option<String>,
+    /// The type of this entry (file, directory, or symlink).
+    pub kind: EntryKind,
+    /// Child entries (only populated for directories).
     pub children: Vec<DirectoryEntry>,
+}
+
+impl DirectoryEntry {
+    /// Returns true if this is a directory.
+    pub fn is_directory(&self) -> bool {
+        self.kind.is_directory()
+    }
+
+    /// Returns true if this is a file.
+    pub fn is_file(&self) -> bool {
+        self.kind.is_file()
+    }
+
+    /// Returns true if this is a symlink.
+    pub fn is_symlink(&self) -> bool {
+        self.kind.is_symlink()
+    }
+
+    /// Returns the directory ID if this is a directory.
+    pub fn directory_id(&self) -> Option<&str> {
+        self.kind.directory_id()
+    }
+
+    /// Returns the symlink target if this is a symlink.
+    pub fn symlink_target(&self) -> Option<&str> {
+        self.kind.symlink_target()
+    }
 }
 
 pub struct VaultExplorer {
@@ -27,14 +127,13 @@ impl VaultExplorer {
     pub fn build_directory_tree(
         &self,
         master_key: &MasterKey,
-    ) -> Result<DirectoryEntry, Box<dyn std::error::Error>> {
+    ) -> Result<DirectoryEntry, DirectoryError> {
         let dir_map = self.build_directory_map()?;
 
         let mut root = DirectoryEntry {
             name: "/".to_string(),
             path: self.vault_path.clone(),
-            is_directory: true,
-            directory_id: Some("".to_string()), // Root directory ID is empty string
+            kind: EntryKind::Directory { id: String::new() }, // Root directory ID is empty string
             children: vec![],
         };
 
@@ -44,7 +143,7 @@ impl VaultExplorer {
         Ok(root)
     }
 
-    fn build_directory_map(&self) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    fn build_directory_map(&self) -> Result<HashMap<String, String>, DirectoryError> {
         let mut dir_map = HashMap::new();
         let d_dir = self.vault_path.join("d");
 
@@ -61,7 +160,13 @@ impl VaultExplorer {
                     if hash_path.is_dir() {
                         // Note: dirid.c9r files are encrypted, not plain text
                         // We'll skip the directory mapping for now and rely on dir.c9r files
-                        let hash_name = hash_path.file_name().unwrap().to_string_lossy().to_string();
+                        let hash_name = hash_path
+                            .file_name()
+                            .ok_or_else(|| DirectoryError::InvalidStructure(
+                                format!("Directory path has no filename: {:?}", hash_path)
+                            ))?
+                            .to_string_lossy()
+                            .to_string();
                         println!("[DEBUG] Found directory: {hash_name}");
                         // For now, just note that this directory exists
                         dir_map.insert(hash_name, "unknown".to_string());
@@ -78,9 +183,14 @@ impl VaultExplorer {
         parent_entry: &mut DirectoryEntry,
         master_key: &MasterKey,
         dir_map: &HashMap<String, String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), DirectoryError> {
         // Clone the directory ID to avoid borrow issues
-        let parent_dir_id = parent_entry.directory_id.as_ref().unwrap().clone();
+        let parent_dir_id = parent_entry
+            .directory_id()
+            .ok_or_else(|| DirectoryError::InvalidStructure(
+                format!("Directory '{}' has no directory ID", parent_entry.name)
+            ))?
+            .to_string();
 
         println!(
             "\n[DEBUG] Exploring directory: {} (ID: '{}')",
@@ -88,7 +198,7 @@ impl VaultExplorer {
         );
 
         // Calculate storage path for this directory
-        let storage_path = self.calculate_directory_path(&parent_dir_id, master_key);
+        let storage_path = self.calculate_directory_path(&parent_dir_id, master_key)?;
         println!("[DEBUG] Storage path: {storage_path:?}");
 
         if !storage_path.exists() {
@@ -114,7 +224,7 @@ impl VaultExplorer {
         parent_dir_id: &str,
         master_key: &MasterKey,
         dir_map: &HashMap<String, String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), DirectoryError> {
         println!("\n[DEBUG] Processing items in directory: {dir_path:?}");
         println!(
             "[DEBUG] Parent directory ID for decryption: '{parent_dir_id}'"
@@ -171,8 +281,15 @@ impl VaultExplorer {
         master_key: &MasterKey,
         parent_entry: &mut DirectoryEntry,
         dir_map: &HashMap<String, String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), DirectoryError> {
         println!("[DEBUG] Processing directory: {file_name}");
+
+        // Check if this is a symlink (has symlink.c9r)
+        let symlink_file = path.join("symlink.c9r");
+        if symlink_file.exists() {
+            println!("[DEBUG] Found symlink.c9r - processing as symlink");
+            return self.process_symlink(path, file_name, parent_dir_id, master_key, parent_entry, false);
+        }
 
         match self.read_directory_id(path) {
             Ok(dir_id) => {
@@ -185,8 +302,7 @@ impl VaultExplorer {
                         let mut dir_entry = DirectoryEntry {
                             name: decrypted_name,
                             path: path.to_path_buf(),
-                            is_directory: true,
-                            directory_id: Some(dir_id),
+                            kind: EntryKind::Directory { id: dir_id },
                             children: vec![],
                         };
 
@@ -220,7 +336,7 @@ impl VaultExplorer {
         parent_dir_id: &str,
         master_key: &MasterKey,
         parent_entry: &mut DirectoryEntry,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), DirectoryError> {
         println!("[DEBUG] Processing file: {file_name}");
 
         match decrypt_filename(file_name, parent_dir_id, master_key) {
@@ -230,13 +346,63 @@ impl VaultExplorer {
                 parent_entry.children.push(DirectoryEntry {
                     name: decrypted_name,
                     path: path.to_path_buf(),
-                    is_directory: false,
-                    directory_id: None,
+                    kind: EntryKind::File,
                     children: vec![],
                 });
             }
             Err(e) => {
                 println!("[ERROR] Failed to decrypt file name {file_name}: {e}");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_symlink(
+        &self,
+        path: &Path,
+        file_name: &str,
+        parent_dir_id: &str,
+        master_key: &MasterKey,
+        parent_entry: &mut DirectoryEntry,
+        is_shortened: bool,
+    ) -> Result<(), DirectoryError> {
+        // For shortened symlinks, file_name is the original encrypted name from name.c9s
+        // For regular symlinks, file_name is the .c9r directory name
+        let encrypted_name = if is_shortened { file_name } else { file_name };
+
+        println!("[DEBUG] Processing symlink: {encrypted_name}");
+
+        match decrypt_filename(encrypted_name, parent_dir_id, master_key) {
+            Ok(decrypted_name) => {
+                println!("[DEBUG] Decrypted symlink name: {decrypted_name}");
+
+                // Read and decrypt the symlink target
+                let symlink_file = path.join("symlink.c9r");
+                match fs::read(&symlink_file) {
+                    Ok(encrypted_data) => {
+                        match decrypt_symlink_target(&encrypted_data, master_key) {
+                            Ok(target) => {
+                                println!("[DEBUG] Symlink target: {target}");
+                                parent_entry.children.push(DirectoryEntry {
+                                    name: decrypted_name,
+                                    path: path.to_path_buf(),
+                                    kind: EntryKind::Symlink { target },
+                                    children: vec![],
+                                });
+                            }
+                            Err(e) => {
+                                println!("[ERROR] Failed to decrypt symlink target: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("[ERROR] Failed to read symlink.c9r: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("[ERROR] Failed to decrypt symlink name {encrypted_name}: {e}");
             }
         }
 
@@ -251,18 +417,25 @@ impl VaultExplorer {
         master_key: &MasterKey,
         parent_entry: &mut DirectoryEntry,
         dir_map: &HashMap<String, String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), DirectoryError> {
         println!("[DEBUG] Processing shortened name: {file_name}");
 
         match self.read_shortened_name(path) {
             Ok(original_name) => {
                 println!("[DEBUG] Original encrypted name: {original_name}");
 
+                let is_dir = path.join("dir.c9r").exists();
+                let is_symlink = path.join("symlink.c9r").exists();
+
+                if is_symlink {
+                    // Process as a symlink - use original_name for decryption
+                    println!("[DEBUG] Found symlink.c9r - processing as shortened symlink");
+                    return self.process_symlink(path, &original_name, parent_dir_id, master_key, parent_entry, true);
+                }
+
                 match decrypt_filename(&original_name, parent_dir_id, master_key) {
                     Ok(decrypted_name) => {
                         println!("[DEBUG] Decrypted shortened name: {decrypted_name}");
-
-                        let is_dir = path.join("dir.c9r").exists();
 
                         if is_dir {
                             match self.read_directory_id(path) {
@@ -270,8 +443,7 @@ impl VaultExplorer {
                                     let mut dir_entry = DirectoryEntry {
                                         name: decrypted_name,
                                         path: path.to_path_buf(),
-                                        is_directory: true,
-                                        directory_id: Some(dir_id),
+                                        kind: EntryKind::Directory { id: dir_id },
                                         children: vec![],
                                     };
 
@@ -286,8 +458,7 @@ impl VaultExplorer {
                             parent_entry.children.push(DirectoryEntry {
                                 name: decrypted_name,
                                 path: path.to_path_buf(),
-                                is_directory: false,
-                                directory_id: None,
+                                kind: EntryKind::File,
                                 children: vec![],
                             });
                         }
@@ -305,17 +476,18 @@ impl VaultExplorer {
         Ok(())
     }
 
-    fn calculate_directory_path(&self, dir_id: &str, master_key: &MasterKey) -> PathBuf {
+    fn calculate_directory_path(&self, dir_id: &str, master_key: &MasterKey) -> Result<PathBuf, DirectoryError> {
         println!("[DEBUG] Calculating directory path for ID: '{dir_id}'");
 
-        let hashed = hash_dir_id(dir_id, master_key);
+        let hashed = hash_dir_id(dir_id, master_key)?;
         println!("[DEBUG] Hashed directory ID: {hashed}");
 
-        assert!(
-            hashed.len() >= 32,
-            "Hashed directory ID is too short: {}",
-            hashed.len()
-        );
+        if hashed.len() < 32 {
+            return Err(DirectoryError::InvalidStructure(format!(
+                "Hashed directory ID is too short: {}",
+                hashed.len()
+            )));
+        }
 
         let hash_chars: Vec<char> = hashed.chars().collect();
 
@@ -325,10 +497,10 @@ impl VaultExplorer {
         let path = self.vault_path.join("d").join(&first_two).join(&remaining);
         println!("[DEBUG] Calculated path: {path:?}");
 
-        path
+        Ok(path)
     }
 
-    fn read_directory_id(&self, dir_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    fn read_directory_id(&self, dir_path: &Path) -> Result<String, DirectoryError> {
         let dir_file = dir_path.join("dir.c9r");
 
         assert!(
@@ -346,7 +518,7 @@ impl VaultExplorer {
         Ok(trimmed)
     }
 
-    fn read_shortened_name(&self, dir_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    fn read_shortened_name(&self, dir_path: &Path) -> Result<String, DirectoryError> {
         let name_file = dir_path.join("name.c9s");
 
         assert!(
@@ -367,7 +539,14 @@ impl VaultExplorer {
 
 pub fn print_tree(entry: &DirectoryEntry, depth: usize) {
     let indent = "  ".repeat(depth);
-    let prefix = if entry.is_directory { "📁" } else { "📄" };
+    let prefix = match &entry.kind {
+        EntryKind::Directory { .. } => "📁",
+        EntryKind::File => "📄",
+        EntryKind::Symlink { target } => {
+            println!("{indent}🔗 {} -> {target}", entry.name);
+            return;
+        }
+    };
 
     println!("{}{} {}", indent, prefix, entry.name);
 
@@ -396,58 +575,55 @@ mod tests {
             mac_key[i] = (32 + i) as u8;
         }
 
-        MasterKey {
-            aes_master_key: secrecy::Secret::new(aes_key),
-            mac_master_key: secrecy::Secret::new(mac_key),
-        }
+        MasterKey::new(aes_key, mac_key).unwrap()
     }
 
-    fn create_test_vault_structure(temp_dir: &TempDir, master_key: &MasterKey) -> Result<(), Box<dyn std::error::Error>> {
+    fn create_test_vault_structure(temp_dir: &TempDir, master_key: &MasterKey) -> Result<(), DirectoryError> {
         let vault_path = temp_dir.path();
         
         // Create basic vault structure
         fs::create_dir_all(vault_path.join("d"))?;
-        
+
         // Create root directory hash
-        let root_hash = hash_dir_id("", master_key);
+        let root_hash = hash_dir_id("", master_key)?;
         let root_hash_chars: Vec<char> = root_hash.chars().collect();
         let first_two: String = root_hash_chars[0..2].iter().collect();
         let remaining: String = root_hash_chars[2..32].iter().collect();
-        
+
         let root_dir_path = vault_path.join("d").join(&first_two).join(&remaining);
         fs::create_dir_all(&root_dir_path)?;
-        
+
         // Create some test files in root directory
-        let test_file1_name = encrypt_filename("test1.txt", "", master_key);
-        let test_file2_name = encrypt_filename("test2.doc", "", master_key);
-        
+        let test_file1_name = encrypt_filename("test1.txt", "", master_key)?;
+        let test_file2_name = encrypt_filename("test2.doc", "", master_key)?;
+
         // Create actual files
         fs::File::create(root_dir_path.join(&test_file1_name))?;
         fs::File::create(root_dir_path.join(&test_file2_name))?;
-        
+
         // Create a subdirectory
         let subdir_id = "test-subdir-id-12345";
-        let subdir_name = encrypt_filename("subdir", "", master_key);
+        let subdir_name = encrypt_filename("subdir", "", master_key)?;
         let subdir_path = root_dir_path.join(&subdir_name);
         fs::create_dir_all(&subdir_path)?;
-        
+
         // Write directory ID to dir.c9r
         let mut dir_file = fs::File::create(subdir_path.join("dir.c9r"))?;
         dir_file.write_all(subdir_id.as_bytes())?;
-        
+
         // Create storage directory for subdirectory
-        let subdir_hash = hash_dir_id(subdir_id, master_key);
+        let subdir_hash = hash_dir_id(subdir_id, master_key)?;
         let subdir_hash_chars: Vec<char> = subdir_hash.chars().collect();
         let subdir_first_two: String = subdir_hash_chars[0..2].iter().collect();
         let subdir_remaining: String = subdir_hash_chars[2..32].iter().collect();
-        
+
         let subdir_storage_path = vault_path.join("d").join(&subdir_first_two).join(&subdir_remaining);
         fs::create_dir_all(&subdir_storage_path)?;
-        
+
         // Create a file in the subdirectory
-        let subdir_file_name = encrypt_filename("nested_file.txt", subdir_id, master_key);
+        let subdir_file_name = encrypt_filename("nested_file.txt", subdir_id, master_key)?;
         fs::File::create(subdir_storage_path.join(&subdir_file_name))?;
-        
+
         Ok(())
     }
 
@@ -495,28 +671,28 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let vault_path = temp_dir.path();
         let master_key = create_test_master_key();
-        
+
         let explorer = VaultExplorer::new(vault_path);
-        
+
         // Test root directory path calculation
-        let root_path = explorer.calculate_directory_path("", &master_key);
-        let expected_hash = hash_dir_id("", &master_key);
+        let root_path = explorer.calculate_directory_path("", &master_key).unwrap();
+        let expected_hash = hash_dir_id("", &master_key).unwrap();
         let expected_hash_chars: Vec<char> = expected_hash.chars().collect();
         let expected_first_two: String = expected_hash_chars[0..2].iter().collect();
         let expected_remaining: String = expected_hash_chars[2..32].iter().collect();
         let expected_path = vault_path.join("d").join(&expected_first_two).join(&expected_remaining);
-        
+
         assert_eq!(root_path, expected_path);
-        
+
         // Test non-root directory path calculation
         let test_dir_id = "test-dir-123";
-        let test_path = explorer.calculate_directory_path(test_dir_id, &master_key);
-        let test_hash = hash_dir_id(test_dir_id, &master_key);
+        let test_path = explorer.calculate_directory_path(test_dir_id, &master_key).unwrap();
+        let test_hash = hash_dir_id(test_dir_id, &master_key).unwrap();
         let test_hash_chars: Vec<char> = test_hash.chars().collect();
         let test_first_two: String = test_hash_chars[0..2].iter().collect();
         let test_remaining: String = test_hash_chars[2..32].iter().collect();
         let expected_test_path = vault_path.join("d").join(&test_first_two).join(&test_remaining);
-        
+
         assert_eq!(test_path, expected_test_path);
     }
 
@@ -596,52 +772,76 @@ mod tests {
         let entry = DirectoryEntry {
             name: "test".to_string(),
             path: test_path.clone(),
-            is_directory: true,
-            directory_id: Some("test-id".to_string()),
+            kind: EntryKind::Directory { id: "test-id".to_string() },
             children: vec![],
         };
-        
+
         assert_eq!(entry.name, "test");
         assert_eq!(entry.path, test_path);
-        assert!(entry.is_directory);
-        assert_eq!(entry.directory_id, Some("test-id".to_string()));
+        assert!(entry.is_directory());
+        assert_eq!(entry.directory_id(), Some("test-id"));
         assert!(entry.children.is_empty());
+
+        // Test file entry
+        let file_entry = DirectoryEntry {
+            name: "file.txt".to_string(),
+            path: PathBuf::from("/test/file.txt"),
+            kind: EntryKind::File,
+            children: vec![],
+        };
+        assert!(file_entry.is_file());
+        assert!(!file_entry.is_directory());
+        assert!(!file_entry.is_symlink());
+
+        // Test symlink entry
+        let symlink_entry = DirectoryEntry {
+            name: "link".to_string(),
+            path: PathBuf::from("/test/link"),
+            kind: EntryKind::Symlink { target: "/target/path".to_string() },
+            children: vec![],
+        };
+        assert!(symlink_entry.is_symlink());
+        assert_eq!(symlink_entry.symlink_target(), Some("/target/path"));
+        assert!(!symlink_entry.is_file());
+        assert!(!symlink_entry.is_directory());
     }
 
     #[test]
     fn test_print_tree_format() {
-        // Create a simple directory structure
+        // Create a simple directory structure with files, directories, and symlinks
         let root = DirectoryEntry {
             name: "/".to_string(),
             path: PathBuf::from("/"),
-            is_directory: true,
-            directory_id: Some("".to_string()),
+            kind: EntryKind::Directory { id: String::new() },
             children: vec![
                 DirectoryEntry {
                     name: "file1.txt".to_string(),
                     path: PathBuf::from("/file1.txt"),
-                    is_directory: false,
-                    directory_id: None,
+                    kind: EntryKind::File,
                     children: vec![],
                 },
                 DirectoryEntry {
                     name: "subdir".to_string(),
                     path: PathBuf::from("/subdir"),
-                    is_directory: true,
-                    directory_id: Some("subdir-id".to_string()),
+                    kind: EntryKind::Directory { id: "subdir-id".to_string() },
                     children: vec![
                         DirectoryEntry {
                             name: "nested.txt".to_string(),
                             path: PathBuf::from("/subdir/nested.txt"),
-                            is_directory: false,
-                            directory_id: None,
+                            kind: EntryKind::File,
                             children: vec![],
                         },
                     ],
                 },
+                DirectoryEntry {
+                    name: "link".to_string(),
+                    path: PathBuf::from("/link"),
+                    kind: EntryKind::Symlink { target: "/target".to_string() },
+                    children: vec![],
+                },
             ],
         };
-        
+
         // This test mainly ensures print_tree doesn't panic
         // In a real test environment, you might want to capture stdout
         print_tree(&root, 0);

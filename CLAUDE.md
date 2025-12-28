@@ -25,6 +25,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Baseline benchmarks**: `cargo bench -- --save-baseline [name]` (save performance baseline)
 - **Compare benchmarks**: `cargo bench -- --baseline [name]` (compare against saved baseline)
 
+### Timing Leak Detection (Constant-Time Verification)
+Uses dudect statistical methodology to detect timing side-channels in cryptographic operations:
+- **Run all tests**: `cargo bench --bench timing_leaks` (runs all timing tests)
+- **Run specific test**: `cargo bench --bench timing_leaks -- --filter <name>` (e.g., `--filter key_unwrap`)
+- **Continuous mode**: `cargo bench --bench timing_leaks -- --continuous <name>` (runs until Ctrl+C)
+
+**Interpretation**: t-value < 4.5 = PASS (no timing leak detected), t-value > 4.5 = FAIL (potential timing leak)
+
+**Tests include**:
+- RFC 3394 key unwrap integrity check
+- HMAC verification (via ring)
+- AES-GCM file header/content decryption
+- AES-SIV filename decryption
+
 ## Architecture Overview
 
 **oxidized-cryptolib** is a Rust implementation for decrypting and exploring Cryptomator vaults. The project demonstrates modern cryptographic practices and implements the Cryptomator encryption protocol.
@@ -48,6 +62,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Authenticated encryption (AES-GCM, AES-SIV) preventing tampering
 - JWT signature validation for vault integrity
 - Property-based testing with 1000 test cases for crypto operations
+- Constant-time operations verified via dudect timing analysis
+- Uses `subtle` crate for constant-time comparisons in key unwrap
 
 ### Project Structure
 - **Library**: Core cryptographic operations exposed via `lib.rs`
@@ -58,11 +74,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Dependencies
 Key cryptographic dependencies include:
 - `aes-gcm`, `aes-siv` for authenticated encryption
-- `ring` for cryptographic primitives  
+- `ring` for cryptographic primitives
 - `scrypt` for key derivation
 - `jsonwebtoken` for vault configuration validation
 - `proptest` for property-based testing
 - `secrecy` for secure memory handling
+- `subtle` for constant-time primitives
+- `dudect-bencher` for timing leak detection (dev-dependency)
 
 ### Development Notes
 - The main binary demonstrates vault exploration with detailed debug output

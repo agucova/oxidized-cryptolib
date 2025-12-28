@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn setup_master_key() -> MasterKey {
-    MasterKey::random()
+    MasterKey::random().unwrap()
 }
 
 fn generate_test_file(size: usize) -> Vec<u8> {

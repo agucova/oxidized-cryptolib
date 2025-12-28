@@ -1,7 +1,7 @@
 mod common;
 
 use oxidized_cryptolib::{
-    vault::operations::VaultOperations,
+    vault::{operations::VaultOperations, DirId},
 };
 use common::{
     vault_builder::{VaultBuilder, create_test_vault_with_files},
@@ -20,7 +20,7 @@ fn test_empty_file_handling() {
     let vault_ops = VaultOperations::new(&vault_path, master_key.clone());
     
     // Test root directory empty file
-    let decrypted = vault_ops.read_file("", "empty.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "empty.txt").unwrap();
     assert_eq!(decrypted.content.len(), 0);
     
     // Test subdirectory empty file  
@@ -41,7 +41,7 @@ fn test_small_text_files() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // Read from root
-    let decrypted = vault_ops.read_file("", "hello.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "hello.txt").unwrap();
     assert_file_content(&decrypted, test_content);
     
     // Read from subdirectory
@@ -68,11 +68,11 @@ fn test_special_characters_in_filenames() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // Verify all files can be listed and read
-    let file_list = vault_ops.list_files("").unwrap();
+    let file_list = vault_ops.list_files(&DirId::root()).unwrap();
     assert_eq!(file_list.len(), files.len());
-    
+
     for (filename, expected_content) in files {
-        let decrypted = vault_ops.read_file("", filename).unwrap();
+        let decrypted = vault_ops.read_file(&DirId::root(), filename).unwrap();
         assert_file_content(&decrypted, expected_content);
     }
 }
@@ -91,15 +91,15 @@ fn test_special_characters_in_content() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // Test special character text
-    let decrypted = vault_ops.read_file("", "special_text.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "special_text.txt").unwrap();
     assert_file_content(&decrypted, &special_content);
-    
+
     // Test binary content
-    let decrypted = vault_ops.read_file("", "binary.bin").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "binary.bin").unwrap();
     assert_file_content(&decrypted, &binary_content);
-    
+
     // Test null bytes
-    let decrypted = vault_ops.read_file("", "null_bytes.dat").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "null_bytes.dat").unwrap();
     assert_file_content(&decrypted, b"Before\x00\x00\x00After");
 }
 
@@ -124,7 +124,7 @@ fn test_chunk_boundary_files() {
     
     // Verify each file
     for (name, expected_content) in test_cases {
-        let decrypted = vault_ops.read_file("", name).unwrap();
+        let decrypted = vault_ops.read_file(&DirId::root(), name).unwrap();
         assert_eq!(
             decrypted.content.len(),
             expected_content.len(),
@@ -146,12 +146,12 @@ fn test_very_long_filenames() {
     
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
-    
+
     // Both files should be readable despite filename length
-    let decrypted = vault_ops.read_file("", &long_name).unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), &long_name).unwrap();
     assert_file_content(&decrypted, b"Long filename content");
-    
-    let decrypted = vault_ops.read_file("", &very_long_name).unwrap();
+
+    let decrypted = vault_ops.read_file(&DirId::root(), &very_long_name).unwrap();
     assert_file_content(&decrypted, b"Very long filename content");
 }
 
@@ -164,7 +164,7 @@ fn test_nested_directory_structure() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // Test root file
-    let decrypted = vault_ops.read_file("", "root.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "root.txt").unwrap();
     assert_file_content(&decrypted, b"Root file");
     
     // Test files in docs/
@@ -195,12 +195,12 @@ fn test_directory_listing() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // List root directory
-    let root_files = vault_ops.list_files("").unwrap();
+    let root_files = vault_ops.list_files(&DirId::root()).unwrap();
     assert_eq!(root_files.len(), 2);
     assert!(root_files.iter().any(|f| f.name == "root1.txt"));
     assert!(root_files.iter().any(|f| f.name == "root2.txt"));
-    
-    let root_dirs = vault_ops.list_directories("").unwrap();
+
+    let root_dirs = vault_ops.list_directories(&DirId::root()).unwrap();
     assert_eq!(root_dirs.len(), 3);
     assert!(root_dirs.iter().any(|d| d.name == "empty_dir"));
     assert!(root_dirs.iter().any(|d| d.name == "dir_a"));
@@ -222,7 +222,7 @@ fn test_large_files() {
     
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
-    let decrypted = vault_ops.read_file("", "large.bin").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "large.bin").unwrap();
     assert_eq!(decrypted.content.len(), LARGE);
     assert_file_content(&decrypted, &large_content);
 }
@@ -253,7 +253,7 @@ fn test_binary_file_patterns() {
     ];
     
     for (filename, expected) in test_cases {
-        let decrypted = vault_ops.read_file("", filename).unwrap();
+        let decrypted = vault_ops.read_file(&DirId::root(), filename).unwrap();
         assert_file_content(&decrypted, expected);
     }
 }
@@ -284,8 +284,8 @@ fn test_deterministic_vault_creation() {
     let vault_ops1 = VaultOperations::new(&vault1_path, key1);
     let vault_ops2 = VaultOperations::new(&vault2_path, key2);
     
-    let file1_v1 = vault_ops1.read_file("", "test1.txt").unwrap();
-    let file1_v2 = vault_ops2.read_file("", "test1.txt").unwrap();
+    let file1_v1 = vault_ops1.read_file(&DirId::root(), "test1.txt").unwrap();
+    let file1_v2 = vault_ops2.read_file(&DirId::root(), "test1.txt").unwrap();
     assert_eq!(file1_v1.content, file1_v2.content);
 }
 
@@ -298,15 +298,15 @@ fn test_edge_case_vault() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     
     // Test empty file
-    let empty = vault_ops.read_file("", "empty.txt").unwrap();
+    let empty = vault_ops.read_file(&DirId::root(), "empty.txt").unwrap();
     assert_eq!(empty.content.len(), 0);
-    
+
     // Test chunk boundary file
-    let chunk_file = vault_ops.read_file("", "chunk_boundary.bin").unwrap();
+    let chunk_file = vault_ops.read_file(&DirId::root(), "chunk_boundary.bin").unwrap();
     assert_eq!(chunk_file.content, test_files::create_chunk_boundary_content());
-    
+
     // Test special characters
-    let special = vault_ops.read_file("", "special_chars.txt").unwrap();
+    let special = vault_ops.read_file(&DirId::root(), "special_chars.txt").unwrap();
     assert_eq!(special.content, test_files::create_special_char_content());
     
     // Test deeply nested file

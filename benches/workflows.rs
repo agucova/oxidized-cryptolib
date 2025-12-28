@@ -7,7 +7,7 @@ use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
 
 fn setup_master_key() -> MasterKey {
-    MasterKey::random()
+    MasterKey::random().unwrap()
 }
 
 fn generate_content_key() -> [u8; 32] {

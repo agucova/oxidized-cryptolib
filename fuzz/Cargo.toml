@@ -1,0 +1,42 @@
+[package]
+name = "oxidized-cryptolib-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+secrecy = "0.10"
+hex-literal = "0.4"
+
+[dependencies.oxidized-cryptolib]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_key_unwrap"
+path = "fuzz_targets/fuzz_key_unwrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_aes_gcm_decrypt"
+path = "fuzz_targets/fuzz_aes_gcm_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_aes_siv_decrypt"
+path = "fuzz_targets/fuzz_aes_siv_decrypt.rs"
+test = false
+doc = false
+bench = false

@@ -1,3 +1,12 @@
 /target
 /vault
 .DS_Store
+
+# devenv
+.devenv*
+devenv.local.nix
+
+# cargo-fuzz artifacts
+fuzz/target
+fuzz/corpus
+fuzz/artifacts

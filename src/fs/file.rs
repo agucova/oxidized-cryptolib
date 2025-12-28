@@ -5,10 +5,83 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
-use rand::{rngs::OsRng, RngCore};
+use rand::RngCore;
 use thiserror::Error;
+use tracing::{debug, instrument, trace, warn};
+use zeroize::Zeroizing;
 
-use crate::crypto::keys::MasterKey;
+use crate::crypto::keys::{KeyAccessError, MasterKey};
+
+/// Context for file operations, providing debugging information.
+#[derive(Debug, Clone, Default)]
+pub struct FileContext {
+    /// The cleartext filename (if known)
+    pub filename: Option<String>,
+    /// The encrypted path on disk
+    pub encrypted_path: Option<std::path::PathBuf>,
+    /// The parent directory ID
+    pub dir_id: Option<String>,
+    /// The chunk number (for content errors)
+    pub chunk_number: Option<usize>,
+}
+
+impl FileContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
+        self.filename = Some(filename.into());
+        self
+    }
+
+    pub fn with_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.encrypted_path = Some(path.into());
+        self
+    }
+
+    pub fn with_dir_id(mut self, dir_id: impl Into<String>) -> Self {
+        self.dir_id = Some(dir_id.into());
+        self
+    }
+
+    pub fn with_chunk(mut self, chunk_number: usize) -> Self {
+        self.chunk_number = Some(chunk_number);
+        self
+    }
+}
+
+impl fmt::Display for FileContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut parts = Vec::new();
+
+        if let Some(ref filename) = self.filename {
+            parts.push(format!("file '{filename}'"));
+        }
+        if let Some(ref dir_id) = self.dir_id {
+            let display_id = if dir_id.is_empty() {
+                "<root>".to_string()
+            } else if dir_id.len() > 8 {
+                format!("{}...", &dir_id[..8])
+            } else {
+                dir_id.clone()
+            };
+            parts.push(format!("in directory {display_id}"));
+        }
+        if let Some(chunk) = self.chunk_number {
+            parts.push(format!("chunk {chunk}"));
+        }
+        if let Some(ref path) = self.encrypted_path {
+            parts.push(format!("at {:?}", path.display()));
+        }
+
+        if parts.is_empty() {
+            write!(f, "(no context)")
+        } else {
+            write!(f, "{}", parts.join(", "))
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum FileError {
@@ -16,54 +89,218 @@ pub enum FileError {
     Decryption(#[from] FileDecryptionError),
     #[error("File encryption error: {0}")]
     Encryption(#[from] FileEncryptionError),
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
+    #[error("IO error reading {context}: {source}")]
+    Io {
+        #[source]
+        source: io::Error,
+        context: FileContext,
+    },
+}
+
+impl From<io::Error> for FileError {
+    fn from(source: io::Error) -> Self {
+        FileError::Io {
+            source,
+            context: FileContext::new(),
+        }
+    }
+}
+
+impl FileError {
+    /// Create an IO error with context
+    pub fn io_with_context(source: io::Error, context: FileContext) -> Self {
+        FileError::Io { source, context }
+    }
 }
 
 #[derive(Error, Debug)]
 pub enum FileDecryptionError {
-    #[error("Failed to decrypt file header: {0}")]
-    HeaderDecryption(String),
-    #[error("Failed to decrypt file content: {0}")]
-    ContentDecryption(String),
-    #[error("Invalid file header: {0}")]
-    InvalidHeader(String),
-    #[error("IO error during decryption: {0}")]
-    Io(#[from] io::Error),
+    /// File header decryption failed - authentication tag verification failed.
+    ///
+    /// **[INTEGRITY VIOLATION]** The header ciphertext is invalid or has been tampered with.
+    #[error("Failed to decrypt header for {context}: invalid authentication tag - possible tampering or wrong key")]
+    HeaderDecryption {
+        context: FileContext,
+    },
+
+    /// File content chunk decryption failed - authentication tag verification failed.
+    ///
+    /// **[INTEGRITY VIOLATION]** A content chunk's ciphertext is invalid or has been tampered with.
+    #[error("Failed to decrypt content for {context}: invalid authentication tag - possible tampering or wrong key")]
+    ContentDecryption {
+        context: FileContext,
+    },
+
+    /// File header has invalid structure (wrong length, missing magic bytes, etc.)
+    #[error("Invalid file header for {context}: {reason}")]
+    InvalidHeader {
+        reason: String,
+        context: FileContext,
+    },
+
+    /// Incomplete chunk encountered during decryption
+    #[error("Incomplete chunk for {context}: expected at least 28 bytes, got {actual_size}")]
+    IncompleteChunk {
+        context: FileContext,
+        actual_size: usize,
+    },
+
+    /// IO error during file decryption
+    #[error("IO error reading {context}: {source}")]
+    Io {
+        #[source]
+        source: io::Error,
+        context: FileContext,
+    },
+
+    /// Key access failed due to memory protection error or borrow conflict
+    #[error("Key access failed: {0}")]
+    KeyAccess(#[from] KeyAccessError),
+}
+
+impl From<io::Error> for FileDecryptionError {
+    fn from(source: io::Error) -> Self {
+        FileDecryptionError::Io {
+            source,
+            context: FileContext::new(),
+        }
+    }
+}
+
+impl FileDecryptionError {
+    /// Create an IO error with context
+    pub fn io_with_context(source: io::Error, context: FileContext) -> Self {
+        FileDecryptionError::Io { source, context }
+    }
+
+    /// Add or update context on an existing error
+    pub fn with_context(self, context: FileContext) -> Self {
+        match self {
+            FileDecryptionError::HeaderDecryption { .. } => {
+                FileDecryptionError::HeaderDecryption { context }
+            }
+            FileDecryptionError::ContentDecryption { .. } => {
+                FileDecryptionError::ContentDecryption { context }
+            }
+            FileDecryptionError::InvalidHeader { reason, .. } => {
+                FileDecryptionError::InvalidHeader { reason, context }
+            }
+            FileDecryptionError::IncompleteChunk { actual_size, .. } => {
+                FileDecryptionError::IncompleteChunk { context, actual_size }
+            }
+            FileDecryptionError::Io { source, .. } => {
+                FileDecryptionError::Io { source, context }
+            }
+            FileDecryptionError::KeyAccess(e) => FileDecryptionError::KeyAccess(e),
+        }
+    }
 }
 
 #[derive(Error, Debug)]
 pub enum FileEncryptionError {
-    #[error("Failed to encrypt file header: {0}")]
-    HeaderEncryption(String),
-    #[error("Failed to encrypt file content: {0}")]
-    ContentEncryption(String),
-    #[error("IO error during encryption: {0}")]
-    Io(#[from] io::Error),
+    /// File header encryption failed unexpectedly
+    #[error("Failed to encrypt header for {context}: {reason}")]
+    HeaderEncryption {
+        reason: String,
+        context: FileContext,
+    },
+
+    /// File content chunk encryption failed unexpectedly
+    #[error("Failed to encrypt content for {context}: {reason}")]
+    ContentEncryption {
+        reason: String,
+        context: FileContext,
+    },
+
+    /// IO error during file encryption
+    #[error("IO error writing {context}: {source}")]
+    Io {
+        #[source]
+        source: io::Error,
+        context: FileContext,
+    },
+
+    /// Key access failed due to memory protection error or borrow conflict
+    #[error("Key access failed: {0}")]
+    KeyAccess(#[from] KeyAccessError),
 }
 
+impl From<io::Error> for FileEncryptionError {
+    fn from(source: io::Error) -> Self {
+        FileEncryptionError::Io {
+            source,
+            context: FileContext::new(),
+        }
+    }
+}
+
+impl FileEncryptionError {
+    /// Create an IO error with context
+    pub fn io_with_context(source: io::Error, context: FileContext) -> Self {
+        FileEncryptionError::Io { source, context }
+    }
+}
+
+/// File header containing the content encryption key.
+///
+/// The header is 68 bytes: 12-byte nonce + 40-byte encrypted payload (8 reserved + 32-byte
+/// content key) + 16-byte GCM authentication tag.
+///
+/// # Reference Implementation
+/// - Java: [`FileHeaderImpl`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileHeaderImpl.java)
+/// - Java: [`FileHeaderCryptorImpl`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileHeaderCryptorImpl.java) (encryption/decryption)
+///
+/// # Security
+///
+/// The `content_key` is wrapped in `Zeroizing` to ensure it is securely
+/// erased from memory when the header is dropped. The `Debug` implementation
+/// intentionally redacts the key to prevent accidental logging.
 pub struct FileHeader {
-    pub content_key: [u8; 32],
+    pub content_key: Zeroizing<[u8; 32]>,
     pub tag: [u8; 16],
 }
 
 impl fmt::Debug for FileHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FileHeader")
-            .field("content_key", &hex::encode(self.content_key))
+            .field("content_key", &"[REDACTED]")
             .field("tag", &hex::encode(self.tag))
             .finish()
     }
 }
 
+/// Decrypt a file header to extract the content encryption key.
+///
+/// # Reference Implementation
+/// - Java: [`FileHeaderCryptorImpl.decryptHeader()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileHeaderCryptorImpl.java)
 pub fn decrypt_file_header(
     encrypted_header: &[u8],
     master_key: &MasterKey,
 ) -> Result<FileHeader, FileDecryptionError> {
+    decrypt_file_header_with_context(encrypted_header, master_key, FileContext::new())
+}
+
+/// Decrypt a file header with contextual error information.
+///
+/// # Reference Implementation
+/// - Java: [`FileHeaderCryptorImpl.decryptHeader()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileHeaderCryptorImpl.java)
+#[instrument(level = "debug", skip(encrypted_header, master_key), fields(header_size = encrypted_header.len()))]
+pub fn decrypt_file_header_with_context(
+    encrypted_header: &[u8],
+    master_key: &MasterKey,
+    context: FileContext,
+) -> Result<FileHeader, FileDecryptionError> {
+    trace!("Decrypting file header");
+
     if encrypted_header.len() != 68 {
-        return Err(FileDecryptionError::InvalidHeader(
-            "Incorrect header length".to_string(),
-        ));
+        warn!(actual_size = encrypted_header.len(), "Invalid header size");
+        return Err(FileDecryptionError::InvalidHeader {
+            reason: format!(
+                "expected 68 bytes, got {} bytes",
+                encrypted_header.len()
+            ),
+            context,
+        });
     }
 
     let nonce = Nonce::from_slice(&encrypted_header[0..12]);
@@ -79,35 +316,85 @@ pub fn decrypt_file_header(
 
         let decrypted = cipher
             .decrypt(nonce, ciphertext_with_tag.as_ref())
-            .map_err(|e| FileDecryptionError::HeaderDecryption(e.to_string()))?;
+            .map_err(|_| {
+                warn!("Header decryption failed - authentication tag mismatch");
+                FileDecryptionError::HeaderDecryption {
+                    context: context.clone(),
+                }
+            })?;
 
-        if decrypted.len() != 40 || decrypted[0..8] != [0xFF; 8] {
-            return Err(FileDecryptionError::InvalidHeader(
-                "Decrypted header has incorrect format".to_string(),
-            ));
+        if decrypted.len() != 40 {
+            warn!("Invalid header format after decryption");
+            return Err(FileDecryptionError::InvalidHeader {
+                reason: format!("decrypted header has incorrect size: expected 40 bytes, got {}", decrypted.len()),
+                context,
+            });
         }
 
-        let mut content_key = [0u8; 32];
+        // Note: The first 8 bytes are reserved for future use. Java's implementation
+        // does not validate these bytes, so we don't either - for forward compatibility.
+        // We only log if they differ from the expected 0xFF pattern.
+        if decrypted[0..8] != [0xFF; 8] {
+            debug!(
+                reserved_bytes = ?hex::encode(&decrypted[0..8]),
+                "Header has non-standard reserved bytes (expected 0xFF padding). This is accepted for forward compatibility."
+            );
+        }
+
+        let mut content_key = Zeroizing::new([0u8; 32]);
         content_key.copy_from_slice(&decrypted[8..40]);
 
+        debug!("File header decrypted successfully");
         Ok(FileHeader { content_key, tag })
-    })
+    })?
 }
 
+/// Decrypt file content using the content key from the file header.
+///
+/// Content is processed in 32KB chunks, each with its own nonce and authentication.
+///
+/// # Reference Implementation
+/// - Java: [`FileContentCryptorImpl.decryptChunk()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileContentCryptorImpl.java)
 pub fn decrypt_file_content(
     encrypted_content: &[u8],
     content_key: &[u8; 32],
     header_nonce: &[u8],
 ) -> Result<Vec<u8>, FileDecryptionError> {
+    decrypt_file_content_with_context(encrypted_content, content_key, header_nonce, FileContext::new())
+}
+
+/// Decrypt file content with contextual error information.
+///
+/// # Reference Implementation
+/// - Java: [`FileContentCryptorImpl.decryptChunk()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileContentCryptorImpl.java)
+#[instrument(level = "debug", skip(encrypted_content, content_key, header_nonce), fields(encrypted_size = encrypted_content.len()))]
+pub fn decrypt_file_content_with_context(
+    encrypted_content: &[u8],
+    content_key: &[u8; 32],
+    header_nonce: &[u8],
+    base_context: FileContext,
+) -> Result<Vec<u8>, FileDecryptionError> {
     let key = Key::<Aes256Gcm>::from_slice(content_key);
     let cipher = Aes256Gcm::new(key);
 
+    let chunk_count = encrypted_content.chunks(32768 + 28).len();
+    debug!(chunk_count = chunk_count, "Decrypting file content");
+
     let mut decrypted_content = Vec::new();
     for (chunk_number, chunk) in encrypted_content.chunks(32768 + 28).enumerate() {
+        let chunk_context = FileContext {
+            chunk_number: Some(chunk_number),
+            ..base_context.clone()
+        };
+
+        trace!(chunk = chunk_number, chunk_size = chunk.len(), "Decrypting chunk");
+
         if chunk.len() < 28 {
-            return Err(FileDecryptionError::ContentDecryption(
-                "Incomplete chunk".to_string(),
-            ));
+            warn!(chunk = chunk_number, actual_size = chunk.len(), "Incomplete chunk");
+            return Err(FileDecryptionError::IncompleteChunk {
+                context: chunk_context,
+                actual_size: chunk.len(),
+            });
         }
 
         let chunk_nonce = Nonce::from_slice(&chunk[0..12]);
@@ -124,20 +411,41 @@ pub fn decrypt_file_content(
 
         let decrypted_chunk = cipher
             .decrypt(chunk_nonce, payload)
-            .map_err(|e| FileDecryptionError::ContentDecryption(e.to_string()))?;
+            .map_err(|_| {
+                warn!(chunk = chunk_number, "Chunk decryption failed - authentication tag mismatch");
+                FileDecryptionError::ContentDecryption {
+                    context: chunk_context.clone(),
+                }
+            })?;
 
+        trace!(chunk = chunk_number, decrypted_size = decrypted_chunk.len(), "Chunk decrypted successfully");
         decrypted_content.extend_from_slice(&decrypted_chunk);
     }
 
+    debug!(decrypted_size = decrypted_content.len(), "File content decrypted successfully");
     Ok(decrypted_content)
 }
 
+/// Encrypt a file header containing the content encryption key.
+///
+/// # Reference Implementation
+/// - Java: [`FileHeaderCryptorImpl.encryptHeader()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileHeaderCryptorImpl.java)
+/// - Java: [`FileHeaderCryptorImpl.create()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileHeaderCryptorImpl.java) (header creation)
 pub fn encrypt_file_header(
     content_key: &[u8; 32],
     master_key: &MasterKey,
 ) -> Result<Vec<u8>, FileEncryptionError> {
+    encrypt_file_header_with_context(content_key, master_key, FileContext::new())
+}
+
+/// Encrypt a file header with contextual error information.
+pub fn encrypt_file_header_with_context(
+    content_key: &[u8; 32],
+    master_key: &MasterKey,
+    context: FileContext,
+) -> Result<Vec<u8>, FileEncryptionError> {
     let mut header_nonce = [0u8; 12];
-    OsRng.fill_bytes(&mut header_nonce);
+    rand::rng().fill_bytes(&mut header_nonce);
 
     master_key.with_aes_key(|aes_key| {
         let key: &Key<Aes256Gcm> = aes_key.into();
@@ -148,20 +456,37 @@ pub fn encrypt_file_header(
 
         let ciphertext = cipher
             .encrypt(Nonce::from_slice(&header_nonce), plaintext.as_ref())
-            .map_err(|e| FileEncryptionError::HeaderEncryption(e.to_string()))?;
+            .map_err(|e| FileEncryptionError::HeaderEncryption {
+                reason: e.to_string(),
+                context: context.clone(),
+            })?;
 
         let mut encrypted_header = Vec::with_capacity(68);
         encrypted_header.extend_from_slice(&header_nonce);
         encrypted_header.extend_from_slice(&ciphertext);
 
         Ok(encrypted_header)
-    })
+    })?
 }
 
+/// Encrypt file content using AES-GCM with 32KB chunks.
+///
+/// # Reference Implementation
+/// - Java: [`FileContentCryptorImpl.encryptChunk()`](https://github.com/cryptomator/cryptolib/blob/develop/src/main/java/org/cryptomator/cryptolib/v2/FileContentCryptorImpl.java)
 pub fn encrypt_file_content(
     content: &[u8],
     content_key: &[u8; 32],
     header_nonce: &[u8; 12],
+) -> Result<Vec<u8>, FileEncryptionError> {
+    encrypt_file_content_with_context(content, content_key, header_nonce, FileContext::new())
+}
+
+/// Encrypt file content with contextual error information.
+pub fn encrypt_file_content_with_context(
+    content: &[u8],
+    content_key: &[u8; 32],
+    header_nonce: &[u8; 12],
+    base_context: FileContext,
 ) -> Result<Vec<u8>, FileEncryptionError> {
     let key = Key::<Aes256Gcm>::from_slice(content_key);
     let cipher = Aes256Gcm::new(key);
@@ -178,8 +503,13 @@ pub fn encrypt_file_content(
     };
 
     for (chunk_number, chunk) in chunks.iter().enumerate() {
+        let chunk_context = FileContext {
+            chunk_number: Some(chunk_number),
+            ..base_context.clone()
+        };
+
         let mut chunk_nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut chunk_nonce);
+        rand::rng().fill_bytes(&mut chunk_nonce);
 
         let mut aad = Vec::new();
         aad.extend_from_slice(&(chunk_number as u64).to_be_bytes());
@@ -192,7 +522,10 @@ pub fn encrypt_file_content(
 
         let encrypted_chunk = cipher
             .encrypt(Nonce::from_slice(&chunk_nonce), payload)
-            .map_err(|e| FileEncryptionError::ContentEncryption(e.to_string()))?;
+            .map_err(|e| FileEncryptionError::ContentEncryption {
+                reason: e.to_string(),
+                context: chunk_context,
+            })?;
 
         encrypted_content.extend_from_slice(&chunk_nonce);
         encrypted_content.extend_from_slice(&encrypted_chunk);
@@ -225,16 +558,82 @@ impl fmt::Debug for DecryptedFile {
     }
 }
 
+#[instrument(level = "info", skip(master_key), fields(path = %path.display()))]
 pub fn decrypt_file(path: &Path, master_key: &MasterKey) -> Result<DecryptedFile, FileError> {
+    debug!("Decrypting file");
+    let context = FileContext::new().with_path(path);
+
     if path.file_name() == Some(OsStr::new("dir.c9r")) {
-        return Err(FileError::Decryption(FileDecryptionError::InvalidHeader(
-            "This function cannot be used on directory files".to_string(),
-        )));
+        warn!("Attempted to decrypt directory marker file");
+        return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
+            reason: "cannot decrypt directory marker files (dir.c9r) as regular files".to_string(),
+            context,
+        }));
     }
 
-    let encrypted = fs::read(path).map_err(FileError::Io)?;
-    let header = decrypt_file_header(&encrypted[0..68], master_key)?;
-    let content = decrypt_file_content(&encrypted[68..], &header.content_key, &encrypted[0..12])?;
+    let encrypted = fs::read(path).map_err(|e| FileError::io_with_context(e, context.clone()))?;
+    trace!(encrypted_size = encrypted.len(), "Read encrypted file");
+
+    if encrypted.len() < 68 {
+        warn!(actual_size = encrypted.len(), "File too small for valid encrypted file");
+        return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
+            reason: format!("file too small: expected at least 68 bytes, got {}", encrypted.len()),
+            context,
+        }));
+    }
+
+    debug!("Decrypting header");
+    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, context.clone())?;
+
+    debug!("Decrypting content");
+    let content = decrypt_file_content_with_context(
+        &encrypted[68..],
+        &header.content_key,
+        &encrypted[0..12],
+        context,
+    )?;
+
+    Ok(DecryptedFile { header, content })
+}
+
+/// Decrypt a file with full context for error messages.
+pub fn decrypt_file_with_context(
+    path: &Path,
+    master_key: &MasterKey,
+    filename: Option<&str>,
+    dir_id: Option<&str>,
+) -> Result<DecryptedFile, FileError> {
+    let mut context = FileContext::new().with_path(path);
+    if let Some(name) = filename {
+        context = context.with_filename(name);
+    }
+    if let Some(id) = dir_id {
+        context = context.with_dir_id(id);
+    }
+
+    if path.file_name() == Some(OsStr::new("dir.c9r")) {
+        return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
+            reason: "cannot decrypt directory marker files (dir.c9r) as regular files".to_string(),
+            context,
+        }));
+    }
+
+    let encrypted = fs::read(path).map_err(|e| FileError::io_with_context(e, context.clone()))?;
+
+    if encrypted.len() < 68 {
+        return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
+            reason: format!("file too small: expected at least 68 bytes, got {}", encrypted.len()),
+            context,
+        }));
+    }
+
+    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, context.clone())?;
+    let content = decrypt_file_content_with_context(
+        &encrypted[68..],
+        &header.content_key,
+        &encrypted[0..12],
+        context,
+    )?;
 
     Ok(DecryptedFile { header, content })
 }

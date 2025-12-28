@@ -12,10 +12,15 @@
 
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes256;
-use secrecy::{ExposeSecret, Secret, Zeroize};
+use secrecy::{ExposeSecret, SecretBox};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
 
-// We should eventually ditch generic arrays and start using const generics.
+// Note: GenericArray is intentionally used here rather than const generics because:
+// 1. Upstream crates (aes, aes-siv, aes-gcm) require GenericArray types
+// 2. The Concat trait enables compile-time verified U8 + U8 = U16 block concatenation
+// 3. Block sizes are fixed by RFC 3394 spec, so const generic flexibility isn't needed
 use generic_array::{
     sequence::Concat,
     typenum::{U16, U8},
@@ -43,7 +48,7 @@ pub enum WrapError {
 /// through successive rounds of AES encryption.
 /// For now this function only supports AES-256.
 #[allow(clippy::needless_range_loop)]
-pub fn wrap_key(plaintext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, WrapError> {
+pub fn wrap_key(plaintext: &[u8], kek: &SecretBox<[u8; 32]>) -> Result<Vec<u8>, WrapError> {
     // Ensure that the plaintext is a multiple of 64 bits
     if !plaintext.len().is_multiple_of(8) {
         return Err(WrapError::InvalidPlaintextLength);
@@ -102,6 +107,8 @@ pub fn wrap_key(plaintext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, Wra
 pub enum UnwrapError {
     #[error("The ciphertext length is not a multiple of 64 bits per RFC3394.")]
     InvalidCiphertextLength,
+    #[error("The ciphertext is too short (minimum 16 bytes: 8-byte IV + 8-byte data).")]
+    CiphertextTooShort,
     #[error("The integrity check failed.")]
     InvalidIntegrityCheck,
 }
@@ -112,7 +119,17 @@ pub enum UnwrapError {
 ///
 /// In the case that the given kek is not the correct key,
 /// it is expected that the integrity check will fail (`InvalidIntegrityCheck`).
-pub fn unwrap_key(ciphertext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, UnwrapError> {
+///
+/// # Security
+///
+/// The returned key material is wrapped in `Zeroizing` to ensure it is
+/// securely erased from memory when dropped.
+pub fn unwrap_key(ciphertext: &[u8], kek: &SecretBox<[u8; 32]>) -> Result<Zeroizing<Vec<u8>>, UnwrapError> {
+    // RFC 3394 requires minimum 16 bytes: 8-byte IV + at least one 8-byte block
+    if ciphertext.len() < 16 {
+        return Err(UnwrapError::CiphertextTooShort);
+    }
+
     // Ensure that the ciphertext is a multiple of 64 bits
     if !ciphertext.len().is_multiple_of(8) {
         return Err(UnwrapError::InvalidCiphertextLength);
@@ -156,14 +173,17 @@ pub fn unwrap_key(ciphertext: &[u8], kek: &Secret<[u8; 32]>) -> Result<Vec<u8>, 
     // 3) Output the results
 
     // Check if the integrity check register matches the IV
-    if !integrity_check.eq(&U8x8::from(IV_3394)) {
+    // SECURITY: Use constant-time comparison to prevent timing oracle attacks
+    let expected = U8x8::from(IV_3394);
+    if integrity_check.ct_eq(&expected).unwrap_u8() != 1 {
         return Err(UnwrapError::InvalidIntegrityCheck);
     }
 
     integrity_check.zeroize();
 
     // Get the plaintext from the registers
-    Ok(registers)
+    // SECURITY: Wrap in Zeroizing to ensure key material is erased on drop
+    Ok(Zeroizing::new(registers))
 }
 
 #[cfg(test)]
@@ -178,9 +198,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "InvalidPlaintextLength")]
     fn test_wrap_invalid_key_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFFF123");
 
         // Wrap
@@ -189,9 +209,9 @@ mod tests {
 
     #[test]
     fn test_wrap_128_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF");
         let ciphertext = hex!("64E8C3F9CE0F5BA2 63E9777905818A2A 93C8191E7D6E8AE7");
 
@@ -202,9 +222,9 @@ mod tests {
 
     #[test]
     fn test_unwrap_128_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF");
         let ciphertext = hex!("64E8C3F9CE0F5BA2 63E9777905818A2A 93C8191E7D6E8AE7");
 
@@ -215,9 +235,9 @@ mod tests {
 
     #[test]
     fn test_wrap_192_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
         let ciphertext =
             hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
@@ -228,11 +248,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidCiphertextLength")]
+    #[should_panic(expected = "CiphertextTooShort")]
     fn test_unwrap_invalid_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
         let ciphertext = hex!("A8F9BC1612C68B3F F6E6F4FBE30E");
 
@@ -244,9 +264,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "InvalidIntegrityCheck")]
     fn test_unwrap_192_key_with_wrong_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "36b0144a13d0b5c1950c435762ff47789ab64258763f6f980f66dc00c11697cd"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
         let ciphertext =
             hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
@@ -258,9 +278,9 @@ mod tests {
 
     #[test]
     fn test_unwrap_192_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF0001020304050607");
         let ciphertext =
             hex!("A8F9BC1612C68B3F F6E6F4FBE30E71E4 769C8B80A32CB895 8CD5D17D6B254DA1");
@@ -272,9 +292,9 @@ mod tests {
 
     #[test]
     fn test_wrap_256_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
         let ciphertext = hex!(
             "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21"
@@ -286,9 +306,9 @@ mod tests {
 
     #[test]
     fn test_unwrap_256_key_with_256_kek() {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
         let ciphertext = hex!(
             "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21"
@@ -300,9 +320,9 @@ mod tests {
 
     #[bench]
     fn bench_wrap_256_key_with_256_kek(b: &mut Bencher) {
-        let kek = Secret::new(hex!(
+        let kek = SecretBox::new(Box::new(hex!(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
-        ));
+        )));
         let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
 
         b.iter(|| wrap_key(&key_data, &kek).unwrap());

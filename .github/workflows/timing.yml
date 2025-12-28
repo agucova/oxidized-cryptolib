@@ -1,0 +1,72 @@
+name: Timing Leak Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  timing-tests:
+    name: Constant-time verification
+    runs-on: ubuntu-latest
+    # Timing tests are inherently statistical and can have false positives
+    # in noisy CI environments. We run them for visibility but don't block on failures.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        run: rustup update nightly && rustup default nightly
+
+      - name: Run timing leak tests
+        # Run tests and capture output for analysis
+        run: |
+          timeout 120 cargo bench --bench timing_leaks 2>&1 | tee timing_results.txt || true
+
+          # Check security-critical tests for timing leaks (threshold: |t| > 4.5)
+          #
+          # timing_hmac_verify: ring's HMAC verification
+          # timing_key_unwrap: Tests the ct_eq comparison directly (isolated from
+          #                    success/failure code paths like zeroize/allocation)
+          #
+          # Note: AES-GCM/SIV tests are expected to show timing differences
+          # (AEAD returns early on auth failure - this is acceptable)
+
+          echo "=== Checking security-critical tests for timing leaks ==="
+
+          FAILED=0
+          MISSING=0
+          THRESHOLD="4.5"
+
+          for test in timing_hmac_verify timing_key_unwrap; do
+            line=$(grep "bench $test " timing_results.txt | tail -1)
+            if [ -n "$line" ]; then
+              t_value=$(echo "$line" | grep -oE 'max t = [+-]?[0-9]+\.[0-9]+' | grep -oE '[+-]?[0-9]+\.[0-9]+')
+              abs_t=$(echo "$t_value" | tr -d '+-')
+              echo "$test: t = $t_value (threshold: $THRESHOLD)"
+              if [ "$(echo "$abs_t > $THRESHOLD" | bc -l)" = "1" ]; then
+                echo "::error::TIMING LEAK DETECTED in $test (t=$t_value, threshold=$THRESHOLD)"
+                FAILED=1
+              fi
+            else
+              echo "::error::MISSING RESULTS for $test"
+              MISSING=1
+            fi
+          done
+
+          if [ $MISSING -eq 1 ]; then
+            echo "::error::Some security-critical tests did not complete. Check logs above."
+            exit 1
+          fi
+
+          if [ $FAILED -eq 1 ]; then
+            echo "::error::Security-critical timing tests failed. See above for details."
+            exit 1
+          fi
+
+          echo "=== Security-critical timing tests passed ==="
+        env:
+          RAYON_NUM_THREADS: 1

@@ -52,7 +52,7 @@ fn bench_vault_initialization(c: &mut Criterion) {
     group.bench_function("create_new_vault", |b| {
         b.iter(|| {
             // Generate new master keys
-            let master_key = oxidized_cryptolib::crypto::keys::MasterKey::random();
+            let master_key = oxidized_cryptolib::crypto::keys::MasterKey::random().unwrap();
             
             // Create vault configuration
             let vault_id = uuid::Uuid::new_v4().to_string();

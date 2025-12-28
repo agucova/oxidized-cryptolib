@@ -84,6 +84,7 @@ impl VaultBuilder {
         let config = VaultConfig {
             jti: self.vault_id.clone(),
             format: 8,
+            shortening_threshold: 220,
             ciphertext_dir: Some(oxidized_cryptolib::vault::config::CiphertextDir("d".to_string())),
             payload: None,
         };
@@ -192,8 +193,8 @@ impl VaultBuilder {
     
     /// Create a directory in the vault
     fn create_directory(&self, vault_path: &Path, parent_dir_id: &str, name: &str, dir_id: &str) {
-        let encrypted_name = encrypt_filename(name, parent_dir_id, &self.master_key);
-        let dir_hash = oxidized_cryptolib::fs::name::hash_dir_id(parent_dir_id, &self.master_key);
+        let encrypted_name = encrypt_filename(name, parent_dir_id, &self.master_key).unwrap();
+        let dir_hash = oxidized_cryptolib::fs::name::hash_dir_id(parent_dir_id, &self.master_key).unwrap();
         
         let storage_path = vault_path
             .join("d")
@@ -216,16 +217,16 @@ impl VaultBuilder {
         content: &[u8],
         rng: &mut dyn RngCore,
     ) {
-        let encrypted_name = encrypt_filename(filename, parent_dir_id, &self.master_key);
-        let dir_hash = oxidized_cryptolib::fs::name::hash_dir_id(parent_dir_id, &self.master_key);
-        
+        let encrypted_name = encrypt_filename(filename, parent_dir_id, &self.master_key).unwrap();
+        let dir_hash = oxidized_cryptolib::fs::name::hash_dir_id(parent_dir_id, &self.master_key).unwrap();
+
         let storage_path = vault_path
             .join("d")
             .join(&dir_hash[..2])
             .join(&dir_hash[2..32]);
-        
+
         fs::create_dir_all(&storage_path).unwrap();
-        
+
         // Generate content key and header nonce
         let mut content_key = [0u8; 32];
         rng.fill_bytes(&mut content_key);

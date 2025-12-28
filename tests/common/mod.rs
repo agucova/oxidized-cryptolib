@@ -1,5 +1,4 @@
 use oxidized_cryptolib::crypto::keys::MasterKey;
-use secrecy::Secret;
 
 pub mod vault_builder;
 pub mod test_data;
@@ -9,10 +8,7 @@ pub const TEST_VAULT_ID: &str = "test-vault-id";
 
 /// Create a deterministic MasterKey for testing
 pub fn create_test_master_key() -> MasterKey {
-    MasterKey {
-        aes_master_key: Secret::new([0x01; 32]),
-        mac_master_key: Secret::new([0x02; 32]),
-    }
+    MasterKey::new([0x01; 32], [0x02; 32]).unwrap()
 }
 
 

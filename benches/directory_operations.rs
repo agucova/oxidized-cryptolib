@@ -4,7 +4,7 @@ use oxidized_cryptolib::fs::name::{decrypt_filename, encrypt_filename, hash_dir_
 use std::collections::HashMap;
 
 fn setup_master_key() -> MasterKey {
-    MasterKey::random()
+    MasterKey::random().unwrap()
 }
 
 fn generate_directory_with_files(n_files: usize) -> (Vec<String>, Vec<String>, String) {
