@@ -5,10 +5,10 @@
 
 use crate::filesystem::CryptomatorWebDav;
 use crate::server::{auto_mount_macos, unmount_macos, ServerConfig, WebDavServer};
-use oxidized_cryptolib::mount::{MountBackend, MountError, MountHandle};
+use oxidized_cryptolib::mount::{BackendType, MountBackend, MountError, MountHandle};
 use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// WebDAV-based mounting backend.
 ///
@@ -83,6 +83,14 @@ impl MountBackend for WebDavBackend {
     fn unavailable_reason(&self) -> Option<String> {
         // Always available
         None
+    }
+
+    fn backend_type(&self) -> BackendType {
+        BackendType::WebDav
+    }
+
+    fn description(&self) -> &'static str {
+        "Starts a local WebDAV server (no kernel extensions required)"
     }
 
     fn mount(

@@ -45,11 +45,10 @@ fn print_tree_recursive(
     depth: usize,
     max_depth: Option<usize>,
 ) -> Result<()> {
-    if let Some(max) = max_depth {
-        if depth >= max {
+    if let Some(max) = max_depth
+        && depth >= max {
             return Ok(());
         }
-    }
 
     let dirs = vault_ops.list_directories(dir_id)?;
     let files = vault_ops.list_files(dir_id)?;

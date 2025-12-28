@@ -384,4 +384,88 @@ mod tests {
         let category: VaultErrorCategory = err.into();
         assert_eq!(category, VaultErrorCategory::PermissionDenied);
     }
+
+    // ========================================================================
+    // Edge case tests targeting specific bug classes
+    // ========================================================================
+
+    #[test]
+    fn test_io_error_with_raw_os_error() {
+        // Bug class: Raw OS errors might not be extracted correctly
+        // Verify that io_error_to_errno extracts raw OS error when available
+        let err = io::Error::from_raw_os_error(libc::ENOSPC);
+        assert_eq!(io_error_to_errno(&err), libc::ENOSPC);
+
+        let err = io::Error::from_raw_os_error(libc::EPERM);
+        assert_eq!(io_error_to_errno(&err), libc::EPERM);
+
+        let err = io::Error::from_raw_os_error(libc::EBUSY);
+        assert_eq!(io_error_to_errno(&err), libc::EBUSY);
+    }
+
+    #[test]
+    fn test_unknown_io_error_kind_fallback() {
+        // Bug class: Uncommon error kinds might not map correctly
+        // These should all fall back to IoError category
+
+        let err = io::Error::new(io::ErrorKind::TimedOut, "timeout");
+        let category: VaultErrorCategory = (&err).into();
+        assert_eq!(
+            category,
+            VaultErrorCategory::IoError,
+            "TimedOut should map to IoError"
+        );
+
+        let err = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
+        let category: VaultErrorCategory = (&err).into();
+        assert_eq!(
+            category,
+            VaultErrorCategory::IoError,
+            "ConnectionRefused should map to IoError"
+        );
+
+        let err = io::Error::new(io::ErrorKind::BrokenPipe, "broken");
+        let category: VaultErrorCategory = (&err).into();
+        assert_eq!(
+            category,
+            VaultErrorCategory::IoError,
+            "BrokenPipe should map to IoError"
+        );
+
+        let err = io::Error::new(io::ErrorKind::WouldBlock, "would block");
+        let category: VaultErrorCategory = (&err).into();
+        assert_eq!(
+            category,
+            VaultErrorCategory::IoError,
+            "WouldBlock should map to IoError"
+        );
+    }
+
+    #[test]
+    fn test_all_error_categories_have_distinct_errno() {
+        // Bug class: Multiple categories mapping to same errno
+        // Verify each category has a distinct errno (important for debugging)
+        let categories = [
+            VaultErrorCategory::NotFound,
+            VaultErrorCategory::AlreadyExists,
+            VaultErrorCategory::NotEmpty,
+            VaultErrorCategory::IsDirectory,
+            VaultErrorCategory::NotDirectory,
+            VaultErrorCategory::InvalidArgument,
+            VaultErrorCategory::IoError,
+            VaultErrorCategory::PermissionDenied,
+            VaultErrorCategory::NotSupported,
+        ];
+
+        let errnos: Vec<i32> = categories.iter().map(|c| c.to_errno()).collect();
+        let mut sorted = errnos.clone();
+        sorted.sort();
+        sorted.dedup();
+
+        assert_eq!(
+            errnos.len(),
+            sorted.len(),
+            "All error categories should have distinct errno values"
+        );
+    }
 }

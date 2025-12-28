@@ -1,10 +1,13 @@
 //! Error handling and mapping for the WebDAV server.
 //!
 //! This module provides conversion from vault errors to WebDAV/HTTP errors
-//! that the dav-server crate can return to clients.
+//! that the dav-server crate can return to clients. Uses the shared
+//! [`VaultErrorCategory`](oxidized_mount_common::VaultErrorCategory) for
+//! consistent error mapping across backends.
 
 use dav_server::fs::FsError;
 use oxidized_cryptolib::error::{VaultOperationError, VaultWriteError};
+use oxidized_mount_common::VaultErrorCategory;
 use std::io;
 use thiserror::Error;
 
@@ -65,96 +68,46 @@ impl WebDavError {
     }
 }
 
+/// Convert VaultErrorCategory to dav-server FsError.
+///
+/// This is the WebDAV-specific mapping from our shared error categories.
+fn category_to_fs_error(category: VaultErrorCategory) -> FsError {
+    match category {
+        VaultErrorCategory::NotFound => FsError::NotFound,
+        VaultErrorCategory::AlreadyExists => FsError::Exists,
+        VaultErrorCategory::NotEmpty => FsError::Forbidden,
+        VaultErrorCategory::IsDirectory => FsError::Forbidden,
+        VaultErrorCategory::NotDirectory => FsError::Forbidden,
+        VaultErrorCategory::InvalidArgument => FsError::GeneralFailure,
+        VaultErrorCategory::IoError => FsError::GeneralFailure,
+        VaultErrorCategory::PermissionDenied => FsError::Forbidden,
+        VaultErrorCategory::NotSupported => FsError::NotImplemented,
+    }
+}
+
 /// Helper that takes a reference (for use in WebDavError::to_fs_error).
 fn vault_error_to_fs_error_ref(e: &VaultOperationError) -> FsError {
-    match e {
-        VaultOperationError::Io { source, .. } => io_error_to_fs_error(source),
-        VaultOperationError::FileDecryption(_) => FsError::GeneralFailure,
-        VaultOperationError::FileContentDecryption(_) => FsError::GeneralFailure,
-        VaultOperationError::Filename(_) => FsError::GeneralFailure,
-        VaultOperationError::DirectoryNotFound { .. } => FsError::NotFound,
-        VaultOperationError::InvalidVaultStructure { .. } => FsError::GeneralFailure,
-        VaultOperationError::PathNotFound { .. } => FsError::NotFound,
-        VaultOperationError::NotAFile { .. } => FsError::Forbidden,
-        VaultOperationError::NotADirectory { .. } => FsError::Forbidden,
-        VaultOperationError::EmptyPath => FsError::GeneralFailure,
-        VaultOperationError::FileNotFound { .. } => FsError::NotFound,
-        VaultOperationError::Symlink(_) => FsError::GeneralFailure,
-        VaultOperationError::SymlinkNotFound { .. } => FsError::NotFound,
-        VaultOperationError::NotASymlink { .. } => FsError::GeneralFailure,
-        VaultOperationError::Streaming { .. } => FsError::GeneralFailure,
-    }
+    category_to_fs_error(VaultErrorCategory::from(e))
 }
 
 /// Helper that takes a reference (for use in WebDavError::to_fs_error).
 fn write_error_to_fs_error_ref(e: &VaultWriteError) -> FsError {
-    match e {
-        VaultWriteError::Io { source, .. } => io_error_to_fs_error(source),
-        VaultWriteError::Encryption(_) => FsError::GeneralFailure,
-        VaultWriteError::Filename(_) => FsError::GeneralFailure,
-        VaultWriteError::DirectoryNotFound { .. } => FsError::NotFound,
-        VaultWriteError::FileAlreadyExists { .. } => FsError::Exists,
-        VaultWriteError::DirectoryAlreadyExists { .. } => FsError::Exists,
-        VaultWriteError::DirectoryNotEmpty { .. } => FsError::Forbidden,
-        VaultWriteError::AtomicWriteFailed { .. } => FsError::GeneralFailure,
-        VaultWriteError::FileNotFound { .. } => FsError::NotFound,
-        VaultWriteError::SameSourceAndDestination { .. } => FsError::GeneralFailure,
-        VaultWriteError::Symlink(_) => FsError::GeneralFailure,
-        VaultWriteError::SymlinkAlreadyExists { .. } => FsError::Exists,
-        VaultWriteError::Streaming { .. } => FsError::GeneralFailure,
-        VaultWriteError::PathExists { .. } => FsError::Exists,
-    }
+    category_to_fs_error(VaultErrorCategory::from(e))
 }
 
 /// Converts a vault operation error to a dav-server FsError.
 pub fn vault_error_to_fs_error(e: VaultOperationError) -> FsError {
-    match &e {
-        VaultOperationError::Io { source, .. } => io_error_to_fs_error(source),
-        VaultOperationError::FileDecryption(_) => FsError::GeneralFailure,
-        VaultOperationError::FileContentDecryption(_) => FsError::GeneralFailure,
-        VaultOperationError::Filename(_) => FsError::GeneralFailure,
-        VaultOperationError::DirectoryNotFound { .. } => FsError::NotFound,
-        VaultOperationError::InvalidVaultStructure { .. } => FsError::GeneralFailure,
-        VaultOperationError::PathNotFound { .. } => FsError::NotFound,
-        VaultOperationError::NotAFile { .. } => FsError::Forbidden,
-        VaultOperationError::NotADirectory { .. } => FsError::Forbidden,
-        VaultOperationError::EmptyPath => FsError::GeneralFailure,
-        VaultOperationError::FileNotFound { .. } => FsError::NotFound,
-        VaultOperationError::Symlink(_) => FsError::GeneralFailure,
-        VaultOperationError::SymlinkNotFound { .. } => FsError::NotFound,
-        VaultOperationError::NotASymlink { .. } => FsError::GeneralFailure,
-        VaultOperationError::Streaming { .. } => FsError::GeneralFailure,
-    }
+    category_to_fs_error(VaultErrorCategory::from(&e))
 }
 
 /// Converts a vault write error to a dav-server FsError.
 pub fn write_error_to_fs_error(e: VaultWriteError) -> FsError {
-    match &e {
-        VaultWriteError::Io { source, .. } => io_error_to_fs_error(source),
-        VaultWriteError::Encryption(_) => FsError::GeneralFailure,
-        VaultWriteError::Filename(_) => FsError::GeneralFailure,
-        VaultWriteError::DirectoryNotFound { .. } => FsError::NotFound,
-        VaultWriteError::FileAlreadyExists { .. } => FsError::Exists,
-        VaultWriteError::DirectoryAlreadyExists { .. } => FsError::Exists,
-        VaultWriteError::DirectoryNotEmpty { .. } => FsError::Forbidden,
-        VaultWriteError::AtomicWriteFailed { .. } => FsError::GeneralFailure,
-        VaultWriteError::FileNotFound { .. } => FsError::NotFound,
-        VaultWriteError::SameSourceAndDestination { .. } => FsError::GeneralFailure,
-        VaultWriteError::Symlink(_) => FsError::GeneralFailure,
-        VaultWriteError::SymlinkAlreadyExists { .. } => FsError::Exists,
-        VaultWriteError::Streaming { .. } => FsError::GeneralFailure,
-        VaultWriteError::PathExists { .. } => FsError::Exists,
-    }
+    category_to_fs_error(VaultErrorCategory::from(&e))
 }
 
 /// Converts an IO error to a dav-server FsError.
 pub fn io_error_to_fs_error(e: &io::Error) -> FsError {
-    match e.kind() {
-        io::ErrorKind::NotFound => FsError::NotFound,
-        io::ErrorKind::PermissionDenied => FsError::Forbidden,
-        io::ErrorKind::AlreadyExists => FsError::Exists,
-        _ => FsError::GeneralFailure,
-    }
+    category_to_fs_error(VaultErrorCategory::from(e))
 }
 
 /// Result type for WebDAV operations.

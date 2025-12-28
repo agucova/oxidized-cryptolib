@@ -11,8 +11,10 @@
 //! - Optional negative caching for "not found" results
 //! - Bulk invalidation with predicates
 
+use crate::stats::CacheStats;
 use dashmap::DashMap;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Default time-to-live for cached entries (1 second).
@@ -84,6 +86,7 @@ impl NegativeEntry {
 /// - Negative caching: Mark keys as "known to not exist" (ENOENT)
 /// - Bulk invalidation: Remove entries matching a predicate
 /// - Automatic cleanup: Remove expired entries when threshold exceeded
+/// - Optional statistics tracking: Hit/miss rates and entry counts
 ///
 /// # Example
 ///
@@ -102,6 +105,25 @@ impl NegativeEntry {
 ///     assert_eq!(entry.value, "hello");
 /// }
 /// ```
+///
+/// # Statistics Tracking
+///
+/// To enable statistics tracking, use [`with_stats`](TtlCache::with_stats):
+///
+/// ```
+/// use oxidized_mount_common::{TtlCache, CacheStats};
+/// use std::sync::Arc;
+///
+/// let stats = Arc::new(CacheStats::new());
+/// let cache: TtlCache<u64, String> = TtlCache::with_stats(stats.clone());
+///
+/// cache.insert(1, "hello".to_string());
+/// cache.get(&1);  // hit
+/// cache.get(&2);  // miss
+///
+/// assert_eq!(stats.hit_count(), 1);
+/// assert_eq!(stats.miss_count(), 1);
+/// ```
 pub struct TtlCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -117,6 +139,8 @@ where
     negative_ttl: Duration,
     /// Threshold for triggering cleanup.
     cleanup_threshold: usize,
+    /// Optional statistics tracking.
+    stats: Option<Arc<CacheStats>>,
 }
 
 impl<K, V> TtlCache<K, V>
@@ -134,12 +158,28 @@ where
             ttl,
             negative_ttl: DEFAULT_NEGATIVE_TTL,
             cleanup_threshold: CLEANUP_THRESHOLD,
+            stats: None,
         }
     }
 
     /// Creates a new cache with default settings.
     pub fn with_defaults() -> Self {
         Self::new(DEFAULT_TTL)
+    }
+
+    /// Creates a new cache with statistics tracking.
+    ///
+    /// The provided `CacheStats` will be updated on every cache operation,
+    /// allowing external monitoring of cache efficiency.
+    pub fn with_stats(stats: Arc<CacheStats>) -> Self {
+        Self {
+            entries: DashMap::new(),
+            negative: None,
+            ttl: DEFAULT_TTL,
+            negative_ttl: DEFAULT_NEGATIVE_TTL,
+            cleanup_threshold: CLEANUP_THRESHOLD,
+            stats: Some(stats),
+        }
     }
 
     /// Creates a new cache with negative caching enabled.
@@ -153,6 +193,7 @@ where
             ttl,
             negative_ttl,
             cleanup_threshold: CLEANUP_THRESHOLD,
+            stats: None,
         }
     }
 
@@ -164,18 +205,43 @@ where
             ttl,
             negative_ttl: DEFAULT_NEGATIVE_TTL,
             cleanup_threshold,
+            stats: None,
         }
     }
 
+    /// Enable statistics tracking on an existing cache.
+    ///
+    /// This is useful for adding stats to a cache created with other constructors.
+    pub fn set_stats(&mut self, stats: Arc<CacheStats>) {
+        self.stats = Some(stats);
+    }
+
+    /// Get a reference to the statistics tracker, if enabled.
+    pub fn stats(&self) -> Option<&Arc<CacheStats>> {
+        self.stats.as_ref()
+    }
+
     /// Gets a cached entry if it exists and hasn't expired.
+    ///
+    /// If statistics tracking is enabled, this records a hit or miss.
     pub fn get(&self, key: &K) -> Option<CachedEntry<V>> {
         if let Some(entry) = self.entries.get(key) {
             if !entry.is_expired() {
+                if let Some(ref stats) = self.stats {
+                    stats.record_hit();
+                }
                 return Some(entry.clone());
             }
             // Entry expired, remove it
             drop(entry);
             self.entries.remove(key);
+            if let Some(ref stats) = self.stats {
+                stats.record_eviction();
+                stats.record_remove();
+            }
+        }
+        if let Some(ref stats) = self.stats {
+            stats.record_miss();
         }
         None
     }
@@ -189,8 +255,14 @@ where
         if let Some(ref neg) = self.negative {
             neg.remove(&key);
         }
-        self.entries
-            .insert(key, CachedEntry::new(value, self.ttl));
+        let was_new = self
+            .entries
+            .insert(key, CachedEntry::new(value, self.ttl))
+            .is_none();
+        if was_new
+            && let Some(ref stats) = self.stats {
+                stats.record_insert();
+            }
         self.maybe_cleanup();
     }
 
@@ -202,7 +274,14 @@ where
         if let Some(ref neg) = self.negative {
             neg.remove(&key);
         }
-        self.entries.insert(key, CachedEntry::new(value, ttl));
+        let was_new = self
+            .entries
+            .insert(key, CachedEntry::new(value, ttl))
+            .is_none();
+        if was_new
+            && let Some(ref stats) = self.stats {
+                stats.record_insert();
+            }
         self.maybe_cleanup();
     }
 
@@ -223,8 +302,8 @@ where
     ///
     /// Returns `false` if negative caching is disabled.
     pub fn is_negative(&self, key: &K) -> bool {
-        if let Some(ref neg) = self.negative {
-            if let Some(entry) = neg.get(key) {
+        if let Some(ref neg) = self.negative
+            && let Some(entry) = neg.get(key) {
                 if !entry.is_expired() {
                     return true;
                 }
@@ -232,7 +311,6 @@ where
                 drop(entry);
                 neg.remove(key);
             }
-        }
         false
     }
 
@@ -658,5 +736,188 @@ mod tests {
         let cache: TtlCache<u64, String> = TtlCache::default();
         assert_eq!(cache.ttl(), DEFAULT_TTL);
         assert!(!cache.has_negative_cache());
+    }
+
+    // ========================================================================
+    // Edge case tests targeting specific bug classes
+    // ========================================================================
+
+    #[test]
+    fn test_entry_expires_at_exact_ttl() {
+        // Bug class: Off-by-one in expiry check
+        // Implementation uses >=, so entry expires AT the TTL boundary
+        let cache: TtlCache<u64, u64> = TtlCache::new(Duration::from_millis(50));
+        cache.insert(1, 100);
+
+        // Sleep until just past TTL
+        std::thread::sleep(Duration::from_millis(55));
+
+        // Entry should be expired
+        assert!(
+            cache.get(&1).is_none(),
+            "Entry should expire at or after TTL"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_triggers_at_threshold() {
+        // Bug class: Cleanup threshold not properly triggering
+        let cache: TtlCache<u64, u64> = TtlCache::with_threshold(
+            Duration::from_millis(5), // Very short TTL
+            10,                       // Low threshold for testing
+        );
+
+        // Insert entries that will expire
+        for i in 0..10 {
+            cache.insert(i, i);
+        }
+
+        // Wait for entries to expire
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Insert more entries to trigger cleanup
+        // Cleanup should remove expired entries
+        for i in 10..21 {
+            cache.insert(i, i);
+        }
+
+        // Old expired entries should be cleaned up
+        // Note: We can't guarantee exact cleanup timing, but len should be bounded
+        // The cache should have cleaned up at least some expired entries
+        let len = cache.len();
+        assert!(
+            len <= 15,
+            "Cleanup should have removed some expired entries, got len={}",
+            len
+        );
+    }
+
+    #[test]
+    fn test_negative_positive_mutual_exclusion() {
+        // Bug class: Key exists in both positive and negative cache
+        let cache: TtlCache<u64, u64> =
+            TtlCache::with_negative_cache(Duration::from_secs(10), Duration::from_secs(10));
+
+        // Insert into negative cache
+        cache.insert_negative(1);
+        assert!(cache.is_negative(&1));
+        assert!(cache.get(&1).is_none());
+
+        // Insert positive should remove negative
+        cache.insert(1, 100);
+        assert!(!cache.is_negative(&1), "Positive insert should remove negative");
+        assert!(cache.get(&1).is_some());
+
+        // Verify the invariant: can't be in both
+        let in_positive = cache.get(&1).is_some();
+        let in_negative = cache.is_negative(&1);
+        assert!(
+            !(in_positive && in_negative),
+            "Key should never be in both positive and negative cache"
+        );
+    }
+
+    #[test]
+    fn test_get_removes_expired_entry() {
+        // Bug class: Expired entries not cleaned up on access
+        let cache: TtlCache<u64, u64> = TtlCache::new(Duration::from_millis(10));
+        cache.insert(1, 100);
+
+        std::thread::sleep(Duration::from_millis(15));
+
+        // First get should find expired entry and remove it
+        assert!(cache.get(&1).is_none());
+
+        // Verify entry was actually removed from the DashMap
+        // (implementation removes expired entries on get)
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_concurrent_insert_same_key() {
+        // Bug class: Race condition when multiple threads insert same key
+        let cache = Arc::new(TtlCache::<u64, u64>::with_defaults());
+        let mut handles = vec![];
+
+        // Spawn threads that all insert the same key with different values
+        for i in 0..10 {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                cache.insert(1, i);
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should have exactly one entry with one of the values
+        assert_eq!(cache.len(), 1);
+        let value = cache.get(&1).expect("Should have entry").value;
+        assert!(value < 10, "Value should be one of the inserted values");
+    }
+
+    #[test]
+    fn test_invalidate_nonexistent_key() {
+        // Bug class: Invalidate on missing key causes issues
+        let cache: TtlCache<u64, u64> = TtlCache::with_defaults();
+
+        // Should be a no-op, not panic
+        cache.invalidate(&999);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_insert_overwrites_value() {
+        // Bug class: Insert doesn't update existing value
+        let cache: TtlCache<u64, u64> = TtlCache::with_defaults();
+
+        cache.insert(1, 100);
+        assert_eq!(cache.get(&1).unwrap().value, 100);
+
+        cache.insert(1, 200);
+        assert_eq!(cache.get(&1).unwrap().value, 200);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_invalidate_where_empty_cache() {
+        // Bug class: Predicate invalidation on empty cache
+        let cache: TtlCache<u64, u64> = TtlCache::with_defaults();
+
+        // Should be a no-op, not panic
+        cache.invalidate_where(|_| true);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_only_on_insert() {
+        // Bug class: Read-only workloads never trigger cleanup
+        // This documents the current behavior where cleanup is only triggered on insert
+        let cache: TtlCache<u64, u64> = TtlCache::with_threshold(
+            Duration::from_millis(5), // Very short TTL
+            5,                        // Low threshold
+        );
+
+        // Insert entries
+        for i in 0..5 {
+            cache.insert(i, i);
+        }
+
+        // Wait for expiry
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Only reading - cleanup should NOT be triggered
+        for i in 0..5 {
+            let _ = cache.get(&i);
+        }
+
+        // Entries are removed individually on get (because they're expired)
+        // but maybe_cleanup() is not called, so this test just documents behavior
+        assert_eq!(
+            cache.len(),
+            0,
+            "Expired entries removed on individual get calls"
+        );
     }
 }

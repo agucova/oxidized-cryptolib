@@ -3,36 +3,28 @@
 //! Tracks the state of each vault (locked, unlocked, mounted) and manages
 //! transitions between states.
 
+#![allow(dead_code)] // Vault state APIs for future use
+
 use std::path::PathBuf;
 
-use super::config::{AppConfig, VaultConfig};
+use super::config::{AppConfig, BackendType, VaultConfig};
 
 /// The runtime state of a vault
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum VaultState {
     /// Vault is locked (password not entered)
+    #[default]
     Locked,
-    /// Vault is unlocked but not mounted
-    Unlocked,
     /// Vault is mounted at the specified path
     Mounted { mountpoint: PathBuf },
 }
 
-impl Default for VaultState {
-    fn default() -> Self {
-        Self::Locked
-    }
-}
 
 impl VaultState {
     /// Returns true if the vault is currently locked
     pub fn is_locked(&self) -> bool {
         matches!(self, VaultState::Locked)
-    }
-
-    /// Returns true if the vault is currently unlocked (but not mounted)
-    pub fn is_unlocked(&self) -> bool {
-        matches!(self, VaultState::Unlocked)
     }
 
     /// Returns true if the vault is currently mounted
@@ -52,7 +44,6 @@ impl VaultState {
     pub fn status_text(&self) -> &'static str {
         match self {
             VaultState::Locked => "Locked",
-            VaultState::Unlocked => "Unlocked",
             VaultState::Mounted { .. } => "Mounted",
         }
     }
@@ -129,6 +120,13 @@ impl AppState {
         self.vault_states.insert(id.to_string(), state);
     }
 
+    /// Update the preferred backend for a vault
+    pub fn set_vault_backend(&mut self, id: &str, backend: BackendType) {
+        if let Some(vault_config) = self.config.find_vault_mut(id) {
+            vault_config.preferred_backend = backend;
+        }
+    }
+
     /// Add a new vault
     pub fn add_vault(&mut self, config: VaultConfig) {
         let id = config.id.clone();
@@ -170,19 +168,12 @@ mod tests {
     fn test_vault_state_transitions() {
         let state = VaultState::Locked;
         assert!(state.is_locked());
-        assert!(!state.is_unlocked());
-        assert!(!state.is_mounted());
-
-        let state = VaultState::Unlocked;
-        assert!(!state.is_locked());
-        assert!(state.is_unlocked());
         assert!(!state.is_mounted());
 
         let state = VaultState::Mounted {
             mountpoint: PathBuf::from("/mnt/vault"),
         };
         assert!(!state.is_locked());
-        assert!(!state.is_unlocked());
         assert!(state.is_mounted());
         assert_eq!(state.mountpoint(), Some(&PathBuf::from("/mnt/vault")));
     }

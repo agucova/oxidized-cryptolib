@@ -575,4 +575,121 @@ mod tests {
         assert!(dir_entry.parent_dir_id().is_none());
         assert_eq!(dir_entry.dir_id().map(|d| d.as_str().to_string()), Some("subdir-id".to_string()));
     }
+
+    #[test]
+    fn test_symlink_handling() {
+        let table = InodeTable::new();
+
+        let path = VaultPath::new("link_to_file");
+        let kind = InodeKind::Symlink {
+            dir_id: DirId::root(),
+            name: "link_to_file".to_string(),
+        };
+        let inode = table.get_or_insert(path, kind);
+
+        let entry = table.get(inode).unwrap();
+        assert!(matches!(entry.kind, InodeKind::Symlink { .. }));
+        assert_eq!(entry.filename(), Some("link_to_file"));
+    }
+
+    #[test]
+    fn test_very_long_path() {
+        let table = InodeTable::new();
+
+        // Create a very deep path (100 levels)
+        let path_parts: Vec<String> = (0..100).map(|i| format!("dir_{}", i)).collect();
+        let long_path = VaultPath::new(path_parts.join("/"));
+
+        let kind = InodeKind::File {
+            dir_id: DirId::from_raw("deep-dir"),
+            name: "file.txt".to_string(),
+        };
+        let inode = table.get_or_insert(long_path.clone(), kind);
+
+        assert!(table.get(inode).is_some());
+        assert_eq!(table.get_inode(&long_path), Some(inode));
+    }
+
+    #[test]
+    fn test_special_characters_in_path() {
+        let table = InodeTable::new();
+
+        let special_names = [
+            "file with spaces.txt",
+            "file\twith\ttabs.txt",
+            "émojis_🎉.txt",
+            "中文文件.txt",
+            "file-with-dashes.txt",
+            "file.multiple.dots.txt",
+        ];
+
+        for name in special_names {
+            let path = VaultPath::new(name);
+            let kind = InodeKind::File {
+                dir_id: DirId::root(),
+                name: name.to_string(),
+            };
+            let inode = table.get_or_insert(path.clone(), kind);
+
+            let entry = table.get(inode).unwrap();
+            assert_eq!(entry.filename(), Some(name));
+        }
+    }
+
+    #[test]
+    fn test_concurrent_lookup_and_forget() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let table = Arc::new(InodeTable::new());
+
+        // Pre-populate with high nlookup count to survive concurrent forgets
+        let inodes: Vec<u64> = (0..100)
+            .map(|i| {
+                let path = VaultPath::new(format!("file_{}", i));
+                let kind = InodeKind::File {
+                    dir_id: DirId::root(),
+                    name: format!("file_{}", i),
+                };
+                let inode = table.get_or_insert(path.clone(), kind.clone());
+                // Increase nlookup to 10 so forgets don't evict
+                for _ in 0..9 {
+                    table.get_or_insert(path.clone(), kind.clone());
+                }
+                inode
+            })
+            .collect();
+
+        let mut handles = vec![];
+
+        // Lookups
+        for _ in 0..5 {
+            let table = Arc::clone(&table);
+            let inodes = inodes.clone();
+            handles.push(thread::spawn(move || {
+                for inode in inodes {
+                    let _ = table.get(inode);
+                }
+            }));
+        }
+
+        // Partial forgets (shouldn't evict because nlookup starts at 10)
+        // Each thread decrements by 1, with 3 threads that's at most 3 decrements
+        for _ in 0..3 {
+            let table = Arc::clone(&table);
+            let inodes = inodes.clone();
+            handles.push(thread::spawn(move || {
+                for inode in inodes {
+                    let _ = table.forget(inode, 1);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All inodes should still exist (initial nlookup=10, 3x forget(1) leaves nlookup=7)
+        assert_eq!(table.len(), 101); // 100 files + root
+    }
 }

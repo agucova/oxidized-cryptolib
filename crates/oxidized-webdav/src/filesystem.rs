@@ -3,12 +3,10 @@
 //! This module provides the `DavFileSystem` trait implementation that wraps
 //! `VaultOperationsAsync` to expose vault contents via WebDAV.
 
-use crate::cache::MetadataCache;
 use crate::dir_entry::CryptomatorDirEntry;
 use crate::error::{vault_error_to_fs_error, write_error_to_fs_error, WebDavError};
 use crate::file::CryptomatorFile;
 use crate::metadata::CryptomatorMetaData;
-use crate::write_buffer::{WriteBuffer, WriteBufferTable};
 use dav_server::davpath::DavPath;
 use dav_server::fs::{
     DavDirEntry, DavFile, DavFileSystem, DavMetaData, FsError, FsFuture, FsStream, OpenOptions,
@@ -17,9 +15,16 @@ use dav_server::fs::{
 use futures::stream;
 use oxidized_cryptolib::vault::operations_async::VaultOperationsAsync;
 use oxidized_cryptolib::vault::DirId;
+use oxidized_mount_common::{HandleTable, TtlCache, WriteBuffer};
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, instrument, trace};
+
+/// Type alias for write buffer table (path -> WriteBuffer).
+type WriteBufferTable = HandleTable<String, WriteBuffer>;
+
+/// Type alias for metadata cache (path -> CryptomatorMetaData).
+type MetadataCache = TtlCache<String, CryptomatorMetaData>;
 
 /// WebDAV filesystem backed by a Cryptomator vault.
 ///
@@ -40,8 +45,8 @@ impl CryptomatorWebDav {
     pub fn new(ops: Arc<VaultOperationsAsync>) -> Self {
         Self {
             ops,
-            write_buffers: Arc::new(WriteBufferTable::new()),
-            metadata_cache: Arc::new(MetadataCache::with_defaults()),
+            write_buffers: Arc::new(HandleTable::new()),
+            metadata_cache: Arc::new(TtlCache::with_defaults()),
         }
     }
 
@@ -58,7 +63,9 @@ impl CryptomatorWebDav {
     fn parse_path(path: &DavPath) -> String {
         let path_str = path.as_url_string();
         // Remove leading slash if present, then re-add it for consistency
-        let normalized = path_str.trim_start_matches('/');
+        // Also remove trailing slash which would cause parsing issues
+        let normalized = path_str.trim_start_matches('/').trim_end_matches('/');
+        tracing::trace!(raw_path = %path_str, normalized = %normalized, "parse_path");
         if normalized.is_empty() {
             String::new()
         } else {
@@ -110,9 +117,10 @@ impl CryptomatorWebDav {
         }
 
         // Check cache first
-        if let Some(cached) = self.metadata_cache.get(path) {
+        let path_key = path.to_string();
+        if let Some(cached) = self.metadata_cache.get(&path_key) {
             trace!(path = %path, "metadata cache hit");
-            return Ok(cached.metadata);
+            return Ok(cached.value);
         }
 
         let (parent_dir_id, name) = self.resolve_path(path).await?;
@@ -158,21 +166,23 @@ impl CryptomatorWebDav {
 
     /// Flush a write buffer to the vault.
     async fn flush_write_buffer(&self, path: &str) -> Result<(), FsError> {
-        if let Some(buffer) = self.write_buffers.remove(path) && buffer.is_dirty() {
-            let dir_id = buffer.dir_id().clone();
-            let filename = buffer.filename().to_string();
-            let content = buffer.into_content();
+        let path_key = path.to_string();
+        if let Some(buffer) = self.write_buffers.remove(&path_key)
+            && buffer.is_dirty() {
+                let dir_id = buffer.dir_id().clone();
+                let filename = buffer.filename().to_string();
+                let content = buffer.into_content();
 
-            debug!(path = %path, size = content.len(), "Flushing write buffer to vault");
+                debug!(path = %path, size = content.len(), "Flushing write buffer to vault");
 
-            self.ops
-                .write_file(&dir_id, &filename, &content)
-                .await
-                .map_err(write_error_to_fs_error)?;
+                self.ops
+                    .write_file(&dir_id, &filename, &content)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
 
-            // Invalidate cache since file size has changed
-            self.metadata_cache.invalidate(path);
-        }
+                // Invalidate cache since file size has changed
+                self.metadata_cache.invalidate(&path_key);
+            }
         Ok(())
     }
 }
@@ -185,14 +195,19 @@ impl DavFileSystem for CryptomatorWebDav {
             debug!(vault_path = %vault_path, options = ?options, "Opening file");
 
             // Check if we have an existing write buffer for this path
-            if let Some(mut buf_ref) = self.write_buffers.get_mut(&vault_path) {
-                let size = buf_ref.len();
+            if let Some(buf_ref) = self.write_buffers.get_mut(&vault_path) {
                 let filename = buf_ref.filename().to_string();
                 drop(buf_ref);
                 // Return a file handle that references the existing buffer
                 // For simplicity, we create a new buffer with the same content
                 let buffer = self.write_buffers.remove(&vault_path).unwrap();
-                let file = CryptomatorFile::writer(buffer, filename);
+                let file = CryptomatorFile::writer(
+                    buffer,
+                    filename,
+                    self.ops.clone(),
+                    vault_path.clone(),
+                    self.metadata_cache.clone(),
+                );
                 return Ok(Box::new(file) as Box<dyn DavFile>);
             }
 
@@ -204,8 +219,9 @@ impl DavFileSystem for CryptomatorWebDav {
                     // New file, start empty
                     WriteBuffer::new_for_create(dir_id, filename.clone())
                 } else if options.truncate {
-                    // Truncate existing file
-                    WriteBuffer::new_empty(dir_id, filename.clone())
+                    // Truncate: file will be rewritten from scratch
+                    // Use new_for_create to mark as dirty so empty files are created
+                    WriteBuffer::new_for_create(dir_id, filename.clone())
                 } else {
                     // Open existing file for append/modify
                     match self.ops.read_file(&dir_id, &filename).await {
@@ -220,7 +236,13 @@ impl DavFileSystem for CryptomatorWebDav {
 
                 self.write_buffers.insert(vault_path.clone(), buffer);
                 let buffer = self.write_buffers.remove(&vault_path).unwrap();
-                let file = CryptomatorFile::writer(buffer, filename);
+                let file = CryptomatorFile::writer(
+                    buffer,
+                    filename,
+                    self.ops.clone(),
+                    vault_path.clone(),
+                    self.metadata_cache.clone(),
+                );
                 Ok(Box::new(file) as Box<dyn DavFile>)
             } else {
                 // Read mode: open streaming reader
@@ -295,6 +317,11 @@ impl DavFileSystem for CryptomatorWebDav {
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Creating directory");
 
+            // Check if the path already exists (RFC 4918: MKCOL on existing resource returns 405)
+            if self.find_entry(&vault_path).await.is_ok() {
+                return Err(FsError::Exists);
+            }
+
             let (parent_dir_id, name) = self.resolve_path(&vault_path).await?;
 
             self.ops
@@ -341,21 +368,24 @@ impl DavFileSystem for CryptomatorWebDav {
             let (parent_dir_id, name) = self.resolve_path(&vault_path).await?;
 
             // Try to delete as file first
-            let result = match self.ops.delete_file(&parent_dir_id, &name).await {
-                Ok(()) => Ok(()),
-                Err(_) => {
-                    // Try as symlink
-                    self.ops
-                        .delete_symlink(&parent_dir_id, &name)
-                        .await
-                        .map_err(write_error_to_fs_error)
-                }
-            };
+            if self.ops.delete_file(&parent_dir_id, &name).await.is_ok() {
+                self.metadata_cache.invalidate(&vault_path);
+                return Ok(());
+            }
 
-            // Invalidate cache for the removed file
-            self.metadata_cache.invalidate(&vault_path);
+            // Try as symlink
+            if self.ops.delete_symlink(&parent_dir_id, &name).await.is_ok() {
+                self.metadata_cache.invalidate(&vault_path);
+                return Ok(());
+            }
 
-            result
+            // Try as directory (WebDAV DELETE can target directories too)
+            if self.ops.delete_directory(&parent_dir_id, &name).await.is_ok() {
+                self.metadata_cache.invalidate_prefix(&vault_path);
+                return Ok(());
+            }
+
+            Err(FsError::NotFound)
         })
     }
 

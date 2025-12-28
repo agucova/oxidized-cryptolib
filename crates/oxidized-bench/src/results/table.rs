@@ -1,5 +1,7 @@
 //! Terminal table rendering using comfy-table.
 
+#![allow(clippy::type_complexity)] // Function pointer arrays are clear enough
+
 use crate::config::{BenchmarkConfig, OperationType};
 use crate::results::{format_duration, format_throughput, BenchmarkStats};
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
@@ -116,9 +118,9 @@ fn render_comparison_table<W: Write>(
             .map(|(_, s)| s.implementation.short_name());
 
         let winner_cell = if config.color {
-            Cell::new(format!("{}", winner.unwrap_or("-"))).fg(Color::Green)
+            Cell::new(winner.unwrap_or("-").to_string()).fg(Color::Green)
         } else {
-            Cell::new(format!("{}", winner.unwrap_or("-")))
+            Cell::new(winner.unwrap_or("-").to_string())
         };
         row.push(winner_cell);
         table.add_row(row);
@@ -156,9 +158,9 @@ fn render_comparison_table<W: Write>(
             .map(|s| s.implementation.short_name());
 
         let winner_cell = if config.color {
-            Cell::new(format!("{}", winner.unwrap_or("-"))).fg(Color::Green)
+            Cell::new(winner.unwrap_or("-").to_string()).fg(Color::Green)
         } else {
-            Cell::new(format!("{}", winner.unwrap_or("-")))
+            Cell::new(winner.unwrap_or("-").to_string())
         };
         row.push(winner_cell);
         table.add_row(row);

@@ -1,9 +1,18 @@
 # Configuration for cargo-nextest
 # https://nexte.st/book/configuration.html
 
+# Enable experimental features
+experimental = ["setup-scripts"]
+
 [store]
 # Store test results for analysis
 dir = "target/nextest"
+
+# Setup script to configure KDF parameters based on profile:
+# - default/quick: fast KDF (N=1024, ~32x faster vault creation)
+# - ci: production KDF (N=32768, real security parameters)
+[scripts.setup.kdf-setup]
+command = 'scripts/kdf-setup.sh'
 
 [profile.default]
 # Default test threads = number of CPUs
@@ -12,7 +21,7 @@ dir = "target/nextest"
 # Retry flaky tests once
 retries = 1
 
-# Fail fast on first failure in CI (can override with --no-fail-fast)
+# Fail fast on first failure (can override with --no-fail-fast)
 fail-fast = true
 
 # Test timeout - crypto operations should complete quickly
@@ -21,6 +30,11 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # Status output
 status-level = "pass"
 final-status-level = "flaky"
+
+# Enable KDF setup for all tests
+[[profile.default.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
 
 [profile.default.junit]
 # JUnit XML output for CI integration
@@ -33,6 +47,9 @@ fail-fast = true
 
 # More verbose output in CI
 status-level = "all"
+
+# KDF setup script automatically detects CI profile and uses production scrypt
+# (inherited from default profile via [[profile.default.scripts]])
 
 [profile.ci.junit]
 path = "target/nextest/ci/junit.xml"

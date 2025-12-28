@@ -73,7 +73,6 @@ pub mod attr;
 pub mod backend;
 pub mod error;
 pub mod filesystem;
-pub mod handles;
 pub mod item_table;
 pub mod setup;
 

@@ -14,6 +14,8 @@
 //! - `fskit`: FSKit backend (macOS 15.4+) - native Apple framework
 //! - `webdav`: WebDAV backend (all platforms) - no kernel extensions needed
 
+#![allow(dead_code)] // MountManager APIs for future use
+
 mod fuse;
 mod fskit;
 mod webdav;
@@ -62,7 +64,7 @@ impl MountManager {
             mounts: Mutex::new(HashMap::new()),
             backends: vec![
                 // FSKit preferred on macOS 15.4+ (better integration, no kernel extension)
-                Box::new(FSKitBackend::default()),
+                Box::new(FSKitBackend::new()),
                 // FUSE as second choice (cross-platform Unix)
                 Box::new(FuseBackend::new()),
                 // WebDAV as fallback (works everywhere, no kernel extensions)

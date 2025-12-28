@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 pub fn Toolbar(
     on_add_vault: EventHandler<()>,
     on_new_vault: EventHandler<()>,
+    on_settings: EventHandler<()>,
 ) -> Element {
     rsx! {
         div {
@@ -69,9 +70,7 @@ pub fn Toolbar(
                     font-size: 16px;
                     cursor: pointer;
                 ",
-                onclick: move |_| {
-                    tracing::info!("TODO: Open settings dialog");
-                },
+                onclick: move |_| on_settings.call(()),
                 "⚙️"
             }
         }

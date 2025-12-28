@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # FUSE
 libc = "0.2"
+oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
 
 # fuser: pure-rust on Linux, libfuse on macOS
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -60,6 +61,8 @@ tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.8", features = ["html_reports"] }
+# Testing utilities (generators, assertions, temp vault creation)
+oxidized-mount-common = { path = "../oxidized-mount-common" }
 
 [[bench]]
 name = "fuse_operations"

@@ -3,14 +3,22 @@
 //! This module provides the `DavFile` trait implementation for vault files,
 //! supporting both streaming reads and buffered writes.
 
+#![allow(dead_code)] // APIs used by DavFile trait
+
+use crate::error::write_error_to_fs_error;
 use crate::metadata::CryptomatorMetaData;
-use crate::write_buffer::WriteBuffer;
 use bytes::Bytes;
 use dav_server::fs::{DavFile, DavMetaData, FsError, FsFuture};
 use oxidized_cryptolib::fs::streaming::VaultFileReader;
+use oxidized_cryptolib::vault::VaultOperationsAsync;
+use oxidized_mount_common::{TtlCache, WriteBuffer};
 use std::io::SeekFrom;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::debug;
+
+/// Type alias for the metadata cache.
+type MetadataCache = TtlCache<String, CryptomatorMetaData>;
 
 /// A file handle for WebDAV operations.
 ///
@@ -58,10 +66,16 @@ pub struct ReaderHandle {
 pub struct WriterHandle {
     /// The write buffer (wrapped in Mutex for interior mutability).
     buffer: Arc<Mutex<WriteBuffer>>,
+    /// Vault operations for flushing.
+    ops: Arc<VaultOperationsAsync>,
     /// Current write position.
     position: u64,
     /// Filename for metadata.
     filename: String,
+    /// Vault path for cache invalidation.
+    vault_path: String,
+    /// Metadata cache reference for invalidation after flush.
+    cache: Arc<MetadataCache>,
 }
 
 impl CryptomatorFile {
@@ -77,11 +91,20 @@ impl CryptomatorFile {
     }
 
     /// Create a new writer handle from a WriteBuffer.
-    pub fn writer(buffer: WriteBuffer, filename: String) -> Self {
+    pub fn writer(
+        buffer: WriteBuffer,
+        filename: String,
+        ops: Arc<VaultOperationsAsync>,
+        vault_path: String,
+        cache: Arc<MetadataCache>,
+    ) -> Self {
         CryptomatorFile::Writer(WriterHandle {
             buffer: Arc::new(Mutex::new(buffer)),
+            ops,
             position: 0,
             filename,
+            vault_path,
+            cache,
         })
     }
 
@@ -193,69 +216,48 @@ impl DavFile for CryptomatorFile {
 
     fn flush(&mut self) -> FsFuture<'_, ()> {
         Box::pin(async move {
-            // For readers, nothing to flush
-            // For writers, the actual flush happens when the file is closed
-            // via the filesystem's close handler
-            Ok(())
+            match self {
+                CryptomatorFile::Reader(_) => Ok(()), // Nothing to flush for readers
+                CryptomatorFile::Writer(h) => {
+                    let mut buffer = h.buffer.lock().await;
+                    if buffer.is_dirty() {
+                        let dir_id = buffer.dir_id().clone();
+                        let filename = buffer.filename().to_string();
+                        let content = buffer.content().to_vec();
+
+                        debug!(
+                            filename = %filename,
+                            size = content.len(),
+                            "Flushing write buffer to vault"
+                        );
+
+                        h.ops
+                            .write_file(&dir_id, &filename, &content)
+                            .await
+                            .map_err(write_error_to_fs_error)?;
+
+                        // Invalidate metadata cache so PROPFIND returns updated size
+                        h.cache.invalidate(&h.vault_path);
+
+                        buffer.mark_clean();
+                    }
+                    Ok(())
+                }
+            }
         })
     }
 }
 
+// Note: Unit tests for CryptomatorFile::writer have been moved to integration tests
+// since they require VaultOperationsAsync which needs a real vault.
+// See tests/crud_tests.rs for full write/read cycle tests.
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use oxidized_cryptolib::vault::DirId;
-
-    fn test_dir_id() -> DirId {
-        DirId::from_raw("test-dir-id")
-    }
-
-    #[tokio::test]
-    async fn test_writer_handle_write_and_read() {
-        let buffer = WriteBuffer::new_for_create(test_dir_id(), "test.txt".to_string());
-        let mut file = CryptomatorFile::writer(buffer, "test.txt".to_string());
-
-        // Write some data
-        file.write_bytes(Bytes::from("hello")).await.unwrap();
-
-        // Seek to start
-        file.seek(SeekFrom::Start(0)).await.unwrap();
-
-        // Read it back
-        let data = file.read_bytes(5).await.unwrap();
-        assert_eq!(&data[..], b"hello");
-    }
-
-    #[tokio::test]
-    async fn test_writer_handle_seek() {
-        let buffer = WriteBuffer::new_for_create(test_dir_id(), "test.txt".to_string());
-        let mut file = CryptomatorFile::writer(buffer, "test.txt".to_string());
-
-        // Write some data
-        file.write_bytes(Bytes::from("hello world")).await.unwrap();
-
-        // Seek to middle
-        let pos = file.seek(SeekFrom::Start(6)).await.unwrap();
-        assert_eq!(pos, 6);
-
-        // Read from middle
-        let data = file.read_bytes(5).await.unwrap();
-        assert_eq!(&data[..], b"world");
-
-        // Seek from end
-        let pos = file.seek(SeekFrom::End(-5)).await.unwrap();
-        assert_eq!(pos, 6);
-    }
-
-    #[tokio::test]
-    async fn test_writer_metadata() {
-        let buffer = WriteBuffer::new_for_create(test_dir_id(), "test.txt".to_string());
-        let mut file = CryptomatorFile::writer(buffer, "test.txt".to_string());
-
-        file.write_bytes(Bytes::from("hello")).await.unwrap();
-
-        let meta = file.metadata().await.unwrap();
-        assert!(meta.is_file());
-        assert_eq!(meta.len(), 5);
-    }
+    // Unit tests for CryptomatorFile require a real vault.
+    // See tests/crud_tests.rs for integration tests covering:
+    // - Write/read roundtrip
+    // - Seek operations
+    // - Metadata
+    // - Flush behavior
 }

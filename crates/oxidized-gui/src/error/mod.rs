@@ -3,10 +3,6 @@
 //! Maps internal error types to user-facing messages with suggestions
 //! for resolution.
 
-// TODO: Phase 6 - Implement error display
-// mod display;
-// pub use display::{UserFacingError, ErrorDisplay};
-
 use thiserror::Error;
 
 /// Errors that can occur during GUI operations
@@ -29,7 +25,7 @@ pub enum GuiError {
 }
 
 /// A user-friendly error with context and suggestions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UserFacingError {
     /// Short title for the error
     pub title: String,

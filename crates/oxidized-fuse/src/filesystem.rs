@@ -140,7 +140,7 @@ impl CryptomatorFS {
             inodes: InodeTable::new(),
             attr_cache: AttrCache::with_defaults(),
             dir_cache: DirCache::default(),
-            handle_table: FuseHandleTable::new(),
+            handle_table: FuseHandleTable::new_auto_id(),
             runtime,
             uid,
             gid,
@@ -168,10 +168,10 @@ impl CryptomatorFS {
     /// This is used by both `flush()` and `fsync()` FUSE operations.
     /// Returns Ok(()) if the handle is a reader or if the write succeeds.
     fn flush_handle(&self, ino: u64, fh: u64) -> Result<(), c_int> {
-        let mut handle = self.handle_table.get_mut(fh).ok_or(libc::EBADF)?;
+        let mut handle = self.handle_table.get_mut(&fh).ok_or(libc::EBADF)?;
 
-        if let Some(buffer) = handle.as_write_buffer_mut() {
-            if buffer.is_dirty() {
+        if let Some(buffer) = handle.as_write_buffer_mut()
+            && buffer.is_dirty() {
                 let ops = self.ops_clone();
                 let dir_id = buffer.dir_id().clone();
                 let filename = buffer.filename().to_string();
@@ -187,22 +187,20 @@ impl CryptomatorFS {
                     .block_on(ops.write_file(&dir_id, &filename, &content));
 
                 // Re-acquire handle to restore content (whether success or failure)
-                if let Some(mut handle) = self.handle_table.get_mut(fh) {
-                    if let Some(buffer) = handle.as_write_buffer_mut() {
+                if let Some(mut handle) = self.handle_table.get_mut(&fh)
+                    && let Some(buffer) = handle.as_write_buffer_mut() {
                         // restore_content marks clean, so re-mark dirty on failure
                         buffer.restore_content(content);
                         if write_result.is_err() {
                             buffer.mark_dirty();
                         }
                     }
-                }
 
                 // Propagate error after restoring content
                 write_result.map_err(|e| crate::error::write_error_to_errno(&e))?;
 
                 self.attr_cache.invalidate(ino);
             }
-        }
         // Readers don't need flushing
         Ok(())
     }
@@ -518,7 +516,7 @@ impl Filesystem for CryptomatorFS {
 
         // Check cache first
         if let Some(cached) = self.attr_cache.get(ino) {
-            reply.attr(&cached.time_remaining(), &cached.attr);
+            reply.attr(&cached.time_remaining(), &cached.value);
             return;
         }
 
@@ -676,14 +674,14 @@ impl Filesystem for CryptomatorFS {
             };
 
             let buffer = WriteBuffer::new(dir_id, name, existing_content);
-            let fh = self.handle_table.insert(FuseHandle::WriteBuffer(buffer));
+            let fh = self.handle_table.insert_auto(FuseHandle::WriteBuffer(buffer));
             reply.opened(fh, 0);
         } else {
             // Open for reading - open_file returns VaultFileReader
             match self.runtime.block_on(ops.open_file(&dir_id, &name)) {
                 Ok(reader) => {
                     // Store reader in handle table and return the handle ID
-                    let fh = self.handle_table.insert(FuseHandle::Reader(reader));
+                    let fh = self.handle_table.insert_auto(FuseHandle::Reader(Box::new(reader)));
                     reply.opened(fh, 0);
                 }
                 Err(e) => {
@@ -707,7 +705,7 @@ impl Filesystem for CryptomatorFS {
         trace!(inode = ino, fh = fh, offset = offset, size = size, "read");
 
         // Get the handle from our table
-        let mut handle = match self.handle_table.get_mut(fh) {
+        let mut handle = match self.handle_table.get_mut(&fh) {
             Some(h) => h,
             None => {
                 reply.error(libc::EBADF);
@@ -770,7 +768,7 @@ impl Filesystem for CryptomatorFS {
         trace!(fh = fh, "release");
 
         // Remove handle from table
-        let handle = match self.handle_table.remove(fh) {
+        let handle = match self.handle_table.remove(&fh) {
             Some(h) => h,
             None => {
                 // Handle already released or never existed
@@ -1261,9 +1259,9 @@ impl Filesystem for CryptomatorFS {
                     drop(entry);
 
                     // If we have an open file handle, truncate the buffer
-                    if let Some(fh) = fh {
-                        if let Some(mut handle) = self.handle_table.get_mut(fh) {
-                            if let Some(buffer) = handle.as_write_buffer_mut() {
+                    if let Some(fh) = fh
+                        && let Some(mut handle) = self.handle_table.get_mut(&fh)
+                            && let Some(buffer) = handle.as_write_buffer_mut() {
                                 buffer.truncate(new_size);
                                 drop(handle);
 
@@ -1272,8 +1270,6 @@ impl Filesystem for CryptomatorFS {
                                 reply.attr(&DEFAULT_ATTR_TTL, &attr);
                                 return;
                             }
-                        }
-                    }
 
                     // No open handle - read file, truncate, write back
                     let ops = self.ops_clone();
@@ -1326,7 +1322,7 @@ impl Filesystem for CryptomatorFS {
                     // First check attr cache - avoids O(n) list_files call
                     if let Some(cached) = self.attr_cache.get(ino) {
                         drop(entry);
-                        cached.attr
+                        cached.value
                     } else {
                         let dir_id = dir_id.clone();
                         let name = name.clone();
@@ -1355,7 +1351,7 @@ impl Filesystem for CryptomatorFS {
                     // First check attr cache - avoids read_symlink I/O
                     if let Some(cached) = self.attr_cache.get(ino) {
                         drop(entry);
-                        cached.attr
+                        cached.value
                     } else {
                         let dir_id = dir_id.clone();
                         let name = name.clone();
@@ -1382,7 +1378,7 @@ impl Filesystem for CryptomatorFS {
 
         // No changes requested - return current attributes
         if let Some(cached) = self.attr_cache.get(ino) {
-            reply.attr(&cached.time_remaining(), &cached.attr);
+            reply.attr(&cached.time_remaining(), &cached.value);
         } else {
             // Fall back to getattr behavior
             let attr = match &entry.kind {
@@ -1491,7 +1487,7 @@ impl Filesystem for CryptomatorFS {
         // Create the file with a new WriteBuffer marked dirty
         // (File will be written to vault on release, even if empty)
         let buffer = WriteBuffer::new_for_create(dir_id.clone(), name_str.to_string());
-        let fh = self.handle_table.insert(FuseHandle::WriteBuffer(buffer));
+        let fh = self.handle_table.insert_auto(FuseHandle::WriteBuffer(buffer));
 
         // Allocate inode
         let child_path = parent_path.join(name_str);
@@ -1534,7 +1530,7 @@ impl Filesystem for CryptomatorFS {
         );
 
         // Get the handle from our table
-        let mut handle = match self.handle_table.get_mut(fh) {
+        let mut handle = match self.handle_table.get_mut(&fh) {
             Some(h) => h,
             None => {
                 reply.error(libc::EBADF);
@@ -2068,8 +2064,8 @@ impl Filesystem for CryptomatorFS {
         let new_size = (offset + length) as u64;
 
         // If we have an open file handle, extend the buffer
-        if let Some(mut handle) = self.handle_table.get_mut(fh) {
-            if let Some(buffer) = handle.as_write_buffer_mut() {
+        if let Some(mut handle) = self.handle_table.get_mut(&fh)
+            && let Some(buffer) = handle.as_write_buffer_mut() {
                 // Only extend, don't shrink
                 if new_size > buffer.len() {
                     buffer.truncate(new_size);
@@ -2080,7 +2076,6 @@ impl Filesystem for CryptomatorFS {
                 reply.ok();
                 return;
             }
-        }
 
         // No open handle - read file, extend if needed, write back
         let ops = self.ops_clone();
@@ -2137,7 +2132,7 @@ impl Filesystem for CryptomatorFS {
 
         // Read from source
         let data = {
-            let mut handle = match self.handle_table.get_mut(fh_in) {
+            let mut handle = match self.handle_table.get_mut(&fh_in) {
                 Some(h) => h,
                 None => {
                     reply.error(libc::EBADF);
@@ -2167,7 +2162,7 @@ impl Filesystem for CryptomatorFS {
 
         // Write to destination
         let bytes_written = {
-            let mut handle = match self.handle_table.get_mut(fh_out) {
+            let mut handle = match self.handle_table.get_mut(&fh_out) {
                 Some(h) => h,
                 None => {
                     reply.error(libc::EBADF);
@@ -2220,7 +2215,7 @@ impl Filesystem for CryptomatorFS {
                     drop(entry);
 
                     // Check if we have an open buffer with the size
-                    if let Some(mut handle) = self.handle_table.get_mut(fh) {
+                    if let Some(mut handle) = self.handle_table.get_mut(&fh) {
                         if let Some(buffer) = handle.as_write_buffer_mut() {
                             buffer.len()
                         } else if let Some(reader) = handle.as_reader_mut() {

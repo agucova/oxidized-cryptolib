@@ -6,7 +6,6 @@
 use crate::metadata::CryptomatorMetaData;
 use dav_server::fs::{DavDirEntry, DavMetaData, FsFuture};
 use oxidized_cryptolib::vault::operations::{VaultDirectoryInfo, VaultFileInfo, VaultSymlinkInfo};
-use std::time::SystemTime;
 
 /// A directory entry in the vault.
 #[derive(Debug, Clone)]

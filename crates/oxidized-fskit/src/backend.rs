@@ -4,7 +4,7 @@
 
 use crate::CryptomatorFSKit;
 use fskit_rs::MountOptions;
-use oxidized_cryptolib::{MountBackend, MountError, MountHandle};
+use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
@@ -148,6 +148,14 @@ impl MountBackend for FSKitBackend {
         }
     }
 
+    fn backend_type(&self) -> BackendType {
+        BackendType::FSKit
+    }
+
+    fn description(&self) -> &'static str {
+        "Uses Apple's native FSKit framework (macOS 15.4+)"
+    }
+
     fn mount(
         &self,
         _vault_id: &str,
@@ -163,8 +171,7 @@ impl MountBackend for FSKitBackend {
 
         // Create async runtime for FSKit
         let runtime = Runtime::new().map_err(|e| {
-            MountError::Mount(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            MountError::Mount(std::io::Error::other(
                 format!("Failed to create tokio runtime: {}", e),
             ))
         })?;
@@ -189,8 +196,7 @@ impl MountBackend for FSKitBackend {
         let session = runtime
             .block_on(async { fskit_rs::mount(fs, opts).await })
             .map_err(|e| {
-                MountError::Mount(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                MountError::Mount(std::io::Error::other(
                     format!("FSKit mount failed: {}", e),
                 ))
             })?;

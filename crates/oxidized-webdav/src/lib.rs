@@ -46,14 +46,12 @@
 //! No authentication is required since only local connections are accepted.
 
 mod backend;
-mod cache;
 mod dir_entry;
 mod error;
 mod file;
 mod filesystem;
 mod metadata;
 mod server;
-mod write_buffer;
 
 // Public exports
 pub use backend::{WebDavBackend, WebDavMountHandle};

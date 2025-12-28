@@ -87,8 +87,8 @@ pub async fn assert_dir_entries(server: &TestServer, path: &str, expected: &[&st
     // Parse the XML response to extract hrefs
     let entries = extract_hrefs_from_propfind(&body, path);
 
-    let mut expected_set: std::collections::HashSet<_> = expected.iter().copied().collect();
-    let mut actual_set: std::collections::HashSet<_> = entries.iter().map(|s| s.as_str()).collect();
+    let expected_set: std::collections::HashSet<String> = expected.iter().map(|s| s.to_string()).collect();
+    let mut actual_set: std::collections::HashSet<String> = entries.into_iter().collect();
 
     // Remove the directory itself from actual (PROPFIND includes it)
     let normalized_path = path.trim_end_matches('/');
@@ -106,7 +106,7 @@ pub async fn assert_dir_entries(server: &TestServer, path: &str, expected: &[&st
         missing,
         extra,
         expected,
-        entries
+        actual_set
     );
 }
 
@@ -181,10 +181,14 @@ mod tests {
     #[test]
     fn test_sha256() {
         let hash = sha256(b"hello world");
-        assert_eq!(
-            hex::encode(hash),
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
+        // Known hash for "hello world"
+        let expected: [u8; 32] = [
+            0xb9, 0x4d, 0x27, 0xb9, 0x93, 0x4d, 0x3e, 0x08,
+            0xa5, 0x2e, 0x52, 0xd7, 0xda, 0x7d, 0xab, 0xfa,
+            0xc4, 0x84, 0xef, 0xe3, 0x7a, 0x53, 0x80, 0xee,
+            0x90, 0x88, 0xf7, 0xac, 0xe2, 0xef, 0xcd, 0xe9,
+        ];
+        assert_eq!(hash, expected);
     }
 
     #[test]

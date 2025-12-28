@@ -23,7 +23,7 @@ pub use oxidized_fuse::FuseBackend;
 // When the fuse feature is disabled, provide a stub implementation
 #[cfg(not(feature = "fuse"))]
 mod stub {
-    use oxidized_cryptolib::{MountBackend, MountError, MountHandle};
+    use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
     use std::path::Path;
 
     /// FUSE-based mounting backend (stub)
@@ -81,6 +81,14 @@ mod stub {
             {
                 Some("FUSE support requires building with --features fuse.".to_string())
             }
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::Fuse
+        }
+
+        fn description(&self) -> &'static str {
+            "Uses macFUSE (macOS) or libfuse (Linux) for filesystem mounting"
         }
 
         fn mount(

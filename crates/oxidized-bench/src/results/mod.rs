@@ -98,7 +98,7 @@ fn render_summary<W: Write>(
     }
 
     // Determine winner for each benchmark (lowest mean latency)
-    for (_name, benchmark_stats) in &by_benchmark {
+    for benchmark_stats in by_benchmark.values() {
         if benchmark_stats.len() > 1 {
             let winner = benchmark_stats
                 .iter()

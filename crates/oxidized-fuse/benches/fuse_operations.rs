@@ -525,7 +525,7 @@ fn end_to_end_disk_io(c: &mut Criterion) {
 
             // 2. Getattr: check cache, or fetch from list (in real FUSE, would be stat)
             let _attr = if let Some(cached) = attr_cache.get(inode) {
-                cached.attr
+                cached.value
             } else {
                 // Cache miss - create attr from file info
                 make_test_attr(inode)

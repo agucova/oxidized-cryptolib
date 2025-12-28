@@ -9,8 +9,15 @@ description = "Shared utilities for Cryptomator vault mount backends (FUSE, FSKi
 
 [dependencies]
 dashmap = "6"
+humantime-serde = "1"
 libc = "0.2.178"
 oxidized-cryptolib = { path = "../oxidized-cryptolib" }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
 
 [dev-dependencies]
+proptest = "1.4"
 tokio = { version = "1", features = ["rt", "macros", "time"] }

@@ -2,12 +2,18 @@
 
 use dioxus::prelude::*;
 
+use crate::backend::mount_manager;
 use crate::components::{EmptyState, Sidebar, VaultDetail};
-use crate::dialogs::{AddVaultDialog, CreateVaultDialog};
-use crate::state::{use_app_state, AppState, VaultConfig};
+use crate::dialogs::{AddVaultDialog, CreateVaultDialog, SettingsDialog};
+use crate::state::{use_app_state, AppState, VaultConfig, VaultState};
+use crate::tray::menu::VaultAction;
+use crate::tray::TrayEvent;
 
 #[cfg(all(target_os = "macos", feature = "fskit"))]
 use crate::dialogs::FSKitSetupDialog;
+
+/// Main CSS stylesheet asset
+const MAIN_CSS: Asset = asset!("/assets/main.css");
 
 /// Root application component
 #[component]
@@ -18,12 +24,16 @@ pub fn App() -> Element {
     let mut selected_vault = use_signal(|| None::<String>);
     let mut show_add_vault_dialog = use_signal(|| false);
     let mut show_create_vault_dialog = use_signal(|| false);
+    let mut show_settings_dialog = use_signal(|| false);
 
     rsx! {
+        // Include the main stylesheet
+        document::Link { rel: "stylesheet", href: MAIN_CSS }
+
         // Main two-panel layout
         div {
             class: "app-container",
-            style: "display: flex; height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;",
+            style: "display: flex; height: 100vh;",
 
             // Left sidebar with vault list
             Sidebar {
@@ -31,6 +41,7 @@ pub fn App() -> Element {
                 on_select: move |id: String| selected_vault.set(Some(id)),
                 on_add_vault: move |_| show_add_vault_dialog.set(true),
                 on_new_vault: move |_| show_create_vault_dialog.set(true),
+                on_settings: move |_| show_settings_dialog.set(true),
             }
 
             // Right panel with vault details or empty state
@@ -39,7 +50,10 @@ pub fn App() -> Element {
                 style: "flex: 1; background: #f8f9fa; padding: 24px; overflow-y: auto;",
 
                 if let Some(vault_id) = selected_vault() {
-                    VaultDetail { vault_id }
+                    VaultDetail {
+                        vault_id,
+                        on_removed: move |_| selected_vault.set(None),
+                    }
                 } else {
                     EmptyState {}
                 }
@@ -73,8 +87,21 @@ pub fn App() -> Element {
             }
         }
 
+        // Settings dialog
+        if show_settings_dialog() {
+            SettingsDialog {
+                on_close: move |_| show_settings_dialog.set(false),
+            }
+        }
+
         // FSKit setup wizard (macOS only, conditionally compiled)
         FSKitSetupWrapper {}
+
+        // Tray event handler
+        TrayEventHandler {
+            on_show_settings: move |_| show_settings_dialog.set(true),
+            on_select_vault: move |id: String| selected_vault.set(Some(id)),
+        }
     }
 }
 
@@ -133,4 +160,115 @@ fn FSKitSetupWrapper() -> Element {
 #[component]
 fn FSKitSetupWrapper() -> Element {
     rsx! {}
+}
+
+/// Component that handles tray menu events
+#[component]
+fn TrayEventHandler(
+    on_show_settings: EventHandler<()>,
+    on_select_vault: EventHandler<String>,
+) -> Element {
+    let mut app_state = use_app_state();
+
+    // Poll for tray events
+    use_effect(move || {
+        // Set up a timer to poll for tray events
+        spawn(async move {
+            loop {
+                // Check for tray events
+                if let Some(receiver) = crate::tray_receiver() {
+                    while let Ok(event) = receiver.try_recv() {
+                        handle_tray_event(event, &mut app_state, &on_show_settings, &on_select_vault);
+                    }
+                }
+                // Wait a bit before polling again
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+    });
+
+    rsx! {}
+}
+
+/// Handle a single tray event
+fn handle_tray_event(
+    event: TrayEvent,
+    app_state: &mut Signal<AppState>,
+    on_show_settings: &EventHandler<()>,
+    on_select_vault: &EventHandler<String>,
+) {
+    match event {
+        TrayEvent::ShowHide => {
+            // Toggle window visibility
+            let window = dioxus::desktop::window();
+            if window.is_visible() {
+                window.set_visible(false);
+            } else {
+                window.set_visible(true);
+                window.set_focus();
+            }
+        }
+        TrayEvent::Settings => {
+            // Show settings dialog and bring window to front
+            let window = dioxus::desktop::window();
+            window.set_visible(true);
+            window.set_focus();
+            on_show_settings.call(());
+        }
+        TrayEvent::Vault(action) => {
+            handle_vault_action(action, app_state, on_select_vault);
+        }
+        TrayEvent::Quit => {
+            // Exit the application
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Handle a vault-specific action from the tray
+fn handle_vault_action(
+    action: VaultAction,
+    app_state: &mut Signal<AppState>,
+    on_select_vault: &EventHandler<String>,
+) {
+    match action {
+        VaultAction::Unlock(vault_id) => {
+            // Show the main window and select this vault to prompt for unlock
+            let window = dioxus::desktop::window();
+            window.set_visible(true);
+            window.set_focus();
+            on_select_vault.call(vault_id);
+        }
+        VaultAction::Lock(vault_id) => {
+            // Unmount the vault
+            let vault_id_clone = vault_id.clone();
+            spawn(async move {
+                let manager = mount_manager();
+                let result = tokio::task::spawn_blocking(move || manager.unmount(&vault_id)).await;
+
+                match result {
+                    Ok(Ok(())) => {
+                        tracing::info!("Vault {} locked via tray", vault_id_clone);
+                        app_state.write().set_vault_state(&vault_id_clone, VaultState::Locked);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("Failed to lock vault via tray: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::error!("Lock task panicked: {}", e);
+                    }
+                }
+            });
+        }
+        VaultAction::Reveal(vault_id) => {
+            // Open the vault's mount point in file manager
+            if let Some(vault) = app_state.read().get_vault(&vault_id) {
+                if let VaultState::Mounted { mountpoint } = &vault.state {
+                    if let Err(e) = open::that(mountpoint) {
+                        tracing::error!("Failed to reveal vault: {}", e);
+                    }
+                }
+            }
+        }
+    }
 }

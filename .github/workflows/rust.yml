@@ -194,6 +194,14 @@ jobs:
         run: cargo build -p oxidized-cryptolib --verbose
       - name: Test cryptolib
         run: cargo nextest run -p oxidized-cryptolib
+      - name: Build CLI (no mount backends)
+        run: cargo build -p oxidized-cli --no-default-features --verbose
+      - name: Test CLI (no mount backends)
+        run: cargo nextest run -p oxidized-cli --no-default-features
+      - name: Build CLI with WebDAV
+        run: cargo build -p oxidized-cli --features webdav --verbose
+      - name: Build WebDAV crate
+        run: cargo build -p oxidized-webdav --verbose
 
   # =============================================================================
   # FSKit Build and Test (macOS 15+)
@@ -235,30 +243,21 @@ jobs:
       - name: Install protoc (for fskit-rs)
         run: brew install protobuf
 
-      - name: Download FSKitBridge from GitHub releases
+      - name: Build oxidized-fskit
+        run: cargo build -p oxidized-fskit --verbose
+
+      - name: Build oxidized-fskit with setup feature
+        run: cargo build -p oxidized-fskit --features setup --verbose
+
+      - name: Build oxfskit-setup tool
+        run: cargo build -p oxidized-fskit --features setup --bin oxfskit-setup --release
+
+      - name: Install FSKitBridge using oxfskit-setup
         run: |
-          # Get latest release info
-          RELEASE_URL="https://api.github.com/repos/debox-network/FSKitBridge/releases/latest"
-          DOWNLOAD_URL=$(curl -sL "$RELEASE_URL" | grep -o '"browser_download_url":[^"]*"[^"]*\.zip"' | head -1 | cut -d'"' -f4)
-
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "Could not find release download URL, trying direct v0.1.0 URL..."
-            DOWNLOAD_URL="https://github.com/debox-network/FSKitBridge/releases/download/v0.1.0/FSKitBridge-0.1.0.zip"
-          fi
-
-          echo "Downloading from: $DOWNLOAD_URL"
-          curl -L -o /tmp/FSKitBridge.zip "$DOWNLOAD_URL"
-
-          # Extract and install
-          cd /tmp
-          unzip -o FSKitBridge.zip
-          cp -R FSKitBridge.app /Applications/
-
-          # Remove quarantine attribute
-          xattr -cr /Applications/FSKitBridge.app
-
-          echo "FSKitBridge installed to /Applications/"
-          ls -la /Applications/FSKitBridge.app/
+          echo "=== Installing FSKitBridge using oxfskit-setup ==="
+          # Install to /Applications (requires no sudo on macOS runners)
+          ./target/release/oxfskit-setup install --dest /Applications --no-launch
+        continue-on-error: true
 
       - name: Attempt FSKitBridge registration
         # This step is best-effort - full registration requires signing and user approval
@@ -266,8 +265,8 @@ jobs:
         run: |
           echo "=== Attempting FSKitBridge registration ==="
 
-          # Launch the app to trigger extension registration
-          open -a /Applications/FSKitBridge.app
+          # Launch using our tool
+          ./target/release/oxfskit-setup launch || echo "Launch returned non-zero (may need extension approval)"
           sleep 3
 
           # Check if extension is registered (it likely won't be fully enabled)
@@ -293,16 +292,14 @@ jobs:
           echo "=== Registered FSKit extensions ==="
           pluginkit -m -v 2>/dev/null | grep -i fskit || echo "No FSKit extensions registered"
 
-          # Check if TCP port is listening (FSKitBridge uses port 35367)
+      - name: Check FSKitBridge status
+        continue-on-error: true
+        run: |
+          echo "=== FSKitBridge Status ==="
+          ./target/release/oxfskit-setup status --json || true
           echo ""
-          echo "=== Checking FSKitBridge TCP status ==="
-          lsof -i :35367 2>/dev/null || echo "Port 35367 not listening (extension not running)"
-
-      - name: Build oxidized-fskit
-        run: cargo build -p oxidized-fskit --verbose
-
-      - name: Build oxidized-fskit with setup feature
-        run: cargo build -p oxidized-fskit --features setup --verbose
+          echo "=== Ping Check ==="
+          ./target/release/oxfskit-setup ping --timeout 5 || echo "Ping failed (extension not running)"
 
       - name: Run oxidized-fskit unit tests
         run: cargo nextest run -p oxidized-fskit --profile ci
@@ -344,26 +341,22 @@ jobs:
       - name: Install protoc
         run: brew install protobuf
 
-      - name: Download and install FSKitBridge
+      - name: Build oxfskit-setup tool
+        run: cargo build -p oxidized-fskit --features setup --bin oxfskit-setup --release
+
+      - name: Install FSKitBridge using oxfskit-setup
         run: |
-          DOWNLOAD_URL="https://github.com/debox-network/FSKitBridge/releases/download/v0.1.0/FSKitBridge-0.1.0.zip"
-          curl -L -o /tmp/FSKitBridge.zip "$DOWNLOAD_URL"
-          cd /tmp && unzip -o FSKitBridge.zip
-          cp -R FSKitBridge.app /Applications/
-          xattr -cr /Applications/FSKitBridge.app
-          open -a /Applications/FSKitBridge.app
-          sleep 5
+          echo "=== Installing FSKitBridge using oxfskit-setup ==="
+          ./target/release/oxfskit-setup install --dest /Applications
+        continue-on-error: true
 
       - name: Check FSKitBridge status
         run: |
-          echo "Checking if FSKitBridge is responding..."
-          # Try to connect to the TCP port
-          if nc -z 127.0.0.1 35367 2>/dev/null; then
-            echo "FSKitBridge is listening on port 35367!"
-          else
-            echo "FSKitBridge is NOT listening - extension may not be enabled"
-            echo "Full integration tests will likely fail"
-          fi
+          echo "=== FSKitBridge Status ==="
+          ./target/release/oxfskit-setup status || true
+          echo ""
+          echo "=== Ping Check ==="
+          ./target/release/oxfskit-setup ping --timeout 10 || echo "FSKitBridge not responding - integration tests will be skipped"
 
       - name: Build release binary
         run: cargo build -p oxidized-fskit --release
@@ -371,8 +364,8 @@ jobs:
       - name: Run mount test (if FSKitBridge available)
         continue-on-error: true
         run: |
-          # Check if FSKitBridge is responding
-          if ! nc -z 127.0.0.1 35367 2>/dev/null; then
+          # Check if FSKitBridge is responding using our tool
+          if ! ./target/release/oxfskit-setup ping --timeout 5 2>/dev/null; then
             echo "FSKitBridge not available, skipping mount test"
             exit 0
           fi

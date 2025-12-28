@@ -37,9 +37,9 @@ pub fn CreateVaultDialog(
 ) -> Element {
     let mut current_step = use_signal(|| WizardStep::ChooseLocation);
     let mut parent_path = use_signal(|| Option::<PathBuf>::None);
-    let mut vault_name = use_signal(|| String::new());
-    let mut password = use_signal(|| String::new());
-    let mut confirm_password = use_signal(|| String::new());
+    let mut vault_name = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let mut confirm_password = use_signal(String::new);
     let mut creation_state = use_signal(|| CreationState::Idle);
     let mut validation_error = use_signal(|| Option::<String>::None);
 

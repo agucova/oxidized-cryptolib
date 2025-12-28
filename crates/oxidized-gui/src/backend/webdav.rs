@@ -28,7 +28,7 @@ pub use oxidized_webdav::WebDavBackend;
 // When the webdav feature is disabled, provide a stub implementation
 #[cfg(not(feature = "webdav"))]
 mod stub {
-    use oxidized_cryptolib::{MountBackend, MountError, MountHandle};
+    use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
     use std::path::Path;
 
     /// WebDAV-based mounting backend (stub)
@@ -65,6 +65,14 @@ mod stub {
             Some(
                 "WebDAV support requires building with --features webdav.".to_string(),
             )
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::WebDav
+        }
+
+        fn description(&self) -> &'static str {
+            "Starts a local WebDAV server (no kernel extensions required)"
         }
 
         fn mount(

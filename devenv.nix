@@ -108,7 +108,6 @@ in
     cargo-audit
     cargo-fuzz
     cargo-nextest
-    act  # Run GitHub Actions locally
   ]
   # Add pjdfstest and fsstress on Linux (requires FUSE which is native there)
   ++ lib.optionals stdenv.isLinux [
@@ -141,14 +140,6 @@ in
         mkdir -p ~/Applications
         cp -Ra "${fskitbridge}/Applications/FSKitBridge.app" ~/Applications/
         xattr -cr ~/Applications/FSKitBridge.app 2>/dev/null || true
-      fi
-    fi
-
-    # Auto-detect podman and set DOCKER_HOST for act
-    if command -v podman &> /dev/null && ! test -S /var/run/docker.sock; then
-      PODMAN_SOCKET=$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null || true)
-      if [[ -n "$PODMAN_SOCKET" ]] && [[ -S "$PODMAN_SOCKET" ]]; then
-        export DOCKER_HOST="unix://$PODMAN_SOCKET"
       fi
     fi
   '';

@@ -9,8 +9,10 @@ use crate::state::{use_app_state, VaultConfig};
 
 /// State for the add vault dialog
 #[derive(Clone, PartialEq)]
+#[derive(Default)]
 pub enum AddVaultState {
     /// Initial state - waiting for folder selection
+    #[default]
     SelectFolder,
     /// Folder selected, editing name
     EditName {
@@ -23,11 +25,6 @@ pub enum AddVaultState {
     Error(String),
 }
 
-impl Default for AddVaultState {
-    fn default() -> Self {
-        Self::SelectFolder
-    }
-}
 
 /// Props for the add vault dialog
 #[derive(Props, Clone, PartialEq)]

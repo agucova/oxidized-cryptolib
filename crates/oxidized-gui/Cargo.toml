@@ -35,6 +35,9 @@ directories = "6"        # XDG config paths
 dirs = "6"               # Home directory detection
 open = "5"               # Open file manager
 rfd = "0.15"             # Native file dialogs
+tray-icon = "0.21"       # System tray support (match dioxus-desktop)
+muda = "0.17"            # Menu library (match dioxus-desktop)
+crossbeam-channel = "0.5" # Thread-safe channels for tray events
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

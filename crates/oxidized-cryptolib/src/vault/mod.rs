@@ -4,6 +4,7 @@ pub mod config;
 pub mod creator;
 pub mod master_key;
 pub mod operations;
+pub mod ops;
 pub mod path;
 
 #[cfg(feature = "async")]
@@ -34,3 +35,6 @@ pub use operations::{
     VaultOperations, VaultSymlinkInfo, VaultWriteError,
 };
 pub use path::{DirId, EntryType, VaultPath};
+
+// Re-export shared operations infrastructure
+pub use ops::{VaultCore, StoragePathError};

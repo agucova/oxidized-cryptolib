@@ -8,7 +8,7 @@ use dav_server::{fakels::FakeLs, DavHandler};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::Request;
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
 use std::net::SocketAddr;

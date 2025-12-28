@@ -12,6 +12,7 @@ pub fn Sidebar(
     on_select: EventHandler<String>,
     on_add_vault: EventHandler<()>,
     on_new_vault: EventHandler<()>,
+    on_settings: EventHandler<()>,
 ) -> Element {
     let app_state = use_app_state();
     let vaults = app_state.read().vaults();
@@ -64,7 +65,7 @@ pub fn Sidebar(
             }
 
             // Bottom toolbar
-            Toolbar { on_add_vault, on_new_vault }
+            Toolbar { on_add_vault, on_new_vault, on_settings }
         }
     }
 }

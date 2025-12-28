@@ -388,4 +388,164 @@ mod tests {
         assert_eq!(*table.get(&999).unwrap(), "manual");
         assert_eq!(table.len(), 2);
     }
+
+    // ========================================================================
+    // Edge case tests targeting specific bug classes
+    // ========================================================================
+
+    #[test]
+    fn test_id_zero_never_returned() {
+        // Bug class: ID 0 is reserved but could be returned after overflow
+        // Documents that ID 0 should never be returned in normal usage
+        let table: HandleTable<u64, &str> = HandleTable::new_auto_id();
+
+        // Test that normal usage never returns 0
+        for _ in 0..1000 {
+            let id = table.insert_auto("value");
+            assert_ne!(id, 0, "ID 0 should be reserved for invalid handle");
+        }
+    }
+
+    #[test]
+    fn test_id_overflow_behavior_documented() {
+        // Bug class: ID counter wraps at u64::MAX
+        // This test DOCUMENTS the current buggy behavior:
+        // - After u64::MAX inserts, next ID would be 0 (reserved!)
+        // - After u64::MAX+1 inserts, ID would be 1 (collision!)
+        //
+        // We can't actually test this (would take forever), but we document:
+        // TODO: Fix by using saturating_add or checking for wrap
+        let table: HandleTable<u64, &str> = HandleTable::new_auto_id();
+
+        // Insert a value at ID 1
+        let first_id = table.insert_auto("first");
+        assert_eq!(first_id, 1);
+
+        // If we could insert u64::MAX times, we'd get:
+        // - ID 0 (should be reserved but would be returned)
+        // - ID 1 (collision with first entry, overwrites it!)
+        // This is a known bug that should be fixed.
+    }
+
+    #[test]
+    fn test_concurrent_get_mut_same_key() {
+        // Bug class: Race condition when multiple threads modify same key
+        let table = Arc::new(HandleTable::<u64, u64>::new_auto_id());
+        let id = table.insert_auto(0);
+
+        let mut handles = vec![];
+
+        // Spawn threads that all increment the same value
+        for _ in 0..10 {
+            let t = Arc::clone(&table);
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    if let Some(mut val) = t.get_mut(&id) {
+                        *val += 1;
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All increments should have been applied
+        // DashMap's RefMut provides exclusive access
+        assert_eq!(
+            *table.get(&id).unwrap(),
+            1000,
+            "All 1000 increments should apply"
+        );
+    }
+
+    #[test]
+    fn test_reuse_removed_key() {
+        // Bug class: ABA problem - removed key can be reused
+        let table: HandleTable<String, i32> = HandleTable::new();
+
+        table.insert("key".to_string(), 100);
+        assert_eq!(*table.get(&"key".to_string()).unwrap(), 100);
+
+        // Remove and verify
+        let removed = table.remove(&"key".to_string());
+        assert_eq!(removed, Some(100));
+        assert!(table.get(&"key".to_string()).is_none());
+
+        // Reinsert with new value
+        table.insert("key".to_string(), 200);
+        assert_eq!(*table.get(&"key".to_string()).unwrap(), 200);
+    }
+
+    #[test]
+    fn test_get_mut_nonexistent() {
+        // Bug class: get_mut on missing key could panic
+        let table: HandleTable<u64, &str> = HandleTable::new_auto_id();
+
+        // Should return None, not panic
+        assert!(table.get_mut(&999).is_none());
+    }
+
+    #[test]
+    fn test_concurrent_insert_remove_stress() {
+        // Bug class: Race between insert and remove
+        let table = Arc::new(HandleTable::<u64, i32>::new_auto_id());
+        let mut handles = vec![];
+
+        // Spawn inserters
+        for i in 0..5 {
+            let t = Arc::clone(&table);
+            handles.push(thread::spawn(move || {
+                for j in 0..100 {
+                    t.insert_auto(i * 100 + j);
+                }
+            }));
+        }
+
+        // Spawn removers that try to remove IDs 1-100
+        for _ in 0..5 {
+            let t = Arc::clone(&table);
+            handles.push(thread::spawn(move || {
+                for id in 1..=100 {
+                    t.remove(&id);
+                }
+            }));
+        }
+
+        // All threads should complete without panic or deadlock
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_retain_empty_table() {
+        // Bug class: Retain on empty table could panic
+        let table: HandleTable<u64, i32> = HandleTable::new_auto_id();
+
+        // Should be a no-op, not panic
+        table.retain(|_, _| true);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn test_clear_then_insert() {
+        // Bug class: State corruption after clear
+        let table: HandleTable<u64, String> = HandleTable::new_auto_id();
+
+        // Insert some values
+        let id1 = table.insert_auto("a".to_string());
+        let id2 = table.insert_auto("b".to_string());
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+
+        // Clear
+        table.clear();
+        assert!(table.is_empty());
+
+        // ID counter should continue (not reset)
+        let id3 = table.insert_auto("c".to_string());
+        assert_eq!(id3, 3, "ID counter should continue after clear");
+    }
 }

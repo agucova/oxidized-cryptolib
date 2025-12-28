@@ -27,14 +27,13 @@ impl ExternalMount {
             .with_context(|| format!("Cannot read mount directory: {}", path.display()))?;
 
         // Optionally check if it's actually a mount point
-        if let Ok(is_mount) = super::is_mount_point(path) {
-            if !is_mount {
+        if let Ok(is_mount) = super::is_mount_point(path)
+            && !is_mount {
                 tracing::warn!(
                     "Path {} may not be a mount point (same device as parent)",
                     path.display()
                 );
             }
-        }
 
         Ok(())
     }

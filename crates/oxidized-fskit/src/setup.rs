@@ -87,19 +87,17 @@ const MIN_MACOS_MINOR: u32 = 4;
 pub fn check_macos_version() -> bool {
     use std::process::Command;
 
-    if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
-        if let Ok(version) = String::from_utf8(output.stdout) {
+    if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output()
+        && let Ok(version) = String::from_utf8(output.stdout) {
             let parts: Vec<&str> = version.trim().split('.').collect();
-            if parts.len() >= 2 {
-                if let (Ok(major), Ok(minor)) =
+            if parts.len() >= 2
+                && let (Ok(major), Ok(minor)) =
                     (parts[0].parse::<u32>(), parts[1].parse::<u32>())
                 {
                     return major > MIN_MACOS_MAJOR
                         || (major == MIN_MACOS_MAJOR && minor >= MIN_MACOS_MINOR);
                 }
-            }
         }
-    }
     false
 }
 
@@ -161,8 +159,7 @@ pub fn remove_quarantine(app_path: &Path) -> io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
+        Err(io::Error::other(
             "Failed to remove quarantine attribute",
         ))
     }
@@ -268,8 +265,7 @@ pub fn open_system_settings_extensions() -> io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
+        Err(io::Error::other(
             "Failed to open System Settings",
         ))
     }
@@ -297,8 +293,7 @@ pub fn launch_bridge() -> io::Result<PathBuf> {
     if status.success() {
         Ok(app_path)
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
+        Err(io::Error::other(
             "Failed to launch FSKitBridge.app",
         ))
     }

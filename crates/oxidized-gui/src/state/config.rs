@@ -1,5 +1,7 @@
 //! Configuration persistence for vault and application settings
 
+#![allow(dead_code)] // Config APIs for future use
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -80,6 +82,9 @@ pub struct AppConfig {
     /// User dismissed the FSKit setup wizard (don't show again)
     #[serde(default)]
     pub fskit_setup_dismissed: bool,
+    /// Enable debug logging (verbose output)
+    #[serde(default)]
+    pub debug_logging: bool,
 }
 
 impl AppConfig {

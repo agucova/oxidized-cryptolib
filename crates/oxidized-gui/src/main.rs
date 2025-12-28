@@ -13,7 +13,19 @@ mod error;
 mod state;
 mod tray;
 
+use crossbeam_channel::Receiver;
+use std::sync::OnceLock;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+use tray::{TrayEvent, TrayManager};
+
+/// Global tray event receiver for the app to poll
+static TRAY_RECEIVER: OnceLock<Receiver<TrayEvent>> = OnceLock::new();
+
+/// Get the global tray event receiver
+pub fn tray_receiver() -> Option<&'static Receiver<TrayEvent>> {
+    TRAY_RECEIVER.get()
+}
 
 fn main() {
     // Initialize tracing for logging
@@ -23,6 +35,20 @@ fn main() {
         .init();
 
     tracing::info!("Starting Oxidized Vault");
+
+    // Initialize the system tray
+    let _tray_manager = match TrayManager::new() {
+        Ok(manager) => {
+            tracing::info!("System tray initialized");
+            // Store the event receiver globally
+            let _ = TRAY_RECEIVER.set(manager.event_receiver().clone());
+            Some(manager)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize system tray: {}", e);
+            None
+        }
+    };
 
     // Launch the Dioxus desktop application
     dioxus::LaunchBuilder::new()

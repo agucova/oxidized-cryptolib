@@ -4,7 +4,7 @@
 
 use crate::CryptomatorFS;
 use fuser::{BackgroundSession, MountOption};
-use oxidized_cryptolib::{MountBackend, MountError, MountHandle};
+use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -69,16 +69,22 @@ impl FuseBackend {
         }
     }
 
-    /// Wait for the mount to become ready by polling for actual content.
+    /// Wait for the mount to become ready by polling until we can read the directory.
     fn wait_for_mount(&self, mount_point: &Path) -> Result<(), MountError> {
         let deadline = Instant::now() + self.mount_timeout;
 
         while Instant::now() < deadline {
-            if let Ok(entries) = std::fs::read_dir(mount_point) {
-                // Check if we can actually read entries
-                let has_content = entries.filter_map(|e| e.ok()).next().is_some();
-                if has_content {
+            // Try to read the directory - success means the mount is ready
+            // (even if the directory is empty)
+            match std::fs::read_dir(mount_point) {
+                Ok(mut entries) => {
+                    // Try to iterate - this confirms FUSE is responding
+                    // We just need to confirm we can read, not that there's content
+                    let _ = entries.next();
                     return Ok(());
+                }
+                Err(_) => {
+                    // ENOENT or permission errors during mount setup are expected
                 }
             }
             std::thread::sleep(self.poll_interval);
@@ -137,6 +143,14 @@ impl MountBackend for FuseBackend {
         {
             Some("FUSE is not supported on this platform.".to_string())
         }
+    }
+
+    fn backend_type(&self) -> BackendType {
+        BackendType::Fuse
+    }
+
+    fn description(&self) -> &'static str {
+        "Uses macFUSE (macOS) or libfuse (Linux) for filesystem mounting"
     }
 
     fn mount(

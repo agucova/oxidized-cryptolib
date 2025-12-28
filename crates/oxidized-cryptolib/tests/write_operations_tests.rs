@@ -3,6 +3,7 @@
 mod common;
 
 use common::vault_builder::VaultBuilder;
+use oxidized_cryptolib::vault::path::EntryType;
 use oxidized_cryptolib::vault::{DirId, VaultCreator, VaultOperations, VaultWriteError};
 use tempfile::TempDir;
 
@@ -1560,58 +1561,58 @@ fn test_delete_by_path_not_found() {
 }
 
 #[test]
-fn test_exists_by_path_file_exists() {
+fn test_entry_type_file_exists() {
     let (vault_path, master_key) = VaultBuilder::new()
         .add_file("existing.txt", b"content")
         .build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.exists_by_path("existing.txt");
-    assert_eq!(result, Some(false)); // false = is a file, not a directory
+    let result = vault_ops.entry_type("existing.txt");
+    assert_eq!(result, Some(EntryType::File));
 }
 
 #[test]
-fn test_exists_by_path_directory_exists() {
+fn test_entry_type_directory_exists() {
     let (vault_path, master_key) = VaultBuilder::new()
         .add_directory("my_folder")
         .build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.exists_by_path("my_folder");
-    assert_eq!(result, Some(true)); // true = is a directory
+    let result = vault_ops.entry_type("my_folder");
+    assert_eq!(result, Some(EntryType::Directory));
 }
 
 #[test]
-fn test_exists_by_path_not_found() {
+fn test_entry_type_not_found() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.exists_by_path("nonexistent");
+    let result = vault_ops.entry_type("nonexistent");
     assert_eq!(result, None);
 }
 
 #[test]
-fn test_exists_by_path_nested() {
+fn test_entry_type_nested() {
     let (vault_path, master_key) = VaultBuilder::new()
         .add_file("a/b/c/deep.txt", b"deep")
         .build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    assert_eq!(vault_ops.exists_by_path("a"), Some(true));
-    assert_eq!(vault_ops.exists_by_path("a/b"), Some(true));
-    assert_eq!(vault_ops.exists_by_path("a/b/c"), Some(true));
-    assert_eq!(vault_ops.exists_by_path("a/b/c/deep.txt"), Some(false));
-    assert_eq!(vault_ops.exists_by_path("a/b/c/nonexistent.txt"), None);
+    assert_eq!(vault_ops.entry_type("a"), Some(EntryType::Directory));
+    assert_eq!(vault_ops.entry_type("a/b"), Some(EntryType::Directory));
+    assert_eq!(vault_ops.entry_type("a/b/c"), Some(EntryType::Directory));
+    assert_eq!(vault_ops.entry_type("a/b/c/deep.txt"), Some(EntryType::File));
+    assert_eq!(vault_ops.entry_type("a/b/c/nonexistent.txt"), None);
 }
 
 #[test]
-fn test_exists_by_path_root() {
+fn test_entry_type_root() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Root always exists as a directory
-    assert_eq!(vault_ops.exists_by_path(""), Some(true));
-    assert_eq!(vault_ops.exists_by_path("/"), Some(true));
+    assert_eq!(vault_ops.entry_type(""), Some(EntryType::Directory));
+    assert_eq!(vault_ops.entry_type("/"), Some(EntryType::Directory));
 }
 
 #[test]
@@ -1623,7 +1624,7 @@ fn test_create_directory_by_path() {
         .create_directory_by_path("new_folder")
         .expect("Failed to create directory by path");
 
-    assert!(vault_ops.exists_by_path("new_folder") == Some(true));
+    assert!(vault_ops.entry_type("new_folder") == Some(EntryType::Directory));
 
     // Verify we can use the returned dir_id
     vault_ops
@@ -1642,7 +1643,7 @@ fn test_create_directory_by_path_nested() {
         .create_directory_by_path("parent/child")
         .expect("Failed to create nested directory by path");
 
-    assert!(vault_ops.exists_by_path("parent/child") == Some(true));
+    assert!(vault_ops.entry_type("parent/child") == Some(EntryType::Directory));
 }
 
 #[test]
@@ -1665,7 +1666,7 @@ fn test_delete_directory_by_path() {
         .delete_directory_by_path("empty_folder")
         .expect("Failed to delete directory by path");
 
-    assert_eq!(vault_ops.exists_by_path("empty_folder"), None);
+    assert_eq!(vault_ops.entry_type("empty_folder"), None);
 }
 
 #[test]
@@ -1695,7 +1696,7 @@ fn test_delete_directory_recursive_by_path() {
     assert_eq!(stats.files_deleted, 3);
     assert_eq!(stats.directories_deleted, 2); // project + project/src
 
-    assert_eq!(vault_ops.exists_by_path("project"), None);
+    assert_eq!(vault_ops.entry_type("project"), None);
 }
 
 #[test]
@@ -1709,8 +1710,8 @@ fn test_rename_file_by_path() {
         .rename_file_by_path("docs/old_name.txt", "new_name.txt")
         .expect("Failed to rename file by path");
 
-    assert_eq!(vault_ops.exists_by_path("docs/old_name.txt"), None);
-    assert_eq!(vault_ops.exists_by_path("docs/new_name.txt"), Some(false));
+    assert_eq!(vault_ops.entry_type("docs/old_name.txt"), None);
+    assert_eq!(vault_ops.entry_type("docs/new_name.txt"), Some(EntryType::File));
 
     let decrypted = vault_ops.read_by_path("docs/new_name.txt").unwrap();
     assert_eq!(decrypted.content, b"content");
@@ -1728,8 +1729,8 @@ fn test_move_file_by_path_different_dirs() {
         .move_file_by_path("inbox/message.txt", "archive/message.txt")
         .expect("Failed to move file by path");
 
-    assert_eq!(vault_ops.exists_by_path("inbox/message.txt"), None);
-    assert_eq!(vault_ops.exists_by_path("archive/message.txt"), Some(false));
+    assert_eq!(vault_ops.entry_type("inbox/message.txt"), None);
+    assert_eq!(vault_ops.entry_type("archive/message.txt"), Some(EntryType::File));
 
     let decrypted = vault_ops.read_by_path("archive/message.txt").unwrap();
     assert_eq!(decrypted.content, b"important message");
@@ -1748,8 +1749,8 @@ fn test_move_file_by_path_with_rename() {
         .move_file_by_path("temp/draft.txt", "final/completed.txt")
         .expect("Failed to move and rename by path");
 
-    assert_eq!(vault_ops.exists_by_path("temp/draft.txt"), None);
-    assert_eq!(vault_ops.exists_by_path("final/completed.txt"), Some(false));
+    assert_eq!(vault_ops.entry_type("temp/draft.txt"), None);
+    assert_eq!(vault_ops.entry_type("final/completed.txt"), Some(EntryType::File));
 
     let decrypted = vault_ops.read_by_path("final/completed.txt").unwrap();
     assert_eq!(decrypted.content, b"work in progress");
@@ -1767,8 +1768,8 @@ fn test_move_file_by_path_same_dir_rename() {
         .move_file_by_path("docs/old.txt", "docs/new.txt")
         .expect("Failed to rename via move_file_by_path");
 
-    assert_eq!(vault_ops.exists_by_path("docs/old.txt"), None);
-    assert_eq!(vault_ops.exists_by_path("docs/new.txt"), Some(false));
+    assert_eq!(vault_ops.entry_type("docs/old.txt"), None);
+    assert_eq!(vault_ops.entry_type("docs/new.txt"), Some(EntryType::File));
 }
 
 #[test]
@@ -1799,8 +1800,8 @@ fn test_path_operations_unicode() {
     assert_eq!(decrypted.content, b"unicode content");
 
     // Check existence
-    assert_eq!(vault_ops.exists_by_path("文档"), Some(true));
-    assert_eq!(vault_ops.exists_by_path("文档/日本語.txt"), Some(false));
+    assert_eq!(vault_ops.entry_type("文档"), Some(EntryType::Directory));
+    assert_eq!(vault_ops.entry_type("文档/日本語.txt"), Some(EntryType::File));
 
     // Rename with unicode
     vault_ops
@@ -1829,9 +1830,9 @@ fn test_path_operations_deeply_nested() {
         .delete_by_path("a/b/c/d/e/f/deep.txt")
         .expect("Failed to delete deep file");
 
-    assert_eq!(vault_ops.exists_by_path("a/b/c/d/e/f/deep.txt"), None);
+    assert_eq!(vault_ops.entry_type("a/b/c/d/e/f/deep.txt"), None);
     // Directories should still exist
-    assert_eq!(vault_ops.exists_by_path("a/b/c/d/e/f"), Some(true));
+    assert_eq!(vault_ops.entry_type("a/b/c/d/e/f"), Some(EntryType::Directory));
 }
 
 #[test]
@@ -1874,16 +1875,16 @@ fn test_path_operations_full_workflow() {
         .expect("Failed to write lib.rs");
 
     // Verify existence
-    assert_eq!(vault_ops.exists_by_path("projects/rust/main.rs"), Some(false));
-    assert_eq!(vault_ops.exists_by_path("projects/rust/lib.rs"), Some(false));
+    assert_eq!(vault_ops.entry_type("projects/rust/main.rs"), Some(EntryType::File));
+    assert_eq!(vault_ops.entry_type("projects/rust/lib.rs"), Some(EntryType::File));
 
     // Move a file
     vault_ops
         .move_file_by_path("projects/rust/lib.rs", "archive/lib.rs")
         .expect("Failed to move lib.rs");
 
-    assert_eq!(vault_ops.exists_by_path("projects/rust/lib.rs"), None);
-    assert_eq!(vault_ops.exists_by_path("archive/lib.rs"), Some(false));
+    assert_eq!(vault_ops.entry_type("projects/rust/lib.rs"), None);
+    assert_eq!(vault_ops.entry_type("archive/lib.rs"), Some(EntryType::File));
 
     // Rename a file
     vault_ops
@@ -1912,8 +1913,8 @@ fn test_path_operations_full_workflow() {
     assert_eq!(stats.directories_deleted, 2); // projects, projects/rust
 
     // Verify everything is gone
-    assert_eq!(vault_ops.exists_by_path("projects"), None);
-    assert_eq!(vault_ops.exists_by_path("archive"), None);
+    assert_eq!(vault_ops.entry_type("projects"), None);
+    assert_eq!(vault_ops.entry_type("archive"), None);
 }
 
 // ==================== Symlink Tests ====================
@@ -2583,4 +2584,245 @@ fn test_shortened_directory_has_dirid_backup() {
         dir_id.as_str(),
         "Recovered ID should match the directory's own ID"
     );
+}
+
+// ==================== find_file() tests ====================
+
+#[test]
+fn test_find_file_exists() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.write_file(&DirId::root(), "target.txt", b"found me").unwrap();
+    vault_ops.write_file(&DirId::root(), "other.txt", b"not this").unwrap();
+
+    let result = vault_ops.find_file(&DirId::root(), "target.txt").unwrap();
+
+    assert!(result.is_some());
+    let file_info = result.unwrap();
+    assert_eq!(file_info.name, "target.txt");
+}
+
+#[test]
+fn test_find_file_not_exists() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.write_file(&DirId::root(), "exists.txt", b"here").unwrap();
+
+    let result = vault_ops.find_file(&DirId::root(), "missing.txt").unwrap();
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_file_in_subdirectory() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let sub_id = vault_ops.create_directory(&DirId::root(), "subdir").unwrap();
+    vault_ops.write_file(&sub_id, "nested.txt", b"deep").unwrap();
+
+    // Should find in subdirectory
+    let result = vault_ops.find_file(&sub_id, "nested.txt").unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().name, "nested.txt");
+
+    // Should not find in root
+    let root_result = vault_ops.find_file(&DirId::root(), "nested.txt").unwrap();
+    assert!(root_result.is_none());
+}
+
+#[test]
+fn test_find_file_with_many_files() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Create many files
+    for i in 0..50 {
+        vault_ops.write_file(&DirId::root(), &format!("file_{i}.txt"), b"content").unwrap();
+    }
+
+    // Find specific files
+    let result_25 = vault_ops.find_file(&DirId::root(), "file_25.txt").unwrap();
+    assert!(result_25.is_some());
+    assert_eq!(result_25.unwrap().name, "file_25.txt");
+
+    let result_49 = vault_ops.find_file(&DirId::root(), "file_49.txt").unwrap();
+    assert!(result_49.is_some());
+
+    let result_missing = vault_ops.find_file(&DirId::root(), "file_100.txt").unwrap();
+    assert!(result_missing.is_none());
+}
+
+#[test]
+fn test_find_file_unicode_name() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.write_file(&DirId::root(), "日本語ファイル.txt", b"Japanese").unwrap();
+    vault_ops.write_file(&DirId::root(), "émojis-🚀.txt", b"Emoji").unwrap();
+
+    let jp_result = vault_ops.find_file(&DirId::root(), "日本語ファイル.txt").unwrap();
+    assert!(jp_result.is_some());
+
+    let emoji_result = vault_ops.find_file(&DirId::root(), "émojis-🚀.txt").unwrap();
+    assert!(emoji_result.is_some());
+}
+
+#[test]
+fn test_find_file_empty_directory() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let result = vault_ops.find_file(&DirId::root(), "anything.txt").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_file_does_not_match_directories() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Create a directory with a name
+    vault_ops.create_directory(&DirId::root(), "myname").unwrap();
+
+    // find_file should NOT find it
+    let result = vault_ops.find_file(&DirId::root(), "myname").unwrap();
+    assert!(result.is_none(), "find_file should not match directories");
+}
+
+// ==================== find_directory() tests ====================
+
+#[test]
+fn test_find_directory_exists() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let dir_id = vault_ops.create_directory(&DirId::root(), "target_dir").unwrap();
+    vault_ops.create_directory(&DirId::root(), "other_dir").unwrap();
+
+    let result = vault_ops.find_directory(&DirId::root(), "target_dir").unwrap();
+
+    assert!(result.is_some());
+    let dir_info = result.unwrap();
+    assert_eq!(dir_info.name, "target_dir");
+    assert_eq!(dir_info.directory_id, dir_id);
+}
+
+#[test]
+fn test_find_directory_not_exists() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_directory(&DirId::root(), "exists_dir").unwrap();
+
+    let result = vault_ops.find_directory(&DirId::root(), "missing_dir").unwrap();
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_directory_nested() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let parent_id = vault_ops.create_directory(&DirId::root(), "parent").unwrap();
+    let child_id = vault_ops.create_directory(&parent_id, "child").unwrap();
+
+    // Find child in parent
+    let result = vault_ops.find_directory(&parent_id, "child").unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().directory_id, child_id);
+
+    // Should not find child in root
+    let root_result = vault_ops.find_directory(&DirId::root(), "child").unwrap();
+    assert!(root_result.is_none());
+}
+
+#[test]
+fn test_find_directory_with_many_directories() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Create many directories
+    let mut dir_ids = Vec::new();
+    for i in 0..30 {
+        let id = vault_ops.create_directory(&DirId::root(), &format!("dir_{i}")).unwrap();
+        dir_ids.push(id);
+    }
+
+    // Find specific directories
+    let result_15 = vault_ops.find_directory(&DirId::root(), "dir_15").unwrap();
+    assert!(result_15.is_some());
+    assert_eq!(result_15.unwrap().directory_id, dir_ids[15]);
+
+    let result_29 = vault_ops.find_directory(&DirId::root(), "dir_29").unwrap();
+    assert!(result_29.is_some());
+
+    let result_missing = vault_ops.find_directory(&DirId::root(), "dir_100").unwrap();
+    assert!(result_missing.is_none());
+}
+
+#[test]
+fn test_find_directory_unicode_name() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_directory(&DirId::root(), "日本語フォルダ").unwrap();
+    vault_ops.create_directory(&DirId::root(), "émojis-📁").unwrap();
+
+    let jp_result = vault_ops.find_directory(&DirId::root(), "日本語フォルダ").unwrap();
+    assert!(jp_result.is_some());
+
+    let emoji_result = vault_ops.find_directory(&DirId::root(), "émojis-📁").unwrap();
+    assert!(emoji_result.is_some());
+}
+
+#[test]
+fn test_find_directory_empty_parent() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let result = vault_ops.find_directory(&DirId::root(), "anything").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_directory_does_not_match_files() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Create a file with a name
+    vault_ops.write_file(&DirId::root(), "just_a_file.txt", b"content").unwrap();
+    // Create a directory with a different name
+    vault_ops.create_directory(&DirId::root(), "just_a_dir").unwrap();
+
+    // find_directory should NOT find the file
+    let result = vault_ops.find_directory(&DirId::root(), "just_a_file.txt").unwrap();
+    assert!(result.is_none(), "find_directory should not match files");
+
+    // find_file should NOT find the directory
+    let result = vault_ops.find_file(&DirId::root(), "just_a_dir").unwrap();
+    assert!(result.is_none(), "find_file should not match directories");
+}
+
+#[test]
+fn test_find_file_case_sensitive() {
+    // Test that find operations are case-sensitive
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.write_file(&DirId::root(), "MyFile.txt", b"content").unwrap();
+    vault_ops.create_directory(&DirId::root(), "MyDir").unwrap();
+
+    // Exact match should work
+    assert!(vault_ops.find_file(&DirId::root(), "MyFile.txt").unwrap().is_some());
+    assert!(vault_ops.find_directory(&DirId::root(), "MyDir").unwrap().is_some());
+
+    // Different case should not match
+    assert!(vault_ops.find_file(&DirId::root(), "myfile.txt").unwrap().is_none());
+    assert!(vault_ops.find_file(&DirId::root(), "MYFILE.TXT").unwrap().is_none());
+    assert!(vault_ops.find_directory(&DirId::root(), "mydir").unwrap().is_none());
+    assert!(vault_ops.find_directory(&DirId::root(), "MYDIR").unwrap().is_none());
 }

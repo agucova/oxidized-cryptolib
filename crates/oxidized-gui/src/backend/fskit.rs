@@ -23,7 +23,7 @@ pub use oxidized_fskit::FSKitBackend;
 // When the fskit feature is disabled, provide a stub implementation
 #[cfg(not(feature = "fskit"))]
 mod stub {
-    use oxidized_cryptolib::{MountBackend, MountError, MountHandle};
+    use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
     use std::path::Path;
 
     /// FSKit-based mounting backend (stub)
@@ -36,6 +36,13 @@ mod stub {
     /// ```
     #[derive(Debug, Clone, Copy, Default)]
     pub struct FSKitBackend;
+
+    impl FSKitBackend {
+        /// Create a new FSKitBackend stub
+        pub fn new() -> Self {
+            Self
+        }
+    }
 
     impl MountBackend for FSKitBackend {
         fn name(&self) -> &'static str {
@@ -63,6 +70,14 @@ mod stub {
             {
                 Some("FSKit is only available on macOS 15.4 and later.".to_string())
             }
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::FSKit
+        }
+
+        fn description(&self) -> &'static str {
+            "Uses Apple's native FSKit framework (macOS 15.4+)"
         }
 
         fn mount(

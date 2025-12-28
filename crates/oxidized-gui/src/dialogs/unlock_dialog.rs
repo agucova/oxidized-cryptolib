@@ -4,8 +4,10 @@ use dioxus::prelude::*;
 
 /// State for the unlock dialog
 #[derive(Clone, PartialEq)]
+#[derive(Default)]
 pub enum UnlockState {
     /// Waiting for user input
+    #[default]
     Idle,
     /// Currently unlocking
     Unlocking,
@@ -27,11 +29,6 @@ pub struct UnlockDialogProps {
     pub state: UnlockState,
 }
 
-impl Default for UnlockState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 /// Password unlock dialog modal
 #[component]
@@ -46,7 +43,7 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
     };
 
     let handle_submit = {
-        let on_unlock = props.on_unlock.clone();
+        let on_unlock = props.on_unlock;
         move |_| {
             let pw = password();
             if !pw.is_empty() {
@@ -56,7 +53,7 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
     };
 
     let handle_keydown = {
-        let on_unlock = props.on_unlock.clone();
+        let on_unlock = props.on_unlock;
         move |e: KeyboardEvent| {
             if e.key() == Key::Enter {
                 let pw = password();

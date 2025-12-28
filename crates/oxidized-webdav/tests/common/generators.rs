@@ -8,7 +8,7 @@ pub const CHUNK_SIZE: usize = 32 * 1024;
 /// Generate random bytes of specified size.
 pub fn random_bytes(size: usize) -> Vec<u8> {
     let mut rng = rand::thread_rng();
-    (0..size).map(|_| rng.gen()).collect()
+    (0..size).map(|_| rng.r#gen()).collect()
 }
 
 /// Generate content that spans exactly N chunks.

@@ -24,6 +24,9 @@ use oxidized_fskit::FSKitBackend;
 #[cfg(feature = "webdav")]
 use oxidized_webdav::WebDavBackend;
 
+#[cfg(feature = "nfs")]
+use oxidized_nfs::NfsBackend;
+
 /// Backend selection for mount command
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum BackendArg {
@@ -36,6 +39,9 @@ pub enum BackendArg {
     /// Use WebDAV backend (no kernel extensions required)
     #[cfg(feature = "webdav")]
     Webdav,
+    /// Use NFS backend (local NFSv3 server, no kernel extensions)
+    #[cfg(feature = "nfs")]
+    Nfs,
 }
 
 impl From<BackendArg> for BackendType {
@@ -47,6 +53,8 @@ impl From<BackendArg> for BackendType {
             BackendArg::Fskit => BackendType::FSKit,
             #[cfg(feature = "webdav")]
             BackendArg::Webdav => BackendType::WebDav,
+            #[cfg(feature = "nfs")]
+            BackendArg::Nfs => BackendType::Nfs,
         }
     }
 }
@@ -93,10 +101,16 @@ fn build_backends() -> Vec<Box<dyn MountBackend>> {
         backends.push(Box::new(FuseBackend::new()));
     }
 
-    // WebDAV as last fallback (no kernel extensions, HTTP-based)
+    // WebDAV as fallback (no kernel extensions, HTTP-based)
     #[cfg(feature = "webdav")]
     {
         backends.push(Box::new(WebDavBackend::new()));
+    }
+
+    // NFS as alternative (no kernel extensions, NFSv3)
+    #[cfg(feature = "nfs")]
+    {
+        backends.push(Box::new(NfsBackend::new()));
     }
 
     backends

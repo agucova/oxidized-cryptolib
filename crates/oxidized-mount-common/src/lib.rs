@@ -72,10 +72,20 @@
 
 mod error_category;
 mod handle_table;
+pub mod stats;
 mod ttl_cache;
 mod write_buffer;
 
 pub use error_category::{io_error_to_errno, VaultErrorCategory};
 pub use handle_table::HandleTable;
+pub use stats::{ActivityStatus, CacheStats, VaultStats, VaultStatsSnapshot, format_bytes};
 pub use ttl_cache::{CachedEntry, NegativeEntry, TtlCache, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
 pub use write_buffer::WriteBuffer;
+
+/// Testing utilities for mount backend integration tests.
+///
+/// Provides shared test infrastructure for FUSE, FSKit, and WebDAV backends:
+/// - Chunk-aware test data generators
+/// - Content verification assertions
+/// - Temporary vault creation
+pub mod testing;

@@ -341,13 +341,43 @@ impl SharedTestClient {
     }
 
     /// PUT file contents.
-    pub async fn put(&self, path: &str, body: impl Into<reqwest::Body>) -> Response {
+    pub async fn put(&self, path: &str, body: impl Into<reqwest::Body>) -> Result<StatusCode, String> {
         self.client
             .put(self.url(path))
             .body(body)
             .send()
             .await
-            .expect("PUT request failed")
+            .map(|r| r.status())
+            .map_err(|e| e.to_string())
+    }
+
+    /// DELETE a file or directory.
+    pub async fn delete(&self, path: &str) -> Result<StatusCode, String> {
+        self.client
+            .delete(self.url(path))
+            .send()
+            .await
+            .map(|r| r.status())
+            .map_err(|e| e.to_string())
+    }
+
+    /// MKCOL (create directory).
+    pub async fn mkcol(&self, path: &str) -> Result<Response, String> {
+        self.client
+            .request(Method::from_bytes(b"MKCOL").unwrap(), self.url(path))
+            .send()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// PROPFIND (list directory or get properties).
+    pub async fn propfind(&self, path: &str, depth: &str) -> Result<Response, String> {
+        self.client
+            .request(Method::from_bytes(b"PROPFIND").unwrap(), self.url(path))
+            .header("Depth", depth)
+            .send()
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

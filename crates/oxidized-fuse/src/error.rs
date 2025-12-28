@@ -1,9 +1,12 @@
 //! Error handling and mapping for the FUSE filesystem.
 //!
 //! This module provides conversion from vault errors to POSIX error codes
-//! that FUSE can return to the kernel.
+//! that FUSE can return to the kernel. It uses the shared
+//! [`VaultErrorCategory`](oxidized_mount_common::VaultErrorCategory) for
+//! consistent error mapping.
 
 use oxidized_cryptolib::error::{VaultOperationError, VaultWriteError};
+use oxidized_mount_common::{io_error_to_errno, VaultErrorCategory};
 use std::io;
 use thiserror::Error;
 
@@ -70,49 +73,17 @@ impl FuseError {
 }
 
 /// Converts a vault operation error to a libc error code.
+///
+/// Uses the shared [`VaultErrorCategory`] for consistent mapping.
 pub fn vault_error_to_errno(e: &VaultOperationError) -> i32 {
-    match e {
-        VaultOperationError::Io { source, .. } => io_error_to_errno(source),
-        VaultOperationError::FileDecryption(_) => libc::EIO,
-        VaultOperationError::FileContentDecryption(_) => libc::EIO,
-        VaultOperationError::Filename(_) => libc::EIO,
-        VaultOperationError::DirectoryNotFound { .. } => libc::ENOENT,
-        VaultOperationError::InvalidVaultStructure { .. } => libc::EIO,
-        VaultOperationError::PathNotFound { .. } => libc::ENOENT,
-        VaultOperationError::NotAFile { .. } => libc::EISDIR,
-        VaultOperationError::NotADirectory { .. } => libc::ENOTDIR,
-        VaultOperationError::EmptyPath => libc::EINVAL,
-        VaultOperationError::FileNotFound { .. } => libc::ENOENT,
-        VaultOperationError::Symlink(_) => libc::EIO,
-        VaultOperationError::SymlinkNotFound { .. } => libc::ENOENT,
-        VaultOperationError::NotASymlink { .. } => libc::EINVAL,
-        VaultOperationError::Streaming { .. } => libc::EIO,
-    }
+    VaultErrorCategory::from(e).to_errno()
 }
 
 /// Converts a vault write error to a libc error code.
+///
+/// Uses the shared [`VaultErrorCategory`] for consistent mapping.
 pub fn write_error_to_errno(e: &VaultWriteError) -> i32 {
-    match e {
-        VaultWriteError::Io { source, .. } => io_error_to_errno(source),
-        VaultWriteError::Encryption(_) => libc::EIO,
-        VaultWriteError::Filename(_) => libc::EINVAL,
-        VaultWriteError::DirectoryNotFound { .. } => libc::ENOENT,
-        VaultWriteError::FileAlreadyExists { .. } => libc::EEXIST,
-        VaultWriteError::DirectoryAlreadyExists { .. } => libc::EEXIST,
-        VaultWriteError::DirectoryNotEmpty { .. } => libc::ENOTEMPTY,
-        VaultWriteError::AtomicWriteFailed { .. } => libc::EIO,
-        VaultWriteError::FileNotFound { .. } => libc::ENOENT,
-        VaultWriteError::SameSourceAndDestination { .. } => libc::EINVAL,
-        VaultWriteError::Symlink(_) => libc::EIO,
-        VaultWriteError::SymlinkAlreadyExists { .. } => libc::EEXIST,
-        VaultWriteError::Streaming { .. } => libc::EIO,
-        VaultWriteError::PathExists { .. } => libc::EEXIST,
-    }
-}
-
-/// Converts an IO error to a libc error code.
-pub fn io_error_to_errno(e: &io::Error) -> i32 {
-    e.raw_os_error().unwrap_or(libc::EIO)
+    VaultErrorCategory::from(e).to_errno()
 }
 
 /// Result type for FUSE operations.
@@ -170,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_io_error_mapping_without_os_error() {
-        let e = io::Error::new(io::ErrorKind::Other, "custom error");
+        let e = io::Error::other("custom error");
         // Should return EIO when no raw OS error
         assert_eq!(io_error_to_errno(&e), libc::EIO);
     }
@@ -291,14 +262,14 @@ mod tests {
     fn test_common_io_error_mappings() {
         // Test a variety of common IO error codes
         let error_codes = [
-            libc::ENOENT,   // No such file or directory
-            libc::EACCES,   // Permission denied
-            libc::EEXIST,   // File exists
-            libc::ENOTDIR,  // Not a directory
-            libc::EISDIR,   // Is a directory
-            libc::EINVAL,   // Invalid argument
-            libc::ENOSPC,   // No space left on device
-            libc::EROFS,    // Read-only file system
+            libc::ENOENT,    // No such file or directory
+            libc::EACCES,    // Permission denied
+            libc::EEXIST,    // File exists
+            libc::ENOTDIR,   // Not a directory
+            libc::EISDIR,    // Is a directory
+            libc::EINVAL,    // Invalid argument
+            libc::ENOSPC,    // No space left on device
+            libc::EROFS,     // Read-only file system
             libc::ENOTEMPTY, // Directory not empty
         ];
 
@@ -311,5 +282,66 @@ mod tests {
                 code
             );
         }
+    }
+
+    #[test]
+    fn test_vault_error_category_mapping() {
+        // Test that VaultErrorCategory correctly maps vault errors
+        use oxidized_cryptolib::vault::operations::VaultOpContext;
+
+        // PathNotFound -> ENOENT
+        let err = VaultOperationError::PathNotFound {
+            path: "/test".to_string(),
+        };
+        assert_eq!(vault_error_to_errno(&err), libc::ENOENT);
+
+        // FileNotFound -> ENOENT
+        let err = VaultOperationError::FileNotFound {
+            filename: "test.txt".to_string(),
+            context: VaultOpContext::new(),
+        };
+        assert_eq!(vault_error_to_errno(&err), libc::ENOENT);
+
+        // NotAFile -> EISDIR
+        let err = VaultOperationError::NotAFile {
+            path: "/dir".to_string(),
+        };
+        assert_eq!(vault_error_to_errno(&err), libc::EISDIR);
+
+        // NotADirectory -> ENOTDIR
+        let err = VaultOperationError::NotADirectory {
+            path: "/file".to_string(),
+        };
+        assert_eq!(vault_error_to_errno(&err), libc::ENOTDIR);
+
+        // EmptyPath -> EINVAL
+        let err = VaultOperationError::EmptyPath;
+        assert_eq!(vault_error_to_errno(&err), libc::EINVAL);
+    }
+
+    #[test]
+    fn test_write_error_category_mapping() {
+        // Test that VaultErrorCategory correctly maps write errors
+        use oxidized_cryptolib::vault::operations::VaultOpContext;
+
+        // FileAlreadyExists -> EEXIST
+        let err = VaultWriteError::FileAlreadyExists {
+            filename: "test.txt".to_string(),
+            context: VaultOpContext::new(),
+        };
+        assert_eq!(write_error_to_errno(&err), libc::EEXIST);
+
+        // DirectoryNotEmpty -> ENOTEMPTY
+        let err = VaultWriteError::DirectoryNotEmpty {
+            context: VaultOpContext::new(),
+        };
+        assert_eq!(write_error_to_errno(&err), libc::ENOTEMPTY);
+
+        // DirectoryNotFound -> ENOENT
+        let err = VaultWriteError::DirectoryNotFound {
+            name: "test".to_string(),
+            context: VaultOpContext::new(),
+        };
+        assert_eq!(write_error_to_errno(&err), libc::ENOENT);
     }
 }

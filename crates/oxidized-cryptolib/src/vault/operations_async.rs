@@ -4,6 +4,22 @@
 //! Tokio. Filesystem operations use `tokio::fs`; cryptographic operations remain
 //! synchronous (CPU-bound, fast).
 //!
+//! # Architecture
+//!
+//! `VaultOperationsAsync` delegates pure operations (path calculation, encryption,
+//! decryption) to [`VaultCore`], sharing this logic with the
+//! sync implementation. I/O uses `tokio::fs`, and file access is protected by
+//! [`VaultLockManager`] for concurrent safety.
+//!
+//! # Key Methods
+//!
+//! - **Listing**: [`list_files`](VaultOperationsAsync::list_files), [`list_directories`](VaultOperationsAsync::list_directories)
+//! - **Lookup**: [`find_file`](VaultOperationsAsync::find_file), [`find_directory`](VaultOperationsAsync::find_directory) - O(1) lookups by name
+//! - **Read/Write**: [`read_file`](VaultOperationsAsync::read_file), [`write_file`](VaultOperationsAsync::write_file)
+//! - **Streaming**: [`open_file`](VaultOperationsAsync::open_file), [`create_file`](VaultOperationsAsync::create_file) - for large files
+//! - **Directories**: [`create_directory`](VaultOperationsAsync::create_directory), [`delete_directory`](VaultOperationsAsync::delete_directory)
+//! - **Path resolution**: [`resolve_path`](VaultOperationsAsync::resolve_path)
+//!
 //! # Concurrency
 //!
 //! `VaultOperationsAsync` is `Send`, so it can be moved into spawned tasks:
@@ -25,12 +41,13 @@ use crate::{
     crypto::keys::MasterKey,
     fs::file::DecryptedFile,
     fs::file_async::decrypt_file_with_context_async,
-    fs::name::{create_c9s_filename, decrypt_filename, encrypt_filename, hash_dir_id},
+    fs::name::{create_c9s_filename, decrypt_filename, encrypt_filename},
     fs::streaming::{VaultFileReader, VaultFileWriter},
     fs::symlink::{decrypt_symlink_target, encrypt_symlink_target},
     vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
     vault::handles::VaultHandleTable,
     vault::locks::{VaultLockManager, VaultLockRegistry},
+    vault::ops::{calculate_directory_lookup_paths, calculate_file_lookup_paths, VaultCore},
     vault::path::{DirId, VaultPath},
 };
 use std::path::{Path, PathBuf};
@@ -90,11 +107,10 @@ impl From<VaultOperationError> for AsyncVaultError {
 /// - Write operations (write, delete): exclusive write locks
 /// - Multi-resource operations (move, rename): ordered locking to prevent deadlocks
 pub struct VaultOperationsAsync {
-    vault_path: PathBuf,
+    /// Core vault state and pure operations (shared with sync implementation).
+    core: VaultCore,
+    /// The master key wrapped in Arc for async sharing.
     master_key: Arc<MasterKey>,
-    shortening_threshold: usize,
-    /// The cipher combination used by this vault.
-    cipher_combo: CipherCombo,
     /// Lock manager for concurrent access (shared across instances).
     lock_manager: Arc<VaultLockManager>,
     /// Handle table for tracking open files (shared across instances).
@@ -214,10 +230,12 @@ impl VaultOperationsAsync {
         // This ensures multiple instances operating on the same vault share locks.
         let lock_manager = VaultLockRegistry::global().get_or_create(vault_path);
         Self {
-            vault_path: vault_path.to_path_buf(),
+            core: VaultCore::with_shortening_threshold(
+                vault_path.to_path_buf(),
+                cipher_combo,
+                shortening_threshold,
+            ),
             master_key,
-            shortening_threshold,
-            cipher_combo,
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
         }
@@ -244,10 +262,12 @@ impl VaultOperationsAsync {
         // Use the global registry to get a shared lock manager for this vault path.
         let lock_manager = VaultLockRegistry::global().get_or_create(sync_ops.vault_path());
         Ok(Self {
-            vault_path: sync_ops.vault_path().to_path_buf(),
+            core: VaultCore::with_shortening_threshold(
+                sync_ops.vault_path().to_path_buf(),
+                sync_ops.cipher_combo(),
+                sync_ops.shortening_threshold(),
+            ),
             master_key: cloned_key,
-            shortening_threshold: sync_ops.shortening_threshold(),
-            cipher_combo: sync_ops.cipher_combo(),
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
         })
@@ -298,39 +318,31 @@ impl VaultOperationsAsync {
 
     /// Returns the cipher combination used by this vault.
     pub fn cipher_combo(&self) -> CipherCombo {
-        self.cipher_combo
+        self.core.cipher_combo()
     }
 
     /// Returns a reference to the vault path.
     pub fn vault_path(&self) -> &Path {
-        &self.vault_path
+        self.core.vault_path()
     }
 
     /// Returns the shortening threshold for encrypted filenames.
     pub fn shortening_threshold(&self) -> usize {
-        self.shortening_threshold
+        self.core.shortening_threshold()
     }
 
     /// Calculate the storage path for a directory given its ID.
     ///
     /// This is a synchronous helper method since it only involves CPU-bound
-    /// cryptographic hashing.
+    /// cryptographic hashing. Delegates to VaultCore.
     #[instrument(level = "trace", skip(self), fields(dir_id = %dir_id.as_str()))]
     fn calculate_directory_storage_path(&self, dir_id: &DirId) -> Result<PathBuf, VaultOperationError> {
-        let hashed = hash_dir_id(dir_id.as_str(), &self.master_key)?;
-        let hash_chars: Vec<char> = hashed.chars().collect();
-
-        if hash_chars.len() < 32 {
-            return Err(VaultOperationError::InvalidVaultStructure {
-                reason: format!("Hashed directory ID is too short: {}", hash_chars.len()),
+        self.core
+            .calculate_directory_storage_path(dir_id, &self.master_key)
+            .map_err(|e| VaultOperationError::InvalidVaultStructure {
+                reason: e.to_string(),
                 context: VaultOpContext::new().with_dir_id(dir_id.as_str()),
-            });
-        }
-
-        let first_two: String = hash_chars[0..2].iter().collect();
-        let remaining: String = hash_chars[2..32].iter().collect();
-
-        Ok(self.vault_path.join("d").join(&first_two).join(&remaining))
+            })
     }
 
     /// List all files in a directory (by directory ID).
@@ -435,7 +447,7 @@ impl VaultOperationsAsync {
             regular_files
                 .into_iter()
                 .filter_map(|(path, encrypted_name, size)| {
-                    match decrypt_filename(&encrypted_name, &dir_id_str, &*master_key) {
+                    match decrypt_filename(&encrypted_name, &dir_id_str, &master_key) {
                         Ok(decrypted_name) => Some(VaultFileInfo {
                             name: decrypted_name,
                             encrypted_name,
@@ -565,7 +577,7 @@ impl VaultOperationsAsync {
             regular_dirs
                 .into_iter()
                 .filter_map(|(path, encrypted_name, dir_id_content)| {
-                    match decrypt_filename(&encrypted_name, &dir_id_str, &*master_key) {
+                    match decrypt_filename(&encrypted_name, &dir_id_str, &master_key) {
                         Ok(decrypted_name) => Some(VaultDirectoryInfo {
                             name: decrypted_name,
                             directory_id: DirId::from_raw(dir_id_content.trim()),
@@ -635,70 +647,41 @@ impl VaultOperationsAsync {
         // Encrypt the filename to get the expected path
         let encrypted_name = encrypt_filename(filename, directory_id.as_str(), &self.master_key)?;
 
-        // Check if it's a shortened name
-        let is_shortened = encrypted_name.len() > self.shortening_threshold;
+        // Calculate paths using shared helper
+        let paths = calculate_file_lookup_paths(
+            &storage_path,
+            &encrypted_name,
+            self.core.shortening_threshold(),
+        );
 
-        if is_shortened {
-            // Check .c9s directory format
-            let hash = create_c9s_filename(&encrypted_name);
-            let c9s_path = storage_path.join(format!("{hash}.c9s"));
-            let contents_path = c9s_path.join("contents.c9r");
-
-            match fs::metadata(&contents_path).await {
-                Ok(metadata) => {
-                    trace!(path = %contents_path.display(), "Found shortened file");
-                    Ok(Some(VaultFileInfo {
-                        name: filename.to_string(),
-                        encrypted_name,
-                        encrypted_path: contents_path,
-                        encrypted_size: metadata.len(),
-                        is_shortened: true,
-                    }))
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    trace!("Shortened file not found");
-                    Ok(None)
-                }
-                Err(e) => Err(VaultOperationError::Io {
-                    source: e,
-                    context: VaultOpContext::new()
-                        .with_filename(filename)
-                        .with_dir_id(directory_id.as_str())
-                        .with_encrypted_path(&contents_path),
-                }),
+        // Perform async I/O to check if file exists
+        match fs::metadata(&paths.content_path).await {
+            Ok(metadata) if paths.is_shortened || metadata.is_file() => {
+                trace!(path = %paths.content_path.display(), shortened = paths.is_shortened, "Found file");
+                Ok(Some(VaultFileInfo {
+                    name: filename.to_string(),
+                    encrypted_name: paths.encrypted_name,
+                    encrypted_path: paths.content_path,
+                    encrypted_size: metadata.len(),
+                    is_shortened: paths.is_shortened,
+                }))
             }
-        } else {
-            // Check regular .c9r file format
-            let file_path = storage_path.join(format!("{encrypted_name}.c9r"));
-
-            match fs::metadata(&file_path).await {
-                Ok(metadata) if metadata.is_file() => {
-                    trace!(path = %file_path.display(), "Found regular file");
-                    Ok(Some(VaultFileInfo {
-                        name: filename.to_string(),
-                        encrypted_name,
-                        encrypted_path: file_path,
-                        encrypted_size: metadata.len(),
-                        is_shortened: false,
-                    }))
-                }
-                Ok(_) => {
-                    // It's a directory, not a file
-                    trace!("Path exists but is not a file (likely a directory)");
-                    Ok(None)
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    trace!("Regular file not found");
-                    Ok(None)
-                }
-                Err(e) => Err(VaultOperationError::Io {
-                    source: e,
-                    context: VaultOpContext::new()
-                        .with_filename(filename)
-                        .with_dir_id(directory_id.as_str())
-                        .with_encrypted_path(&file_path),
-                }),
+            Ok(_) => {
+                // It's a directory, not a file (only possible for non-shortened paths)
+                trace!("Path exists but is not a file (likely a directory)");
+                Ok(None)
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                trace!(shortened = paths.is_shortened, "File not found");
+                Ok(None)
+            }
+            Err(e) => Err(VaultOperationError::Io {
+                source: e,
+                context: VaultOpContext::new()
+                    .with_filename(filename)
+                    .with_dir_id(directory_id.as_str())
+                    .with_encrypted_path(&paths.content_path),
+            }),
         }
     }
 
@@ -737,66 +720,36 @@ impl VaultOperationsAsync {
         // Encrypt the directory name to get the expected path
         let encrypted_name = encrypt_filename(dir_name, parent_directory_id.as_str(), &self.master_key)?;
 
-        // Check if it's a shortened name
-        let is_shortened = encrypted_name.len() > self.shortening_threshold;
+        // Calculate paths using shared helper
+        let paths = calculate_directory_lookup_paths(
+            &storage_path,
+            &encrypted_name,
+            self.core.shortening_threshold(),
+        );
 
-        if is_shortened {
-            // Check .c9s directory format
-            let hash = create_c9s_filename(&encrypted_name);
-            let c9s_path = storage_path.join(format!("{hash}.c9s"));
-            let dir_id_path = c9s_path.join("dir.c9r");
-
-            match fs::read_to_string(&dir_id_path).await {
-                Ok(dir_id_content) => {
-                    let directory_id = DirId::from_raw(dir_id_content.trim());
-                    trace!(dir_id = %directory_id.as_str(), "Found shortened directory");
-                    Ok(Some(VaultDirectoryInfo {
-                        name: dir_name.to_string(),
-                        directory_id,
-                        encrypted_path: c9s_path,
-                        parent_directory_id: parent_directory_id.clone(),
-                    }))
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    trace!("Shortened directory not found");
-                    Ok(None)
-                }
-                Err(e) => Err(VaultOperationError::Io {
-                    source: e,
-                    context: VaultOpContext::new()
-                        .with_filename(dir_name)
-                        .with_dir_id(parent_directory_id.as_str())
-                        .with_encrypted_path(&dir_id_path),
-                }),
+        // Perform async I/O to read directory ID from dir.c9r marker
+        match fs::read_to_string(&paths.content_path).await {
+            Ok(dir_id_content) => {
+                let directory_id = DirId::from_raw(dir_id_content.trim());
+                trace!(dir_id = %directory_id.as_str(), shortened = paths.is_shortened, "Found directory");
+                Ok(Some(VaultDirectoryInfo {
+                    name: dir_name.to_string(),
+                    directory_id,
+                    encrypted_path: paths.entry_path,
+                    parent_directory_id: parent_directory_id.clone(),
+                }))
             }
-        } else {
-            // Check regular .c9r directory format
-            let dir_path = storage_path.join(format!("{encrypted_name}.c9r"));
-            let dir_id_path = dir_path.join("dir.c9r");
-
-            match fs::read_to_string(&dir_id_path).await {
-                Ok(dir_id_content) => {
-                    let directory_id = DirId::from_raw(dir_id_content.trim());
-                    trace!(dir_id = %directory_id.as_str(), "Found regular directory");
-                    Ok(Some(VaultDirectoryInfo {
-                        name: dir_name.to_string(),
-                        directory_id,
-                        encrypted_path: dir_path,
-                        parent_directory_id: parent_directory_id.clone(),
-                    }))
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    trace!("Regular directory not found");
-                    Ok(None)
-                }
-                Err(e) => Err(VaultOperationError::Io {
-                    source: e,
-                    context: VaultOpContext::new()
-                        .with_filename(dir_name)
-                        .with_dir_id(parent_directory_id.as_str())
-                        .with_encrypted_path(&dir_id_path),
-                }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                trace!(shortened = paths.is_shortened, "Directory not found");
+                Ok(None)
             }
+            Err(e) => Err(VaultOperationError::Io {
+                source: e,
+                context: VaultOpContext::new()
+                    .with_filename(dir_name)
+                    .with_dir_id(parent_directory_id.as_str())
+                    .with_encrypted_path(&paths.content_path),
+            }),
         }
     }
 
@@ -842,6 +795,7 @@ impl VaultOperationsAsync {
     /// # Returns
     ///
     /// A tuple of (files, directories, symlinks).
+    #[allow(clippy::type_complexity)] // Return tuple is self-documenting
     #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str()))]
     pub async fn list_all(
         &self,
@@ -983,13 +937,13 @@ impl VaultOperationsAsync {
             }
         })?;
 
-        debug!(encrypted_path = %file_info.encrypted_path.display(), cipher_combo = ?self.cipher_combo, "Found file, opening for streaming");
+        debug!(encrypted_path = %file_info.encrypted_path.display(), cipher_combo = ?self.core.cipher_combo(), "Found file, opening for streaming");
 
         // Open the file using VaultFileReader with the vault's cipher combo
         let reader = VaultFileReader::open_with_cipher(
             &file_info.encrypted_path,
             &self.master_key,
-            self.cipher_combo,
+            self.core.cipher_combo(),
         )
             .await
             .map_err(|e| VaultOperationError::Streaming {
@@ -1091,7 +1045,7 @@ impl VaultOperationsAsync {
         let encrypted_name = encrypt_filename(filename, directory_id.as_str(), &self.master_key)?;
 
         // Determine destination path (handle long filenames)
-        let is_shortened = encrypted_name.len() > self.shortening_threshold;
+        let is_shortened = encrypted_name.len() > self.core.shortening_threshold();
         let dest_path = if is_shortened {
             trace!("Using shortened filename format (.c9s)");
             let hash = create_c9s_filename(&encrypted_name);
@@ -1204,10 +1158,10 @@ impl VaultOperationsAsync {
         let encrypted_name = encrypt_filename(filename, dir_id.as_str(), &self.master_key)?;
 
         // 4-8. Encrypt file using the vault's cipher combo
-        let file_data = self.cipher_combo.encrypt_file(content, &self.master_key)?;
+        let file_data = self.core.cipher_combo().encrypt_file(content, &self.master_key)?;
 
         // 10. Determine file path and write (handle long filenames)
-        let is_shortened = encrypted_name.len() > self.shortening_threshold;
+        let is_shortened = encrypted_name.len() > self.core.shortening_threshold();
         debug!(is_shortened = is_shortened, encrypted_size = file_data.len(), "Writing encrypted file");
 
         let file_path = if is_shortened {
@@ -1520,7 +1474,7 @@ impl VaultOperationsAsync {
         let encrypted_name = encrypt_filename(name, parent_dir_id.as_str(), &self.master_key)?;
 
         // Create the encrypted directory structure
-        if encrypted_name.len() > self.shortening_threshold {
+        if encrypted_name.len() > self.core.shortening_threshold() {
             self.create_shortened_directory(&parent_storage_path, &encrypted_name, &dir_id).await?;
         } else {
             let encrypted_dir_path = parent_storage_path.join(format!("{encrypted_name}.c9r"));
@@ -1539,7 +1493,7 @@ impl VaultOperationsAsync {
         })?;
 
         // Write dirid.c9r backup file (using cipher combo for proper cipher selection)
-        let encrypted_dir_id = self.cipher_combo.encrypt_dir_id_backup(dir_id.as_str(), &self.master_key)?;
+        let encrypted_dir_id = self.core.cipher_combo().encrypt_dir_id_backup(dir_id.as_str(), &self.master_key)?;
         self.safe_write(&new_storage_path.join("dirid.c9r"), &encrypted_dir_id).await?;
 
         info!(created_dir_id = %dir_id.as_str(), "Directory created successfully");
@@ -1748,7 +1702,7 @@ impl VaultOperationsAsync {
 
         let storage_path = self.calculate_directory_storage_path(dir_id)?;
         let new_encrypted_name = encrypt_filename(new_name, dir_id.as_str(), &self.master_key)?;
-        let new_is_long = new_encrypted_name.len() > self.shortening_threshold;
+        let new_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
 
         // Copy to new location first (crash-safe)
         // Use fs::copy for efficiency when both source and dest are regular files
@@ -1860,7 +1814,7 @@ impl VaultOperationsAsync {
 
         // Encrypt the new directory name
         let new_encrypted_name = encrypt_filename(new_name, parent_dir_id.as_str(), &self.master_key)?;
-        let new_is_long = new_encrypted_name.len() > self.shortening_threshold;
+        let new_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
 
         // The directory ID stays the same - we're just renaming the entry
         let dir_id = &source_info.directory_id;
@@ -1955,7 +1909,7 @@ impl VaultOperationsAsync {
 
         // Encrypt filename with NEW directory ID
         let new_encrypted_name = encrypt_filename(filename, dest_dir_id.as_str(), &self.master_key)?;
-        let dest_is_long = new_encrypted_name.len() > self.shortening_threshold;
+        let dest_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
 
         // Write to destination (create before delete for crash safety)
         if dest_is_long {
@@ -2068,7 +2022,7 @@ impl VaultOperationsAsync {
 
         // Encrypt filename with NEW directory ID and NEW name
         let new_encrypted_name = encrypt_filename(dest_name, dest_dir_id.as_str(), &self.master_key)?;
-        let dest_is_long = new_encrypted_name.len() > self.shortening_threshold;
+        let dest_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
 
         // Write to destination (create before delete for crash safety)
         if dest_is_long {
@@ -2388,7 +2342,7 @@ impl VaultOperationsAsync {
         let encrypted_name = encrypt_filename(name, directory_id.as_str(), &self.master_key)?;
 
         // Check if name is too long and needs shortening
-        let (symlink_dir, is_shortened) = if encrypted_name.len() > self.shortening_threshold {
+        let (symlink_dir, is_shortened) = if encrypted_name.len() > self.core.shortening_threshold() {
             let shortened_hash = create_c9s_filename(&encrypted_name);
             (dir_path.join(format!("{shortened_hash}.c9s")), true)
         } else {
@@ -2527,25 +2481,22 @@ impl VaultOperationsAsync {
         };
 
         // Check for symlink first (symlinks are the least common)
-        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id).await {
-            if symlinks.iter().any(|s| s.name == entry_name) {
+        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id).await
+            && symlinks.iter().any(|s| s.name == entry_name) {
                 return Some(EntryType::Symlink);
             }
-        }
 
         // Check for directory
-        if let Ok(dirs) = self.list_directories(&parent_dir_id).await {
-            if dirs.iter().any(|d| d.name == entry_name) {
+        if let Ok(dirs) = self.list_directories(&parent_dir_id).await
+            && dirs.iter().any(|d| d.name == entry_name) {
                 return Some(EntryType::Directory);
             }
-        }
 
         // Check for file
-        if let Ok(files) = self.list_files(&parent_dir_id).await {
-            if files.iter().any(|f| f.name == entry_name) {
+        if let Ok(files) = self.list_files(&parent_dir_id).await
+            && files.iter().any(|f| f.name == entry_name) {
                 return Some(EntryType::File);
             }
-        }
 
         None
     }
@@ -2607,7 +2558,7 @@ impl VaultOperationsAsync {
             return Some(DirEntry::Directory(VaultDirectoryInfo {
                 name: String::new(),
                 directory_id: DirId::root(),
-                encrypted_path: self.vault_path.join("d"),
+                encrypted_path: self.core.vault_path().join("d"),
                 parent_directory_id: DirId::root(),
             }));
         }
@@ -2625,25 +2576,22 @@ impl VaultOperationsAsync {
         };
 
         // Check symlink first
-        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id).await {
-            if let Some(symlink) = symlinks.into_iter().find(|s| s.name == entry_name) {
+        if let Ok(symlinks) = self.list_symlinks(&parent_dir_id).await
+            && let Some(symlink) = symlinks.into_iter().find(|s| s.name == entry_name) {
                 return Some(DirEntry::Symlink(symlink));
             }
-        }
 
         // Check directory
-        if let Ok(dirs) = self.list_directories(&parent_dir_id).await {
-            if let Some(dir) = dirs.into_iter().find(|d| d.name == entry_name) {
+        if let Ok(dirs) = self.list_directories(&parent_dir_id).await
+            && let Some(dir) = dirs.into_iter().find(|d| d.name == entry_name) {
                 return Some(DirEntry::Directory(dir));
             }
-        }
 
         // Check file
-        if let Ok(files) = self.list_files(&parent_dir_id).await {
-            if let Some(file) = files.into_iter().find(|f| f.name == entry_name) {
+        if let Ok(files) = self.list_files(&parent_dir_id).await
+            && let Some(file) = files.into_iter().find(|f| f.name == entry_name) {
                 return Some(DirEntry::File(file));
             }
-        }
 
         None
     }

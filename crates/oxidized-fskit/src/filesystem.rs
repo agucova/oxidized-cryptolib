@@ -17,12 +17,54 @@ use tracing::{debug, error, trace};
 use uuid::Uuid;
 
 use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
+use oxidized_cryptolib::fs::streaming::VaultFileReader;
 use oxidized_cryptolib::vault::VaultOperationsAsync;
+use oxidized_mount_common::{HandleTable, WriteBuffer};
 
 use crate::attr::AttrCache;
 use crate::error::{operation_error_to_errno, write_error_to_errno};
-use crate::handles::{FsKitHandle, HandleTable, WriteBuffer};
 use crate::item_table::{ItemKind, ItemTable, ROOT_ITEM_ID};
+
+/// Handle type for FSKit file operations.
+///
+/// FSKit operations use item IDs directly, so we track open files by their item ID.
+#[derive(Debug)]
+pub enum FsKitHandle {
+    /// Read-only handle using streaming reader.
+    ///
+    /// Boxed to reduce enum size difference between variants.
+    Reader(Box<VaultFileReader>),
+
+    /// Write handle with in-memory buffer.
+    ///
+    /// Uses read-modify-write pattern for random access writes.
+    WriteBuffer(WriteBuffer),
+}
+
+impl FsKitHandle {
+    /// Check if this is a reader handle.
+    #[allow(dead_code)]
+    pub fn is_reader(&self) -> bool {
+        matches!(self, FsKitHandle::Reader(_))
+    }
+
+    /// Check if this is a write buffer handle.
+    #[allow(dead_code)]
+    pub fn is_write_buffer(&self) -> bool {
+        matches!(self, FsKitHandle::WriteBuffer(_))
+    }
+
+    /// Get a mutable reference to the write buffer, if this is one.
+    pub fn as_write_buffer_mut(&mut self) -> Option<&mut WriteBuffer> {
+        match self {
+            FsKitHandle::WriteBuffer(b) => Some(b),
+            FsKitHandle::Reader(_) => None,
+        }
+    }
+}
+
+/// Type alias for FSKit handle table.
+pub type FsKitHandleTable = HandleTable<u64, FsKitHandle>;
 
 /// Block size for filesystem statistics.
 const BLOCK_SIZE: u64 = 4096;
@@ -44,7 +86,7 @@ pub struct CryptomatorFSKit {
     /// Item table for path/item_id mapping (DashMap is already Send+Sync).
     items: Arc<ItemTable>,
     /// File handle table for open files (DashMap is already Send+Sync).
-    handles: Arc<HandleTable>,
+    handles: Arc<FsKitHandleTable>,
     /// Attribute cache to reduce vault operations.
     attr_cache: Arc<AttrCache>,
     /// User ID to use for file ownership.
@@ -94,7 +136,7 @@ impl CryptomatorFSKit {
         Ok(Self {
             ops,
             items: Arc::new(ItemTable::new()),
-            handles: Arc::new(HandleTable::new()),
+            handles: Arc::new(FsKitHandleTable::new()),
             attr_cache: Arc::new(AttrCache::with_defaults()),
             uid,
             gid,
@@ -122,10 +164,10 @@ impl CryptomatorFSKit {
             link_count: Some(2),
             size: Some(0),
             alloc_size: Some(0),
-            access_time: Some(timestamp.clone()),
-            modify_time: Some(timestamp.clone()),
-            change_time: Some(timestamp.clone()),
-            birth_time: Some(timestamp.clone()),
+            access_time: Some(timestamp),
+            modify_time: Some(timestamp),
+            change_time: Some(timestamp),
+            birth_time: Some(timestamp),
             added_time: Some(timestamp),
             backup_time: None,
             flags: Some(0),
@@ -158,10 +200,10 @@ impl CryptomatorFSKit {
             link_count: Some(1),
             size: Some(size),
             alloc_size: Some(size.div_ceil(BLOCK_SIZE) * BLOCK_SIZE),
-            access_time: Some(timestamp.clone()),
-            modify_time: Some(timestamp.clone()),
-            change_time: Some(timestamp.clone()),
-            birth_time: Some(timestamp.clone()),
+            access_time: Some(timestamp),
+            modify_time: Some(timestamp),
+            change_time: Some(timestamp),
+            birth_time: Some(timestamp),
             added_time: Some(timestamp),
             backup_time: None,
             flags: Some(0),
@@ -194,10 +236,10 @@ impl CryptomatorFSKit {
             link_count: Some(1),
             size: Some(target_len),
             alloc_size: Some(0),
-            access_time: Some(timestamp.clone()),
-            modify_time: Some(timestamp.clone()),
-            change_time: Some(timestamp.clone()),
-            birth_time: Some(timestamp.clone()),
+            access_time: Some(timestamp),
+            modify_time: Some(timestamp),
+            change_time: Some(timestamp),
+            birth_time: Some(timestamp),
             added_time: Some(timestamp),
             backup_time: None,
             flags: Some(0),
@@ -214,30 +256,23 @@ impl CryptomatorFSKit {
         }
     }
 
-    /// Run an async vault operation in spawn_blocking with a current-thread runtime.
+    /// Run an async vault operation on the tokio runtime.
     ///
-    /// Note: With VaultOperationsAsync now being Send+Sync, this could potentially
-    /// be simplified further. The spawn_blocking is kept for now to avoid blocking
-    /// the FSKit dispatch threads during potentially slow vault I/O.
+    /// Spawns the operation as a new task, keeping FSKit dispatch threads free.
+    /// Requires a tokio runtime to be running (guaranteed by `#[tokio::main]` in main.rs).
     async fn run_vault_op<T, F, Fut>(&self, f: F) -> Result<T, FsKitError>
     where
         T: Send + 'static,
         F: FnOnce(Arc<VaultOperationsAsync>) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = T>,
+        Fut: std::future::Future<Output = T> + Send + 'static,
     {
         let ops = Arc::clone(&self.ops);
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(f(ops))
-        })
-        .await
-        .map_err(|e| {
-            error!(error = %e, "spawn_blocking failed");
-            FsKitError::Posix(libc::EIO)
-        })
+        tokio::spawn(f(ops))
+            .await
+            .map_err(|e| {
+                error!(error = %e, "tokio::spawn failed");
+                FsKitError::Posix(libc::EIO)
+            })
     }
 }
 
@@ -478,7 +513,7 @@ impl Filesystem for CryptomatorFSKit {
         // Check cache first for files and symlinks
         if let Some(cached) = self.attr_cache.get(item_id) {
             trace!(item_id = item_id, "attr cache hit");
-            return Ok(cached.attrs);
+            return Ok(cached.value);
         }
 
         let entry = self
@@ -489,12 +524,12 @@ impl Filesystem for CryptomatorFSKit {
         match &entry.kind {
             ItemKind::Root => {
                 let attrs = self.make_dir_attrs(item_id);
-                self.attr_cache.insert(item_id, attrs.clone());
+                self.attr_cache.insert(item_id, attrs);
                 Ok(attrs)
             }
             ItemKind::Directory { .. } => {
                 let attrs = self.make_dir_attrs(item_id);
-                self.attr_cache.insert(item_id, attrs.clone());
+                self.attr_cache.insert(item_id, attrs);
                 Ok(attrs)
             }
             ItemKind::File { dir_id, name } => {
@@ -514,7 +549,7 @@ impl Filesystem for CryptomatorFSKit {
 
                 let size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
                 let attrs = self.make_file_attrs(item_id, size);
-                self.attr_cache.insert(item_id, attrs.clone());
+                self.attr_cache.insert(item_id, attrs);
                 Ok(attrs)
             }
             ItemKind::Symlink { dir_id, name } => {
@@ -528,7 +563,7 @@ impl Filesystem for CryptomatorFSKit {
                     .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?;
 
                 let attrs = self.make_symlink_attrs(item_id, target.len() as u64);
-                self.attr_cache.insert(item_id, attrs.clone());
+                self.attr_cache.insert(item_id, attrs);
                 Ok(attrs)
             }
         }
@@ -557,15 +592,14 @@ impl Filesystem for CryptomatorFSKit {
                 drop(entry);
 
                 // Check if we have an open handle
-                if let Some(mut handle) = self.handles.get_mut(item_id) {
-                    if let Some(buffer) = handle.as_write_buffer_mut() {
+                if let Some(mut handle) = self.handles.get_mut(&item_id)
+                    && let Some(buffer) = handle.as_write_buffer_mut() {
                         buffer.truncate(new_size);
                         drop(handle);
                         let attrs = self.make_file_attrs(item_id, new_size);
-                        self.attr_cache.insert(item_id, attrs.clone());
+                        self.attr_cache.insert(item_id, attrs);
                         return Ok(attrs);
                     }
-                }
 
                 // No open handle - read file, truncate, write back
                 let dir_id_clone = dir_id.clone();
@@ -588,7 +622,7 @@ impl Filesystem for CryptomatorFSKit {
                 .map_err(|e| FsKitError::Posix(write_error_to_errno(&e)))?;
 
                 let attrs = self.make_file_attrs(item_id, new_size);
-                self.attr_cache.insert(item_id, attrs.clone());
+                self.attr_cache.insert(item_id, attrs);
                 return Ok(attrs);
             }
         }
@@ -798,10 +832,10 @@ impl Filesystem for CryptomatorFSKit {
 
                 // For directories, we need the parent's dir_id
                 let parent_path = path.parent();
-                if let Some(parent) = parent_path {
-                    if let Some(parent_id) = self.items.get_id(&parent) {
-                        if let Some(parent_entry) = self.items.get(parent_id) {
-                            if let Some(parent_dir_id) = parent_entry.dir_id() {
+                if let Some(parent) = parent_path
+                    && let Some(parent_id) = self.items.get_id(&parent)
+                        && let Some(parent_entry) = self.items.get(parent_id)
+                            && let Some(parent_dir_id) = parent_entry.dir_id() {
                                 let name = path.file_name().unwrap_or_default().to_string();
                                 self.run_vault_op(move |ops| async move {
                                     ops.delete_directory(&parent_dir_id, &name).await
@@ -809,9 +843,6 @@ impl Filesystem for CryptomatorFSKit {
                                 .await?
                                 .map_err(|e| FsKitError::Posix(write_error_to_errno(&e)))?;
                             }
-                        }
-                    }
-                }
             }
             ItemKind::File { dir_id, name } => {
                 let dir_id = dir_id.clone();
@@ -1097,7 +1128,7 @@ impl Filesystem for CryptomatorFSKit {
                 .run_vault_op(move |ops| async move { ops.open_file(&dir_id, &name).await })
                 .await?
                 .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?;
-            self.handles.insert(item_id, FsKitHandle::Reader(reader));
+            self.handles.insert(item_id, FsKitHandle::Reader(Box::new(reader)));
         }
 
         Ok(())
@@ -1107,9 +1138,9 @@ impl Filesystem for CryptomatorFSKit {
     async fn close_item(&mut self, item_id: u64, _modes: Vec<OpenMode>) -> FsKitResult<()> {
         trace!(item_id = item_id, "close_item");
 
-        if let Some(handle) = self.handles.remove(item_id) {
-            if let FsKitHandle::WriteBuffer(buffer) = handle {
-                if buffer.is_dirty() {
+        if let Some(handle) = self.handles.remove(&item_id)
+            && let FsKitHandle::WriteBuffer(buffer) = handle
+                && buffer.is_dirty() {
                     let dir_id = buffer.dir_id().clone();
                     let filename = buffer.filename().to_string();
                     let content = buffer.into_content();
@@ -1126,8 +1157,6 @@ impl Filesystem for CryptomatorFSKit {
 
                     debug!(item_id = item_id, size = content_len, "WriteBuffer flushed");
                 }
-            }
-        }
 
         Ok(())
     }
@@ -1143,7 +1172,7 @@ impl Filesystem for CryptomatorFSKit {
 
         let mut handle = self
             .handles
-            .get_mut(item_id)
+            .get_mut(&item_id)
             .ok_or(FsKitError::Posix(libc::EBADF))?;
 
         match &mut *handle {
@@ -1173,7 +1202,7 @@ impl Filesystem for CryptomatorFSKit {
 
         let mut handle = self
             .handles
-            .get_mut(item_id)
+            .get_mut(&item_id)
             .ok_or(FsKitError::Posix(libc::EBADF))?;
 
         let buffer = handle
@@ -1218,14 +1247,13 @@ impl Filesystem for CryptomatorFSKit {
         let new_size = (offset + length) as u64;
 
         // If we have an open handle, extend the buffer
-        if let Some(mut handle) = self.handles.get_mut(item_id) {
-            if let Some(buffer) = handle.as_write_buffer_mut() {
+        if let Some(mut handle) = self.handles.get_mut(&item_id)
+            && let Some(buffer) = handle.as_write_buffer_mut() {
                 if new_size > buffer.len() {
                     buffer.truncate(new_size);
                 }
                 return Ok(new_size as i64);
             }
-        }
 
         // No open handle - use set_attributes to truncate
         let attrs = ItemAttributes {

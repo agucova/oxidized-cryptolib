@@ -25,6 +25,36 @@ const DEFAULT_SCRYPT_COST_PARAM_LOG2: u8 = 15; // 2^15 = 32768
 const DEFAULT_SCRYPT_BLOCK_SIZE: u32 = 8;
 const DEFAULT_SCRYPT_PARALLELIZATION: u32 = 1;
 
+/// Fast scrypt cost parameter for testing (N = 2^10 = 1024).
+///
+/// This is ~32x faster than the default and should ONLY be used for testing.
+/// Enable by setting the `OXCRYPT_FAST_KDF` environment variable to `1`.
+const FAST_SCRYPT_COST_PARAM_LOG2: u8 = 10; // 2^10 = 1024
+
+/// Check if fast KDF mode is enabled via environment variable.
+///
+/// When `OXCRYPT_FAST_KDF=1` is set, vault creation uses weaker scrypt
+/// parameters (N=1024 instead of N=32768) for ~32x faster key derivation.
+///
+/// **WARNING**: This is for testing only. Never use in production!
+#[inline]
+fn is_fast_kdf_enabled() -> bool {
+    std::env::var("OXCRYPT_FAST_KDF")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Get the scrypt cost parameter log2 value to use.
+///
+/// Returns the fast parameter if `OXCRYPT_FAST_KDF=1`, otherwise the default.
+fn get_scrypt_cost_param_log2() -> u8 {
+    if is_fast_kdf_enabled() {
+        FAST_SCRYPT_COST_PARAM_LOG2
+    } else {
+        DEFAULT_SCRYPT_COST_PARAM_LOG2
+    }
+}
+
 /// Default vault version for masterkey files.
 /// This is a legacy field (version 999) used in vault format 8.
 const DEFAULT_MASTERKEY_FILE_VERSION: u32 = 999;
@@ -329,7 +359,7 @@ pub fn create_masterkey_file_with_pepper(
         .map_err(|_| MasterKeyCreationError::Rng("Failed to generate salt".to_string()))?;
 
     // Scrypt parameters (matching Java Cryptomator defaults)
-    let log2_n = DEFAULT_SCRYPT_COST_PARAM_LOG2;
+    let log2_n = get_scrypt_cost_param_log2();
     let r = DEFAULT_SCRYPT_BLOCK_SIZE;
     let p = DEFAULT_SCRYPT_PARALLELIZATION;
 
@@ -404,7 +434,7 @@ pub fn derive_keys(passphrase: &str) -> Result<(MasterKey, SecretBox<[u8; 32]>),
         .map_err(|_| CryptoError::KeyDerivationFailed("RNG failed to generate salt".to_string()))?;
 
     // Scrypt parameters (matching Java Cryptomator defaults)
-    let log2_n = DEFAULT_SCRYPT_COST_PARAM_LOG2;
+    let log2_n = get_scrypt_cost_param_log2();
     let r = DEFAULT_SCRYPT_BLOCK_SIZE;
     let p = DEFAULT_SCRYPT_PARALLELIZATION;
 

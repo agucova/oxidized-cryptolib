@@ -12,13 +12,11 @@ pub fn VaultCard(vault: ManagedVault, is_selected: bool, on_click: EventHandler<
 
     let status_icon = match &vault.state {
         VaultState::Locked => "🔒",
-        VaultState::Unlocked => "🔓",
         VaultState::Mounted { .. } => "📂",
     };
 
     let status_color = match &vault.state {
         VaultState::Locked => "#666",
-        VaultState::Unlocked => "#ff9800",
         VaultState::Mounted { .. } => "#4caf50",
     };
 

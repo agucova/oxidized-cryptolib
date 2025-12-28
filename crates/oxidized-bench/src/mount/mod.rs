@@ -140,7 +140,7 @@ pub fn mount_implementation(
         }
         Implementation::OfficialCryptomator => {
             // External mount - just validate it exists
-            let _external = ExternalMount::validate(mount_point)?;
+            ExternalMount::validate(mount_point)?;
             // Store the mount point for later use (we don't manage the lifecycle)
             Ok(BenchMount {
                 handle: None,

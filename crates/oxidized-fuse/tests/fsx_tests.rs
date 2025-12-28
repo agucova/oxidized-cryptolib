@@ -47,14 +47,13 @@ fn find_fsx() -> Option<PathBuf> {
     }
 
     // Check if 'fsx' is in PATH
-    if let Ok(output) = Command::new("which").arg("fsx").output() {
-        if output.status.success() {
+    if let Ok(output) = Command::new("which").arg("fsx").output()
+        && output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
                 return Some(PathBuf::from(path));
             }
         }
-    }
 
     // Check cargo bin directory
     if let Ok(home) = std::env::var("HOME") {

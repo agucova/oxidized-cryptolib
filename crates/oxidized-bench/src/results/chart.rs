@@ -147,7 +147,7 @@ pub fn render_latency_chart<W: Write>(
         .unwrap_or(1) as f64;
 
     // Sort by latency (lowest first - best)
-    let mut sorted_stats: Vec<_> = stats.iter().copied().collect();
+    let mut sorted_stats: Vec<_> = stats.to_vec();
     sorted_stats.sort_by(|a, b| a.latency.mean.cmp(&b.latency.mean));
 
     // Print header

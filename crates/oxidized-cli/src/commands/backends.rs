@@ -46,6 +46,8 @@ fn output_table(backends: &[BackendInfo]) {
         let default_notes = match backend.id.as_str() {
             "fuse" => "Cross-platform (macOS, Linux)",
             "fskit" => "Native macOS integration (15.4+)",
+            "webdav" => "Cross-platform (Windows, macOS, Linux)",
+            "nfs" => "NFSv3 server (macOS, Linux, no extensions)",
             _ => "",
         };
         let notes = backend.unavailable_reason.as_deref().unwrap_or(default_notes);
@@ -67,6 +69,8 @@ fn output_table(backends: &[BackendInfo]) {
         eprintln!("Install macFUSE (https://osxfuse.github.io/) or upgrade to macOS 15.4+.");
         #[cfg(target_os = "linux")]
         eprintln!("Ensure the FUSE kernel module is loaded (modprobe fuse).");
+        #[cfg(target_os = "windows")]
+        eprintln!("Rebuild with --features webdav to enable WebDAV mounting.");
     } else {
         eprintln!("\n{} backend(s) available for mounting.", available_count);
     }

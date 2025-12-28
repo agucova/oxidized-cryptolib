@@ -14,11 +14,16 @@ categories = ["filesystem", "cryptography", "os::macos-apis"]
 name = "oxmount-fskit"
 path = "src/main.rs"
 
+[[bin]]
+name = "oxfskit-setup"
+path = "src/bin/oxfskit-setup.rs"
+required-features = ["setup"]
+
 [features]
 default = []
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 # Enable download/install functionality for FSKitBridge setup
-setup = ["dep:reqwest", "dep:zip", "dep:serde", "dep:tempfile"]
+setup = ["dep:reqwest", "dep:zip", "dep:serde", "dep:serde_json", "dep:tempfile"]
 
 [dependencies]
 oxidized-cryptolib = { workspace = true, features = ["async"] }
@@ -61,7 +66,9 @@ console-subscriber = { workspace = true, optional = true }
 reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
 zip = { version = "7", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 tempfile = { version = "3", optional = true }
+oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
 
 [dev-dependencies]
 tempfile = "3"

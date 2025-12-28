@@ -1,50 +1,26 @@
 //! Error handling and conversion to POSIX errno codes for FSKit.
+//!
+//! This module provides conversion from vault errors to POSIX error codes
+//! that FSKit can return. It uses the shared
+//! [`VaultErrorCategory`](oxidized_mount_common::VaultErrorCategory) for
+//! consistent error mapping.
 
 use fskit_rs::Error as FsKitError;
 use oxidized_cryptolib::error::{VaultOperationError, VaultWriteError};
+use oxidized_mount_common::VaultErrorCategory;
 
 /// Convert a VaultOperationError to a POSIX errno code.
+///
+/// Uses the shared [`VaultErrorCategory`] for consistent mapping.
 pub fn operation_error_to_errno(err: &VaultOperationError) -> i32 {
-    match err {
-        VaultOperationError::PathNotFound { .. } => libc::ENOENT,
-        VaultOperationError::FileNotFound { .. } => libc::ENOENT,
-        VaultOperationError::DirectoryNotFound { .. } => libc::ENOENT,
-        VaultOperationError::SymlinkNotFound { .. } => libc::ENOENT,
-        VaultOperationError::NotADirectory { .. } => libc::ENOTDIR,
-        VaultOperationError::NotAFile { .. } => libc::EISDIR,
-        VaultOperationError::NotASymlink { .. } => libc::EINVAL,
-        VaultOperationError::EmptyPath => libc::EINVAL,
-        VaultOperationError::Filename(_) => libc::EINVAL,
-        VaultOperationError::FileDecryption(_) => libc::EIO,
-        VaultOperationError::FileContentDecryption(_) => libc::EIO,
-        VaultOperationError::Io { .. } => libc::EIO,
-        VaultOperationError::InvalidVaultStructure { .. } => libc::EIO,
-        VaultOperationError::Symlink(_) => libc::EIO,
-        VaultOperationError::Streaming { .. } => libc::EIO,
-        #[allow(unreachable_patterns)]
-        _ => libc::EIO,
-    }
+    VaultErrorCategory::from(err).to_errno()
 }
 
 /// Convert a VaultWriteError to a POSIX errno code.
+///
+/// Uses the shared [`VaultErrorCategory`] for consistent mapping.
 pub fn write_error_to_errno(err: &VaultWriteError) -> i32 {
-    match err {
-        VaultWriteError::DirectoryNotFound { .. } => libc::ENOENT,
-        VaultWriteError::FileNotFound { .. } => libc::ENOENT,
-        VaultWriteError::FileAlreadyExists { .. } => libc::EEXIST,
-        VaultWriteError::DirectoryAlreadyExists { .. } => libc::EEXIST,
-        VaultWriteError::SymlinkAlreadyExists { .. } => libc::EEXIST,
-        VaultWriteError::DirectoryNotEmpty { .. } => libc::ENOTEMPTY,
-        VaultWriteError::SameSourceAndDestination { .. } => libc::EINVAL,
-        VaultWriteError::Filename(_) => libc::EINVAL,
-        VaultWriteError::Encryption(_) => libc::EIO,
-        VaultWriteError::Io { .. } => libc::EIO,
-        VaultWriteError::AtomicWriteFailed { .. } => libc::EIO,
-        VaultWriteError::Symlink(_) => libc::EIO,
-        VaultWriteError::Streaming { .. } => libc::EIO,
-        #[allow(unreachable_patterns)]
-        _ => libc::EIO,
-    }
+    VaultErrorCategory::from(err).to_errno()
 }
 
 /// Convert VaultOperationError to FSKit error.

@@ -5,7 +5,7 @@
 pub mod config;
 mod vault_manager;
 
-pub use config::{AppConfig, BackendType, ConfigError, VaultConfig};
+pub use config::{BackendType, VaultConfig};
 pub use vault_manager::{AppState, ManagedVault, VaultState};
 
 use dioxus::prelude::*;

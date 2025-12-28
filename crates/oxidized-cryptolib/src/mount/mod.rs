@@ -131,6 +131,12 @@ pub trait MountBackend: Send + Sync {
     /// users understand how to make the backend available (e.g., "Install macFUSE").
     fn unavailable_reason(&self) -> Option<String>;
 
+    /// Get the backend type enum value
+    fn backend_type(&self) -> BackendType;
+
+    /// Get a brief description of this backend
+    fn description(&self) -> &'static str;
+
     /// Mount a Cryptomator vault at the specified location
     ///
     /// This creates an encrypted filesystem view of the vault. The vault
@@ -201,6 +207,18 @@ pub enum BackendType {
     /// - Cross-platform (works anywhere with WebDAV client)
     /// - Easier debugging (standard HTTP tools)
     WebDav,
+
+    /// NFS-based mounting
+    ///
+    /// Starts a local NFSv3 server and uses the system's NFS client.
+    /// Mounts automatically via `mount_nfs` (macOS) or `mount.nfs` (Linux).
+    ///
+    /// Benefits:
+    /// - No kernel extensions required (uses built-in NFS client)
+    /// - No macOS version requirements (unlike FSKit)
+    /// - Native async support for better concurrency
+    /// - Stateless protocol (simpler than FUSE)
+    Nfs,
 }
 
 impl BackendType {
@@ -210,6 +228,7 @@ impl BackendType {
             BackendType::Fuse => "FUSE",
             BackendType::FSKit => "FSKit",
             BackendType::WebDav => "WebDAV",
+            BackendType::Nfs => "NFS",
         }
     }
 
@@ -219,12 +238,13 @@ impl BackendType {
             BackendType::Fuse => "Uses macFUSE (macOS) or libfuse (Linux) for filesystem mounting",
             BackendType::FSKit => "Uses Apple's native FSKit framework (macOS 15.4+)",
             BackendType::WebDav => "Starts a local WebDAV server (no kernel extensions required)",
+            BackendType::Nfs => "Uses local NFSv3 server with system NFS client (no kernel extensions required)",
         }
     }
 
     /// Get all backend types
     pub fn all() -> &'static [BackendType] {
-        &[BackendType::Fuse, BackendType::FSKit, BackendType::WebDav]
+        &[BackendType::Fuse, BackendType::FSKit, BackendType::WebDav, BackendType::Nfs]
     }
 }
 
@@ -238,12 +258,16 @@ impl std::fmt::Display for BackendType {
 ///
 /// This struct provides a snapshot of a backend's status that can be
 /// serialized for configuration or display purposes.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackendInfo {
     /// Backend identifier (e.g., "fuse", "fskit")
     pub id: String,
     /// Human-readable name (e.g., "FUSE", "FSKit")
     pub name: String,
+    /// Backend type enum value
+    pub backend_type: BackendType,
+    /// Brief description of the backend
+    pub description: String,
     /// Whether the backend is available on this system
     pub available: bool,
     /// Why the backend is unavailable, if applicable
@@ -258,14 +282,15 @@ pub struct BackendInfo {
 ///
 /// * `backends` - List of available backend implementations
 /// * `backend_type` - The type of backend to select
-pub fn select_backend<'a>(
-    backends: &'a [Box<dyn MountBackend>],
+pub fn select_backend(
+    backends: &[Box<dyn MountBackend>],
     backend_type: BackendType,
-) -> Result<&'a dyn MountBackend, MountError> {
+) -> Result<&dyn MountBackend, MountError> {
     let id = match backend_type {
         BackendType::Fuse => "fuse",
         BackendType::FSKit => "fskit",
         BackendType::WebDav => "webdav",
+        BackendType::Nfs => "nfs",
     };
 
     backends
@@ -320,6 +345,8 @@ pub fn list_backend_info(backends: &[Box<dyn MountBackend>]) -> Vec<BackendInfo>
         .map(|b| BackendInfo {
             id: b.id().to_string(),
             name: b.name().to_string(),
+            backend_type: b.backend_type(),
+            description: b.description().to_string(),
             available: b.is_available(),
             unavailable_reason: b.unavailable_reason(),
         })
@@ -344,6 +371,10 @@ mod tests {
             serde_json::to_string(&BackendType::WebDav).unwrap(),
             "\"webdav\""
         );
+        assert_eq!(
+            serde_json::to_string(&BackendType::Nfs).unwrap(),
+            "\"nfs\""
+        );
     }
 
     #[test]
@@ -359,6 +390,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<BackendType>("\"webdav\"").unwrap(),
             BackendType::WebDav
+        );
+        assert_eq!(
+            serde_json::from_str::<BackendType>("\"nfs\"").unwrap(),
+            BackendType::Nfs
         );
     }
 
