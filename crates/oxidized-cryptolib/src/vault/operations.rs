@@ -23,7 +23,7 @@ use crate::{
     fs::file::{DecryptedFile, FileContext},
     fs::name::{create_c9s_filename, decrypt_filename, decrypt_parent_dir_id, encrypt_filename, hash_dir_id, NameError},
     fs::symlink::{decrypt_symlink_target, encrypt_symlink_target, SymlinkError},
-    vault::config::CipherCombo,
+    vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
     vault::path::{DirId, VaultPath},
 };
 use std::{
@@ -424,7 +424,57 @@ pub struct VaultOperations {
 pub use crate::vault::config::DEFAULT_SHORTENING_THRESHOLD;
 
 impl VaultOperations {
-    /// Create a new VaultOperations instance with default shortening threshold (220) and SIV_GCM cipher combo
+    /// Open an existing vault with the given password.
+    ///
+    /// This is the recommended way to open a vault. It reads the vault configuration,
+    /// extracts the master key, and automatically configures the correct cipher combo
+    /// and shortening threshold based on the vault's settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `vault_path` - Path to the vault root directory
+    /// * `password` - The vault password
+    ///
+    /// # Errors
+    ///
+    /// Returns `VaultError` if:
+    /// - The vault configuration cannot be read
+    /// - The password is incorrect
+    /// - The vault format is unsupported
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let ops = VaultOperations::open(Path::new("my_vault"), "password")?;
+    /// let files = ops.list_files(&DirId::root())?;
+    /// ```
+    #[instrument(level = "info", skip(password), fields(vault_path = %vault_path.display()))]
+    pub fn open(vault_path: &Path, password: &str) -> Result<Self, VaultError> {
+        // Extract master key (validates password)
+        let master_key = extract_master_key(vault_path, password)?;
+
+        // Read and validate vault config to get cipher combo and shortening threshold
+        let vault_config_path = vault_path.join("vault.cryptomator");
+        let vault_config_jwt = fs::read_to_string(&vault_config_path)?;
+        let claims = validate_vault_claims(&vault_config_jwt, &master_key)?;
+
+        let cipher_combo = claims.cipher_combo().expect("cipher combo already validated");
+        let shortening_threshold = claims.shortening_threshold();
+
+        info!(
+            cipher_combo = ?cipher_combo,
+            shortening_threshold = shortening_threshold,
+            "Vault opened successfully"
+        );
+
+        Ok(Self::with_options(vault_path, master_key, shortening_threshold, cipher_combo))
+    }
+
+    /// Create a new VaultOperations instance with default shortening threshold (220) and SIV_GCM cipher combo.
+    ///
+    /// **Note:** Prefer [`open()`](Self::open) for opening existing vaults, as it
+    /// automatically reads the correct cipher combo from the vault configuration.
+    /// Use this method only when you need manual control over the configuration.
     #[instrument(level = "info", skip(master_key), fields(vault_path = %vault_path.display()))]
     pub fn new(vault_path: &Path, master_key: MasterKey) -> Self {
         Self::with_options(vault_path, master_key, DEFAULT_SHORTENING_THRESHOLD, CipherCombo::SivGcm)

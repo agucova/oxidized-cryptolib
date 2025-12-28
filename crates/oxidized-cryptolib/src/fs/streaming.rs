@@ -5,22 +5,29 @@
 //!
 //! # File Format Reference
 //!
-//! Cryptomator encrypted files consist of:
-//! - **Header (68 bytes)**: 12-byte nonce + 40-byte encrypted payload + 16-byte tag
-//! - **Content chunks (up to 32,796 bytes each)**: 12-byte nonce + ≤32KB ciphertext + 16-byte tag
+//! **GCM format (SIV_GCM cipher combo):**
+//! - Header (68 bytes): 12-byte nonce + 40-byte encrypted payload + 16-byte tag
+//! - Content chunks (up to 32,796 bytes each): 12-byte nonce + ≤32KB ciphertext + 16-byte tag
 //!
-//! Each chunk is independently encrypted with AES-GCM, using the chunk number and
-//! header nonce as additional authenticated data (AAD).
+//! **CTR+MAC format (SIV_CTRMAC cipher combo):**
+//! - Header (88 bytes): 16-byte nonce + 40-byte encrypted payload + 32-byte HMAC
+//! - Content chunks (up to 32,816 bytes each): 16-byte nonce + ≤32KB ciphertext + 32-byte HMAC
+//!
+//! Each chunk is independently encrypted, using the chunk number and
+//! header nonce as additional authenticated data.
 
 use std::io::{self, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use aead::Payload;
+use aes::cipher::{KeyIvInit, StreamCipher};
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
 use rand::RngCore;
+use ring::hmac;
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -29,19 +36,24 @@ use tracing::{debug, instrument, trace, warn};
 use zeroize::Zeroizing;
 
 use crate::crypto::keys::MasterKey;
+use crate::vault::config::CipherCombo;
 use super::file::{FileContext, FileDecryptionError, FileEncryptionError};
+use super::file_ctrmac;
+
+/// AES-256-CTR with big-endian 128-bit counter (for CTRMAC)
+type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
 
 // ============================================================================
-// Constants
+// Constants - GCM (SIV_GCM cipher combo)
 // ============================================================================
 
-/// Size of the file header in bytes (nonce + encrypted payload + tag).
+/// Size of the file header in bytes for GCM (nonce + encrypted payload + tag).
 pub const HEADER_SIZE: usize = 68;
 
-/// Size of the header nonce in bytes.
+/// Size of the header nonce in bytes for GCM.
 pub const HEADER_NONCE_SIZE: usize = 12;
 
-/// Size of the chunk nonce in bytes.
+/// Size of the chunk nonce in bytes for GCM.
 pub const CHUNK_NONCE_SIZE: usize = 12;
 
 /// Size of the GCM authentication tag in bytes.
@@ -50,11 +62,33 @@ pub const TAG_SIZE: usize = 16;
 /// Maximum plaintext size per chunk (32 KB).
 pub const CHUNK_PLAINTEXT_SIZE: usize = 32768;
 
-/// Maximum encrypted chunk size (nonce + ciphertext + tag).
+/// Maximum encrypted chunk size for GCM (nonce + ciphertext + tag).
 pub const CHUNK_ENCRYPTED_SIZE: usize = CHUNK_PLAINTEXT_SIZE + CHUNK_OVERHEAD;
 
-/// Overhead per chunk (nonce + tag).
+/// Overhead per chunk for GCM (nonce + tag).
 pub const CHUNK_OVERHEAD: usize = CHUNK_NONCE_SIZE + TAG_SIZE;
+
+// ============================================================================
+// Constants - CTRMAC (SIV_CTRMAC cipher combo)
+// ============================================================================
+
+/// Size of the file header in bytes for CTRMAC (nonce + encrypted payload + MAC).
+pub const CTRMAC_HEADER_SIZE: usize = 88;
+
+/// Size of the header nonce in bytes for CTRMAC.
+pub const CTRMAC_HEADER_NONCE_SIZE: usize = 16;
+
+/// Size of the chunk nonce in bytes for CTRMAC.
+pub const CTRMAC_CHUNK_NONCE_SIZE: usize = 16;
+
+/// Size of the HMAC-SHA256 tag in bytes for CTRMAC.
+pub const CTRMAC_MAC_SIZE: usize = 32;
+
+/// Maximum encrypted chunk size for CTRMAC (nonce + ciphertext + MAC).
+pub const CTRMAC_CHUNK_ENCRYPTED_SIZE: usize = CHUNK_PLAINTEXT_SIZE + CTRMAC_CHUNK_OVERHEAD;
+
+/// Overhead per chunk for CTRMAC (nonce + MAC).
+pub const CTRMAC_CHUNK_OVERHEAD: usize = CTRMAC_CHUNK_NONCE_SIZE + CTRMAC_MAC_SIZE;
 
 // ============================================================================
 // Chunk Math Helpers
@@ -72,56 +106,88 @@ pub fn plaintext_to_chunk_offset(offset: u64) -> usize {
     (offset % CHUNK_PLAINTEXT_SIZE as u64) as usize
 }
 
-/// Calculate the encrypted file offset for the start of a chunk.
+/// Calculate the encrypted file offset for the start of a chunk (GCM format).
 #[inline]
 pub fn chunk_to_encrypted_offset(chunk_num: u64) -> u64 {
-    HEADER_SIZE as u64 + chunk_num * CHUNK_ENCRYPTED_SIZE as u64
+    chunk_to_encrypted_offset_for_cipher(chunk_num, CipherCombo::SivGcm)
 }
 
-/// Calculate plaintext file size from encrypted file size.
+/// Calculate the encrypted file offset for the start of a chunk with cipher combo.
+#[inline]
+pub fn chunk_to_encrypted_offset_for_cipher(chunk_num: u64, cipher_combo: CipherCombo) -> u64 {
+    let (header_size, chunk_size) = match cipher_combo {
+        CipherCombo::SivGcm => (HEADER_SIZE, CHUNK_ENCRYPTED_SIZE),
+        CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_CHUNK_ENCRYPTED_SIZE),
+    };
+    header_size as u64 + chunk_num * chunk_size as u64
+}
+
+/// Calculate plaintext file size from encrypted file size (GCM format).
 ///
 /// Returns `None` if the encrypted size is too small to be valid.
 pub fn encrypted_to_plaintext_size(encrypted_size: u64) -> Option<u64> {
-    if encrypted_size < HEADER_SIZE as u64 {
+    encrypted_to_plaintext_size_for_cipher(encrypted_size, CipherCombo::SivGcm)
+}
+
+/// Calculate plaintext file size from encrypted file size with cipher combo.
+///
+/// Returns `None` if the encrypted size is too small to be valid.
+pub fn encrypted_to_plaintext_size_for_cipher(encrypted_size: u64, cipher_combo: CipherCombo) -> Option<u64> {
+    let (header_size, chunk_size, chunk_overhead) = match cipher_combo {
+        CipherCombo::SivGcm => (HEADER_SIZE, CHUNK_ENCRYPTED_SIZE, CHUNK_OVERHEAD),
+        CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_CHUNK_ENCRYPTED_SIZE, CTRMAC_CHUNK_OVERHEAD),
+    };
+
+    if encrypted_size < header_size as u64 {
         return None;
     }
 
-    let content_size = encrypted_size - HEADER_SIZE as u64;
+    let content_size = encrypted_size - header_size as u64;
     if content_size == 0 {
         // File with header but no content chunks - invalid
         return None;
     }
 
-    let full_chunks = content_size / CHUNK_ENCRYPTED_SIZE as u64;
-    let remainder = content_size % CHUNK_ENCRYPTED_SIZE as u64;
+    let full_chunks = content_size / chunk_size as u64;
+    let remainder = content_size % chunk_size as u64;
 
     // Calculate plaintext from full chunks
     let mut plaintext_size = full_chunks * CHUNK_PLAINTEXT_SIZE as u64;
 
     // Handle partial final chunk
     if remainder > 0 {
-        if remainder < CHUNK_OVERHEAD as u64 {
+        if remainder < chunk_overhead as u64 {
             // Partial chunk too small to be valid
             return None;
         }
-        plaintext_size += remainder - CHUNK_OVERHEAD as u64;
+        plaintext_size += remainder - chunk_overhead as u64;
     }
 
     Some(plaintext_size)
 }
 
-/// Calculate plaintext file size, returning 0 for edge cases.
+/// Calculate plaintext file size, returning 0 for edge cases (GCM format).
 ///
 /// This is a convenience wrapper around [`encrypted_to_plaintext_size`] that
 /// returns 0 for empty files (single empty chunk) and invalid sizes.
 pub fn encrypted_to_plaintext_size_or_zero(encrypted_size: u64) -> u64 {
+    encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size, CipherCombo::SivGcm)
+}
+
+/// Calculate plaintext file size with cipher combo, returning 0 for edge cases.
+pub fn encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size: u64, cipher_combo: CipherCombo) -> u64 {
+    let (header_size, chunk_overhead) = match cipher_combo {
+        CipherCombo::SivGcm => (HEADER_SIZE, CHUNK_OVERHEAD),
+        CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_CHUNK_OVERHEAD),
+    };
+
     // Special case: header + single empty chunk (empty file)
-    // Empty chunk is CHUNK_OVERHEAD bytes (nonce + tag with no ciphertext)
-    if encrypted_size == HEADER_SIZE as u64 + CHUNK_OVERHEAD as u64 {
+    // Empty chunk is chunk_overhead bytes (nonce + tag/mac with no ciphertext)
+    if encrypted_size == header_size as u64 + chunk_overhead as u64 {
         return 0;
     }
 
-    encrypted_to_plaintext_size(encrypted_size).unwrap_or(0)
+    encrypted_to_plaintext_size_for_cipher(encrypted_size, cipher_combo).unwrap_or(0)
 }
 
 // ============================================================================
@@ -262,6 +328,10 @@ impl StreamingError {
 /// the necessary chunks. Maintains a small cache of recently accessed chunks
 /// to optimize sequential reads.
 ///
+/// Supports both cipher combos:
+/// - **SIV_GCM**: AES-GCM (12-byte nonces, 16-byte tags)
+/// - **SIV_CTRMAC**: AES-CTR + HMAC-SHA256 (16-byte nonces, 32-byte MACs)
+///
 /// # Lock Retention
 ///
 /// When created through `VaultOperationsAsync::open_file()`, this reader holds
@@ -271,7 +341,15 @@ impl StreamingError {
 /// # Example
 ///
 /// ```ignore
+/// // For SIV_GCM vaults (default):
 /// let mut reader = VaultFileReader::open(&encrypted_path, &master_key).await?;
+///
+/// // For SIV_CTRMAC vaults:
+/// let mut reader = VaultFileReader::open_with_cipher(
+///     &encrypted_path,
+///     &master_key,
+///     CipherCombo::SivCtrMac
+/// ).await?;
 ///
 /// // Read bytes 1000-2000 (only decrypts the relevant chunk)
 /// let data = reader.read_range(1000, 1000).await?;
@@ -284,8 +362,13 @@ pub struct VaultFileReader {
     file: File,
     /// The decrypted content key from the file header
     content_key: Zeroizing<[u8; 32]>,
-    /// Header nonce, used as part of chunk AAD
-    header_nonce: [u8; HEADER_NONCE_SIZE],
+    /// Header nonce, used as part of chunk AAD (12 bytes for GCM, 16 bytes for CTRMAC)
+    header_nonce: Vec<u8>,
+    /// MAC key for CTRMAC cipher combo (stored as Zeroizing for security)
+    /// Only populated when cipher_combo is SivCtrMac
+    mac_key: Option<Zeroizing<Vec<u8>>>,
+    /// The cipher combo used for this file
+    cipher_combo: CipherCombo,
     /// Total plaintext size of the file
     plaintext_size: u64,
     /// Path to the file (for error context)
@@ -306,6 +389,7 @@ impl std::fmt::Debug for VaultFileReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VaultFileReader")
             .field("path", &self.path)
+            .field("cipher_combo", &self.cipher_combo)
             .field("plaintext_size", &self.plaintext_size)
             .field("cached_chunk", &self.cached_chunk.as_ref().map(|(n, _)| n))
             .finish_non_exhaustive()
@@ -313,18 +397,40 @@ impl std::fmt::Debug for VaultFileReader {
 }
 
 impl VaultFileReader {
-    /// Open an encrypted file for streaming reads.
+    /// Open an encrypted file for streaming reads (assumes SIV_GCM cipher combo).
     ///
     /// Reads and decrypts the file header to extract the content key.
     /// The file handle is kept open for subsequent read operations.
+    ///
+    /// For SIV_CTRMAC vaults, use [`open_with_cipher`] instead.
     #[instrument(level = "debug", skip(master_key), fields(path = %path.as_ref().display()))]
     pub async fn open(path: impl AsRef<Path>, master_key: &MasterKey) -> Result<Self, StreamingError> {
+        Self::open_with_cipher(path, master_key, CipherCombo::SivGcm).await
+    }
+
+    /// Open an encrypted file for streaming reads with specified cipher combo.
+    ///
+    /// Reads and decrypts the file header using the appropriate algorithm
+    /// (AES-GCM or AES-CTR + HMAC-SHA256) and extracts the content key.
+    /// The file handle is kept open for subsequent read operations.
+    #[instrument(level = "debug", skip(master_key), fields(path = %path.as_ref().display(), cipher = ?cipher_combo))]
+    pub async fn open_with_cipher(
+        path: impl AsRef<Path>,
+        master_key: &MasterKey,
+        cipher_combo: CipherCombo,
+    ) -> Result<Self, StreamingError> {
         let path = path.as_ref();
         let context = StreamingContext::new()
             .with_path(path)
             .with_operation("open");
 
-        debug!("Opening encrypted file for streaming read");
+        // Get format-specific constants
+        let (header_size, nonce_size) = match cipher_combo {
+            CipherCombo::SivGcm => (HEADER_SIZE, HEADER_NONCE_SIZE),
+            CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_HEADER_NONCE_SIZE),
+        };
+
+        debug!(cipher_combo = ?cipher_combo, "Opening encrypted file for streaming read");
 
         let mut file = File::open(path).await.map_err(|e| {
             StreamingError::io_with_context(e, context.clone())
@@ -336,36 +442,67 @@ impl VaultFileReader {
         })?;
         let encrypted_size = metadata.len();
 
-        if encrypted_size < HEADER_SIZE as u64 {
+        if encrypted_size < header_size as u64 {
             return Err(StreamingError::FileTooSmall {
-                expected: HEADER_SIZE,
+                expected: header_size,
                 actual: encrypted_size as usize,
                 context,
             });
         }
 
-        // Read header
-        let mut header_bytes = [0u8; HEADER_SIZE];
+        // Read header (size depends on cipher combo)
+        let mut header_bytes = vec![0u8; header_size];
         file.read_exact(&mut header_bytes).await.map_err(|e| {
             StreamingError::io_with_context(e, context.clone())
         })?;
 
-        // Extract header nonce before decryption
-        let mut header_nonce = [0u8; HEADER_NONCE_SIZE];
-        header_nonce.copy_from_slice(&header_bytes[..HEADER_NONCE_SIZE]);
+        // Extract header nonce (size depends on cipher combo)
+        let header_nonce = header_bytes[..nonce_size].to_vec();
 
         // Decrypt header to get content key
         let file_context = FileContext::new().with_path(path);
-        let header = super::file::decrypt_file_header_with_context(
-            &header_bytes,
-            master_key,
-            file_context,
-        )?;
+        let (content_key, mac_key) = match cipher_combo {
+            CipherCombo::SivGcm => {
+                let header = super::file::decrypt_file_header_with_context(
+                    &header_bytes,
+                    master_key,
+                    file_context,
+                )?;
+                (header.content_key, None)
+            }
+            CipherCombo::SivCtrMac => {
+                let header = file_ctrmac::decrypt_header(
+                    &header_bytes,
+                    master_key,
+                    file_context,
+                ).map_err(|e| {
+                    warn!(error = %e, "CTRMAC header decryption failed");
+                    StreamingError::HeaderDecryption(
+                        FileDecryptionError::HeaderDecryption {
+                            context: FileContext::new().with_path(path),
+                        }
+                    )
+                })?;
+                // Extract MAC key from master key for chunk verification
+                let mac_key = master_key.with_mac_key(|key| {
+                    Zeroizing::new(key.to_vec())
+                }).map_err(|e| {
+                    warn!(error = %e, "Failed to extract MAC key");
+                    StreamingError::HeaderDecryption(
+                        FileDecryptionError::HeaderDecryption {
+                            context: FileContext::new().with_path(path),
+                        }
+                    )
+                })?;
+                (header.content_key, Some(mac_key))
+            }
+        };
 
         // Calculate plaintext size
-        let plaintext_size = encrypted_to_plaintext_size_or_zero(encrypted_size);
+        let plaintext_size = encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size, cipher_combo);
 
         debug!(
+            cipher_combo = ?cipher_combo,
             encrypted_size = encrypted_size,
             plaintext_size = plaintext_size,
             "File opened for streaming read"
@@ -373,8 +510,10 @@ impl VaultFileReader {
 
         Ok(Self {
             file,
-            content_key: header.content_key,
+            content_key,
             header_nonce,
+            mac_key,
+            cipher_combo,
             plaintext_size,
             path: path.to_path_buf(),
             cached_chunk: None,
@@ -493,22 +632,28 @@ impl VaultFileReader {
             return Ok(data.clone());
         }
 
-        trace!(chunk = chunk_num, "Cache miss, reading from disk");
+        trace!(chunk = chunk_num, cipher_combo = ?self.cipher_combo, "Cache miss, reading from disk");
 
         let context = StreamingContext::new()
             .with_path(&self.path)
             .with_chunk(chunk_num)
             .with_operation("read_chunk");
 
-        // Seek to chunk position
-        let encrypted_offset = chunk_to_encrypted_offset(chunk_num);
+        // Get cipher-combo-specific sizes
+        let (chunk_encrypted_size, chunk_overhead) = match self.cipher_combo {
+            CipherCombo::SivGcm => (CHUNK_ENCRYPTED_SIZE, CHUNK_OVERHEAD),
+            CipherCombo::SivCtrMac => (CTRMAC_CHUNK_ENCRYPTED_SIZE, CTRMAC_CHUNK_OVERHEAD),
+        };
+
+        // Seek to chunk position (cipher-combo-aware)
+        let encrypted_offset = chunk_to_encrypted_offset_for_cipher(chunk_num, self.cipher_combo);
         self.file
             .seek(SeekFrom::Start(encrypted_offset))
             .await
             .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
 
         // Read encrypted chunk (may be smaller for last chunk)
-        let mut encrypted_chunk = vec![0u8; CHUNK_ENCRYPTED_SIZE];
+        let mut encrypted_chunk = vec![0u8; chunk_encrypted_size];
         let bytes_read = self.file.read(&mut encrypted_chunk).await.map_err(|e| {
             StreamingError::io_with_context(e, context.clone())
         })?;
@@ -517,7 +662,7 @@ impl VaultFileReader {
             // No data at this position - shouldn't happen for valid chunk numbers
             return Err(StreamingError::IncompleteChunk {
                 chunk_number: chunk_num,
-                expected: CHUNK_OVERHEAD,
+                expected: chunk_overhead,
                 actual: 0,
                 context,
             });
@@ -525,16 +670,16 @@ impl VaultFileReader {
 
         encrypted_chunk.truncate(bytes_read);
 
-        if encrypted_chunk.len() < CHUNK_OVERHEAD {
+        if encrypted_chunk.len() < chunk_overhead {
             return Err(StreamingError::IncompleteChunk {
                 chunk_number: chunk_num,
-                expected: CHUNK_OVERHEAD,
+                expected: chunk_overhead,
                 actual: encrypted_chunk.len(),
                 context,
             });
         }
 
-        // Decrypt chunk
+        // Decrypt chunk using appropriate algorithm
         let decrypted = self.decrypt_chunk(chunk_num, &encrypted_chunk)?;
         let decrypted = Zeroizing::new(decrypted);
 
@@ -544,18 +689,26 @@ impl VaultFileReader {
         Ok(decrypted)
     }
 
-    /// Decrypt a single chunk using AES-GCM.
+    /// Decrypt a single chunk using the appropriate cipher algorithm.
     fn decrypt_chunk(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
+        match self.cipher_combo {
+            CipherCombo::SivGcm => self.decrypt_chunk_gcm(chunk_num, encrypted),
+            CipherCombo::SivCtrMac => self.decrypt_chunk_ctrmac(chunk_num, encrypted),
+        }
+    }
+
+    /// Decrypt a single chunk using AES-GCM (SIV_GCM cipher combo).
+    fn decrypt_chunk_gcm(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
         let context = StreamingContext::new()
             .with_path(&self.path)
             .with_chunk(chunk_num)
-            .with_operation("decrypt_chunk");
+            .with_operation("decrypt_chunk_gcm");
 
         let nonce = Nonce::from_slice(&encrypted[..CHUNK_NONCE_SIZE]);
         let ciphertext = &encrypted[CHUNK_NONCE_SIZE..];
 
         // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
-        let mut aad = Vec::with_capacity(8 + HEADER_NONCE_SIZE);
+        let mut aad = Vec::with_capacity(8 + self.header_nonce.len());
         aad.extend_from_slice(&chunk_num.to_be_bytes());
         aad.extend_from_slice(&self.header_nonce);
 
@@ -574,6 +727,74 @@ impl VaultFileReader {
                 context,
             }
         })
+    }
+
+    /// Decrypt a single chunk using AES-CTR + HMAC-SHA256 (SIV_CTRMAC cipher combo).
+    fn decrypt_chunk_ctrmac(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
+        let context = StreamingContext::new()
+            .with_path(&self.path)
+            .with_chunk(chunk_num)
+            .with_operation("decrypt_chunk_ctrmac");
+
+        // Get MAC key (must be present for CTRMAC)
+        let mac_key = self.mac_key.as_ref().ok_or_else(|| {
+            warn!(chunk = chunk_num, "MAC key not available for CTRMAC decryption");
+            StreamingError::ChunkDecryptionFailed {
+                chunk_number: chunk_num,
+                context: context.clone(),
+            }
+        })?;
+
+        // Parse chunk: nonce (16) + ciphertext (variable) + MAC (32)
+        if encrypted.len() < CTRMAC_CHUNK_OVERHEAD {
+            return Err(StreamingError::IncompleteChunk {
+                chunk_number: chunk_num,
+                expected: CTRMAC_CHUNK_OVERHEAD,
+                actual: encrypted.len(),
+                context,
+            });
+        }
+
+        let chunk_nonce = &encrypted[..CTRMAC_CHUNK_NONCE_SIZE];
+        let ciphertext = &encrypted[CTRMAC_CHUNK_NONCE_SIZE..encrypted.len() - CTRMAC_MAC_SIZE];
+        let expected_mac = &encrypted[encrypted.len() - CTRMAC_MAC_SIZE..];
+
+        // Verify HMAC: MAC(header_nonce || chunk_number_be || chunk_nonce || ciphertext)
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
+        let mut mac_context = hmac::Context::with_key(&hmac_key);
+        mac_context.update(&self.header_nonce);
+        mac_context.update(&chunk_num.to_be_bytes());
+        mac_context.update(chunk_nonce);
+        mac_context.update(ciphertext);
+        let computed_mac = mac_context.sign();
+
+        // Constant-time comparison
+        if !bool::from(computed_mac.as_ref().ct_eq(expected_mac)) {
+            warn!(chunk = chunk_num, "Chunk HMAC verification failed");
+            return Err(StreamingError::ChunkDecryptionFailed {
+                chunk_number: chunk_num,
+                context,
+            });
+        }
+
+        // Decrypt with AES-CTR
+        let chunk_nonce_array: [u8; 16] = chunk_nonce.try_into().map_err(|_| {
+            StreamingError::ChunkDecryptionFailed {
+                chunk_number: chunk_num,
+                context: context.clone(),
+            }
+        })?;
+        let mut cipher = Aes256Ctr::new((&*self.content_key).into(), (&chunk_nonce_array).into());
+        let mut plaintext = ciphertext.to_vec();
+        cipher.apply_keystream(&mut plaintext);
+
+        trace!(
+            chunk = chunk_num,
+            decrypted_size = plaintext.len(),
+            "CTRMAC chunk decrypted successfully"
+        );
+
+        Ok(plaintext)
     }
 }
 

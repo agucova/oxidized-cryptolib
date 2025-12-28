@@ -363,6 +363,9 @@ pub enum VaultError {
     #[error("Error validating vault claims: {0}")]
     ClaimValidation(#[from] ClaimValidationError),
 
+    #[error("Error cloning master key: {0}")]
+    KeyClone(#[from] crate::crypto::keys::KeyAccessError),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

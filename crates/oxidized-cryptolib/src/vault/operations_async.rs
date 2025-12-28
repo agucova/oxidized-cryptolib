@@ -28,7 +28,7 @@ use crate::{
     fs::name::{create_c9s_filename, decrypt_filename, encrypt_filename, hash_dir_id},
     fs::streaming::{VaultFileReader, VaultFileWriter},
     fs::symlink::{decrypt_symlink_target, encrypt_symlink_target},
-    vault::config::CipherCombo,
+    vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
     vault::handles::VaultHandleTable,
     vault::locks::{VaultLockManager, VaultLockRegistry},
     vault::path::{DirId, VaultPath},
@@ -93,7 +93,61 @@ pub struct VaultOperationsAsync {
 }
 
 impl VaultOperationsAsync {
+    /// Open an existing vault with the given password.
+    ///
+    /// This is the recommended way to open a vault. It reads the vault configuration,
+    /// extracts the master key, and automatically configures the correct cipher combo
+    /// and shortening threshold based on the vault's settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `vault_path` - Path to the vault root directory
+    /// * `password` - The vault password
+    ///
+    /// # Errors
+    ///
+    /// Returns `VaultError` if:
+    /// - The vault configuration cannot be read
+    /// - The password is incorrect
+    /// - The vault format is unsupported
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let ops = VaultOperationsAsync::open(Path::new("my_vault"), "password")?;
+    /// let files = ops.list_files(&DirId::root()).await?;
+    /// ```
+    #[instrument(level = "info", skip(password), fields(vault_path = %vault_path.display()))]
+    pub fn open(vault_path: &Path, password: &str) -> Result<Self, VaultError> {
+        // Extract master key (validates password)
+        let master_key = extract_master_key(vault_path, password)?;
+
+        // Read and validate vault config to get cipher combo and shortening threshold
+        let vault_config_path = vault_path.join("vault.cryptomator");
+        let vault_config_jwt = std::fs::read_to_string(&vault_config_path)?;
+        let claims = validate_vault_claims(&vault_config_jwt, &master_key)?;
+
+        let cipher_combo = claims.cipher_combo().expect("cipher combo already validated");
+        let shortening_threshold = claims.shortening_threshold();
+
+        info!(
+            cipher_combo = ?cipher_combo,
+            shortening_threshold = shortening_threshold,
+            "Vault opened successfully"
+        );
+
+        Self::with_options(vault_path, &master_key, shortening_threshold, cipher_combo)
+            .map_err(|e| match e {
+                AsyncVaultError::KeyCloneError(key_err) => VaultError::KeyClone(key_err),
+                AsyncVaultError::VaultOperation(_) => unreachable!("with_options only returns KeyCloneError"),
+            })
+    }
+
     /// Create a new async vault operations instance with default SIV_GCM cipher.
+    ///
+    /// **Note:** Prefer [`open()`](Self::open) for opening existing vaults, as it
+    /// automatically reads the correct cipher combo from the vault configuration.
+    /// Use this method only when you need manual control over the configuration.
     ///
     /// # Arguments
     ///
@@ -883,10 +937,14 @@ impl VaultOperationsAsync {
             }
         })?;
 
-        debug!(encrypted_path = %file_info.encrypted_path.display(), "Found file, opening for streaming");
+        debug!(encrypted_path = %file_info.encrypted_path.display(), cipher_combo = ?self.cipher_combo, "Found file, opening for streaming");
 
-        // Open the file using VaultFileReader
-        let reader = VaultFileReader::open(&file_info.encrypted_path, &self.master_key)
+        // Open the file using VaultFileReader with the vault's cipher combo
+        let reader = VaultFileReader::open_with_cipher(
+            &file_info.encrypted_path,
+            &self.master_key,
+            self.cipher_combo,
+        )
             .await
             .map_err(|e| VaultOperationError::Streaming {
                 source: Box::new(e),

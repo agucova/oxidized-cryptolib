@@ -160,3 +160,64 @@ pjdfstest:
 2. Verify tests pass on Linux
 3. Add pjdfstest CI job
 4. Document test requirements in README
+
+---
+
+## Implementation Status (Completed)
+
+### Files Created
+
+| File | Description |
+|------|-------------|
+| `crates/oxidized-fuse/tests/mount_tests.rs` | 10 Rust mount tests covering read, write, mkdir, rename, symlinks, large files, concurrent access |
+| `crates/oxidized-fuse/tests/pjdfstest.rs` | Rust wrapper for pjdfstest POSIX compliance tests (7 test categories) |
+| `scripts/run-pjdfstest.sh` | Wrapper script to run pjdfstest against mounted vault |
+
+### CI Workflows Updated
+
+Added to `.github/workflows/rust.yml`:
+- **fuse_tests** job: Runs Rust mount tests on Ubuntu with FUSE
+- **pjdfstest_rust** job: Runs Rust pjdfstest wrapper (mkdir, open, symlink tests - no sudo needed)
+- **pjdfstest_shell** job: Runs full pjdfstest suite via shell script (on main branch or with `run-pjdfstest` label)
+
+### Running Tests Locally
+
+```bash
+# Run mount tests (requires FUSE)
+cargo test -p oxidized-fuse --test mount_tests -- --ignored --test-threads=1
+
+# Run pjdfstest Rust wrapper (requires FUSE and pjdfstest binary)
+# In devenv, pjdfstest is available automatically
+cargo test -p oxidized-fuse --test pjdfstest "mkdir" -- --ignored --test-threads=1
+cargo test -p oxidized-fuse --test pjdfstest "open" -- --ignored --test-threads=1
+cargo test -p oxidized-fuse --test pjdfstest "symlink" -- --ignored --test-threads=1
+
+# Run full pjdfstest suite (requires sudo for chown/chmod tests)
+sudo ./scripts/run-pjdfstest.sh --quick
+```
+
+### pjdfstest Test Status
+
+| Test Category | Status | Notes |
+|---------------|--------|-------|
+| mkdir | ✅ 100% pass | Directory create/remove operations |
+| open | ✅ 100% pass | File create with O_CREAT |
+| symlink | ✅ 100% pass | Symlink create/unlink (readlink not supported by pjdfstest on macOS) |
+| unlink | ⚠️ Known issues | File visibility after create (cache issue) |
+| rename | ⚠️ Known issues | File visibility after create (cache issue) |
+| truncate | ❌ Not implemented | setattr returns ENOSYS |
+
+### Mount Tests Coverage
+
+| Test | Purpose |
+|------|---------|
+| `test_mount_and_list_root` | Basic mount and readdir |
+| `test_read_file_content` | Read encrypted file, verify decryption |
+| `test_file_attributes` | Verify file metadata |
+| `test_concurrent_reads` | Multi-threaded directory access |
+| `test_write_new_file` | Create and write file |
+| `test_mkdir_and_rmdir` | Directory operations |
+| `test_rename_file` | Move/rename within vault |
+| `test_symlink_roundtrip` | Create and read symlinks |
+| `test_large_file` | Multi-chunk file (>32KB) |
+| `test_rapid_open_close` | Stress test for handle management |

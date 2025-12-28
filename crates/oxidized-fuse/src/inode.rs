@@ -193,6 +193,17 @@ impl InodeTable {
         self.inode_to_entry.get_mut(&inode)
     }
 
+    /// Updates the kind of an existing inode entry.
+    /// Returns true if the inode was found and updated.
+    pub fn update_kind(&self, inode: u64, kind: InodeKind) -> bool {
+        if let Some(mut entry) = self.inode_to_entry.get_mut(&inode) {
+            entry.kind = kind;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Looks up an inode by vault path.
     pub fn get_inode(&self, path: &VaultPath) -> Option<u64> {
         self.path_to_inode.get(path).map(|r| *r)

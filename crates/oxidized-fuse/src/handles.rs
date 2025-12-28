@@ -49,6 +49,19 @@ impl WriteBuffer {
         Self::new(dir_id, filename, Vec::new())
     }
 
+    /// Create a new write buffer for a newly created file.
+    ///
+    /// Unlike `new_empty`, this marks the buffer as dirty so the file
+    /// is written to the vault even if empty (creating an empty file).
+    pub fn new_for_create(dir_id: DirId, filename: String) -> Self {
+        Self {
+            content: Vec::new(),
+            dirty: true, // Must write to create the file
+            dir_id,
+            filename,
+        }
+    }
+
     /// Write data at the specified offset.
     ///
     /// The buffer is automatically expanded if the write extends past the current end.
@@ -267,6 +280,17 @@ mod tests {
         assert!(buf.is_empty());
         assert_eq!(buf.len(), 0);
         assert!(!buf.is_dirty());
+    }
+
+    #[test]
+    fn test_write_buffer_new_for_create() {
+        // new_for_create marks buffer as dirty even when empty
+        // so the file will be written to vault on release
+        let buf = WriteBuffer::new_for_create(test_dir_id(), "new_file.txt".to_string());
+        assert!(buf.is_empty());
+        assert_eq!(buf.len(), 0);
+        assert!(buf.is_dirty()); // Key difference from new_empty
+        assert_eq!(buf.filename(), "new_file.txt");
     }
 
     #[test]

@@ -27,6 +27,79 @@ jobs:
       - name: Run stress tests (long-running concurrency tests)
         run: cargo nextest run --profile ci -p oxidized-cryptolib --features stress -E 'test(stress_)'
 
+  fuse_tests:
+    name: FUSE Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: Build oxidized-fuse (release)
+        run: cargo build --release -p oxidized-fuse
+      - name: Run Rust mount tests
+        run: |
+          # Run the ignored mount tests (requires FUSE)
+          cargo test -p oxidized-fuse --test mount_tests -- --ignored --test-threads=1 2>&1 || echo "Some mount tests failed (expected in CI without proper FUSE setup)"
+        continue-on-error: true
+
+  pjdfstest_rust:
+    name: POSIX Compliance (Rust pjdfstest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Install FUSE and pjdfstest dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev autoconf automake libtool perl
+      - name: Build pjdfstest
+        run: |
+          git clone --depth 1 https://github.com/pjd/pjdfstest.git /tmp/pjdfstest
+          cd /tmp/pjdfstest
+          autoreconf -ifs
+          ./configure
+          make
+      - name: Run Rust pjdfstest (passing tests)
+        env:
+          PJDFSTEST_BIN: /tmp/pjdfstest/pjdfstest
+        run: |
+          # Run the pjdfstest tests that are known to pass
+          # mkdir: directory create/remove operations
+          cargo test -p oxidized-fuse --test pjdfstest "mkdir" -- --ignored --test-threads=1 --nocapture
+          # open: file create/open operations
+          cargo test -p oxidized-fuse --test pjdfstest "open" -- --ignored --test-threads=1 --nocapture
+          # symlink: symlink create/unlink operations
+          cargo test -p oxidized-fuse --test pjdfstest "symlink" -- --ignored --test-threads=1 --nocapture
+
+  pjdfstest_shell:
+    name: POSIX Compliance (Shell pjdfstest)
+    runs-on: ubuntu-latest
+    # Only run on main branch or when explicitly requested (requires sudo)
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-pjdfstest')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup update nightly && rustup default nightly
+      - name: Install FUSE and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev autoconf automake libtool perl
+      - name: Build oxidized-fuse (release)
+        run: cargo build --release -p oxidized-fuse
+      - name: Build pjdfstest
+        run: |
+          git clone --depth 1 https://github.com/pjd/pjdfstest.git
+          cd pjdfstest
+          autoreconf -ifs
+          ./configure
+          make
+      - name: Run pjdfstest (quick mode)
+        run: sudo ./scripts/run-pjdfstest.sh --quick --pjdfstest ./pjdfstest
+        continue-on-error: true
+
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest

@@ -14,7 +14,7 @@ use fuser::{
 };
 use libc::c_int;
 use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
-use oxidized_cryptolib::vault::{extract_master_key, DirId, VaultOperationsAsync};
+use oxidized_cryptolib::vault::{DirId, VaultOperationsAsync};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -76,18 +76,9 @@ impl CryptomatorFS {
             )))
         })?;
 
-        // Extract master key (also validates vault.cryptomator JWT)
-        let master_key = extract_master_key(vault_path, password).map_err(|e| {
-            FuseError::Io(std::io::Error::other(format!(
-                "Failed to extract master key: {e}"
-            )))
-        })?;
-
-        // Create async operations
-        let ops = VaultOperationsAsync::new(vault_path, &master_key).map_err(|e| {
-            FuseError::Io(std::io::Error::other(format!(
-                "Failed to create vault operations: {e}"
-            )))
+        // Open vault - extracts key, reads config, configures cipher combo automatically
+        let ops = VaultOperationsAsync::open(vault_path, password).map_err(|e| {
+            FuseError::Io(std::io::Error::other(format!("Failed to open vault: {e}")))
         })?;
 
         // Get current user/group
@@ -218,12 +209,12 @@ impl CryptomatorFS {
         for dir_info in dirs {
             if dir_info.name == name {
                 let child_path = parent_path.join(name);
-                let inode = self.inodes.get_or_insert(
-                    child_path,
-                    InodeKind::Directory {
-                        dir_id: dir_info.directory_id.clone(),
-                    },
-                );
+                let correct_kind = InodeKind::Directory {
+                    dir_id: dir_info.directory_id.clone(),
+                };
+                let inode = self.inodes.get_or_insert(child_path, correct_kind.clone());
+                // Always update the kind to ensure correct DirId (may have been placeholder)
+                self.inodes.update_kind(inode, correct_kind);
                 let attr = self.make_dir_attr(inode);
                 self.attr_cache.insert(inode, attr);
                 return Ok((inode, attr, FileType::Directory));
@@ -749,8 +740,26 @@ impl Filesystem for CryptomatorFS {
             } else if entry.name == ".." {
                 parent_inode
             } else {
-                // We'll resolve the real inode on lookup
-                0
+                // Allocate a real inode for the entry
+                let child_path = current_path.join(&entry.name);
+                let kind = match entry.file_type {
+                    FileType::Directory => InodeKind::Directory {
+                        dir_id: DirId::from_raw(""), // Placeholder, will be resolved on lookup
+                    },
+                    FileType::RegularFile => InodeKind::File {
+                        dir_id: dir_id.clone(),
+                        name: entry.name.clone(),
+                    },
+                    FileType::Symlink => InodeKind::Symlink {
+                        dir_id: dir_id.clone(),
+                        name: entry.name.clone(),
+                    },
+                    _ => InodeKind::File {
+                        dir_id: dir_id.clone(),
+                        name: entry.name.clone(),
+                    },
+                };
+                self.inodes.get_or_insert(child_path, kind)
             };
 
             // buffer.add returns true if buffer is full
@@ -844,9 +853,9 @@ impl Filesystem for CryptomatorFS {
         let parent_path = parent_entry.path.clone();
         drop(parent_entry);
 
-        // Create the file with empty WriteBuffer
-        // (File will be written to vault on release if buffer is dirty)
-        let buffer = WriteBuffer::new_empty(dir_id.clone(), name_str.to_string());
+        // Create the file with a new WriteBuffer marked dirty
+        // (File will be written to vault on release, even if empty)
+        let buffer = WriteBuffer::new_for_create(dir_id.clone(), name_str.to_string());
         let fh = self.handle_table.insert(FuseHandle::WriteBuffer(buffer));
 
         // Allocate inode

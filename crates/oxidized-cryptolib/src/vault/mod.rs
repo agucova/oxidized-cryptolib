@@ -22,8 +22,8 @@ pub use operations_async::VaultOperationsAsync;
 
 // Re-export commonly used types
 pub use config::{
-    create_vault_config, extract_master_key, validate_vault_claims, CiphertextDir, VaultConfig,
-    VaultConfigurationClaims,
+    create_vault_config, extract_master_key, validate_vault_claims, CipherCombo, CiphertextDir,
+    VaultConfig, VaultConfigurationClaims, VaultError,
 };
 pub use creator::{VaultCreationError, VaultCreator};
 pub use master_key::{
