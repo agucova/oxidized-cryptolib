@@ -1,4 +1,4 @@
-# cargo-deny configuration for oxidized-cryptolib
+# cargo-deny configuration for oxcrypt-core
 # https://embarkstudios.github.io/cargo-deny/
 
 [graph]
@@ -112,6 +112,6 @@ unknown-registry = "deny"
 unknown-git = "warn"  # Warn instead of deny to allow fskit-rs during development
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    # FSKit Rust bindings - required for oxidized-fskit-legacy (macOS 15.4+)
+    # FSKit Rust bindings - required for oxcrypt-fskit (macOS 15.4+)
     "https://github.com/debox-network/fskit-rs",
 ]

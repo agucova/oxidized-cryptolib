@@ -1,0 +1,92 @@
+[package]
+name = "oxcrypt-core"
+version = "0.3.0"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Aggustin Covarrubias <gh@agucova.dev>"]
+description = "Core Cryptomator vault encryption library for OxCrypt"
+license.workspace = true
+repository.workspace = true
+keywords = ["cryptomator", "encryption", "vault", "aes", "cryptography"]
+categories = ["cryptography", "filesystem"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["async"]
+async = ["dep:tokio", "dep:dashmap", "dep:futures"]
+stress = []  # Enable long-running stress tests
+
+[dependencies]
+aead = "0.5"
+aes = "0.8"
+aes-gcm = "0.10"
+aes-siv = "0.7"
+ctr = "0.9"  # AES-CTR mode for SIV_CTRMAC cipher combo (uses ring::hmac for HMAC-SHA256)
+base64 = "0.22"
+data-encoding = "2.9"
+generic-array = "0.14"
+hex = "0.4"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+lru = "0.16"
+rand = "0.9"
+relative-path = "2.0.1"
+ring = "0.17"
+scrypt = "0.11"
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = { version = "3", features = ["base64"] }
+thiserror.workspace = true
+unicode-normalization = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+zeroize = { version = "1", features = ["std"] }
+subtle = "2"
+tempfile = "3"
+memsafe = "0.4"
+tracing.workspace = true
+tokio = { version = "1", features = ["fs", "io-util", "sync", "rt", "macros"], optional = true }
+dashmap = { version = "6", optional = true }
+futures = { version = "0.3", optional = true }
+
+[dev-dependencies]
+assert_fs = "1"
+criterion = "0.8"
+dudect-bencher = "0.6"
+futures = "0.3"
+hex-literal = "1"
+insta = "1"
+md5 = "0.8"
+proptest = "1"
+rand_chacha = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util", "time"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+wycheproof = "0.6"
+
+[[bench]]
+name = "directory_operations"
+harness = false
+
+[[bench]]
+name = "file_operations"
+harness = false
+
+[[bench]]
+name = "vault_operations"
+harness = false
+
+[[bench]]
+name = "workflows"
+harness = false
+
+[[bench]]
+name = "timing_leaks"
+harness = false
+
+[[bench]]
+name = "file_operations_ctrmac"
+harness = false

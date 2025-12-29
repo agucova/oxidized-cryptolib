@@ -1,7 +1,7 @@
-# Roadmap: oxidized-cryptolib → Production FUSE Filesystem
+# Roadmap: oxcrypt-core → Production FUSE Filesystem
 
 ## Goal
-Transform oxidized-cryptolib into a feature-complete, ergonomic library for building a high-performance Cryptomator client with FUSE filesystem support.
+Transform oxcrypt-core into a feature-complete, ergonomic library for building a high-performance Cryptomator client with FUSE filesystem support.
 
 **Target:** FUSE mount (macOS/Linux) with full Cryptomator compatibility using Tokio async runtime.
 
@@ -60,7 +60,7 @@ pub struct VaultOperationsAsync { ... }
 **Rationale:** MasterKey uses RefCell (not Send/Sync), so a separate struct with cloned key is cleaner than `_async` method variants.
 
 ### 2.2 Tokio Integration ✅
-**File:** `crates/oxidized-cryptolib/Cargo.toml`
+**File:** `crates/oxcrypt-core/Cargo.toml`
 
 ```toml
 [features]
@@ -257,7 +257,7 @@ pub fn read_file(...) { ... }
 ```
 
 ### 6.4 CLI Tool ✅
-**Crate:** `crates/oxidized-cli`
+**Crate:** `crates/oxcrypt`
 
 Full-featured CLI with commands:
 - `init` - Create new vault

@@ -5,20 +5,19 @@ Guidance for Claude Code when working with this repository.
 ## Workspace Crates
 
 **Applications:**
-- `oxidized-cli` - CLI tool (`oxcrypt`) - vault operations, mount/unmount, init
-- `oxidized-gui` - Desktop app (`oxvault`) using Dioxus with system tray
-- `oxidized-bench` - Benchmark harness (`oxbench`) for multi-backend comparison
+- `oxcrypt` - CLI tool - vault operations, mount/unmount, init
+- `oxcrypt-desktop` - Desktop app using Dioxus with system tray
+- `oxbench` - Benchmark harness for multi-backend comparison
 
 **Libraries:**
-- `oxidized-cryptolib` - Core Cryptomator encryption library (AES-GCM, AES-SIV, scrypt)
-- `oxidized-mount-common` - Shared mount utilities (MountBackend trait, WriteBuffer, caching, HandleTable)
+- `oxcrypt-core` - Core Cryptomator encryption library (AES-GCM, AES-SIV, scrypt)
+- `oxcrypt-mount` - Shared mount utilities (MountBackend trait, WriteBuffer, caching, HandleTable)
 
 **Mount Backends:**
-- `oxidized-fuse` - FUSE backend (Linux/macOS with macFUSE)
-- `oxidized-fskit-legacy` - FSKit via FSKitBridge.app (macOS 15.4+, deprecated)
-- `oxidized-fskit-ffi` - Native FSKit via Swift FFI (macOS 15.4+)
-- `oxidized-webdav` - WebDAV server backend (cross-platform, no kernel extensions)
-- `oxidized-nfs` - NFS server backend (Linux/macOS, no kernel extensions)
+- `oxcrypt-fuse` - FUSE backend (Linux/macOS with macFUSE)
+- `oxcrypt-fskit` - Native FSKit via Swift FFI (macOS 15.4+)
+- `oxcrypt-webdav` - WebDAV server backend (cross-platform, no kernel extensions)
+- `oxcrypt-nfs` - NFS server backend (Linux/macOS, no kernel extensions)
 
 ## Version Control
 
@@ -30,44 +29,42 @@ Standard Cargo commands work: `cargo build`, `cargo check`, `cargo clippy`, `car
 
 **Adding dependencies**: Always use `cargo add` instead of manually editing `Cargo.toml` to ensure the latest version is used:
 ```bash
-cargo add serde -p oxidized-cryptolib              # Add to specific crate
-cargo add tokio -p oxidized-cli --features full    # With features
+cargo add serde -p oxcrypt-core              # Add to specific crate
+cargo add tokio -p oxcrypt --features full   # With features
 ```
 
 **Testing** (uses `cargo-nextest`):
 ```bash
 cargo nextest run                    # All tests
-cargo nextest run -p oxidized-fuse --features fuse-tests  # FUSE integration tests
+cargo nextest run -p oxcrypt-fuse --features fuse-tests  # FUSE integration tests
 ```
 
 **Mount backend tests** (FUSE, WebDAV, NFS):
 ```bash
-cargo nextest run -p oxidized-fuse --features fuse-tests   # FUSE integration tests
-cargo nextest run -p oxidized-webdav                       # WebDAV tests
-cargo nextest run -p oxidized-nfs                          # NFS tests
+cargo nextest run -p oxcrypt-fuse --features fuse-tests   # FUSE integration tests
+cargo nextest run -p oxcrypt-webdav                       # WebDAV tests
+cargo nextest run -p oxcrypt-nfs                          # NFS tests
 ```
 
 FUSE integration tests require external tools (pjdfstest, fsx) and include POSIX compliance, data integrity, and stress testing.
 
 **FSKit prerequisites** (macOS 15.4+):
-1. `protoc` installed (provided by devenv)
-2. For `oxidized-fskit-legacy`: FSKitBridge.app (deprecated)
-3. For `oxidized-fskit-ffi`: Build Swift package:
+1. Build Swift package:
    ```bash
-   cd crates/oxidized-fskit-ffi/extension
+   cd crates/oxcrypt-fskit/extension
    swift build
    ```
-4. Enable in System Settings → General → Login Items & Extensions → File System Extensions
+2. Enable in System Settings → General → Login Items & Extensions → File System Extensions
 
 **GUI development** (uses `dx` CLI from dioxus-cli):
 ```bash
-dx serve -p oxidized-gui              # Hot-reload dev server
-dx serve -p oxidized-gui --features fuse  # With FUSE backend
-dx build -p oxidized-gui --release    # Production build
-dx bundle -p oxidized-gui --release   # Bundle for distribution
+dx serve -p oxcrypt-desktop              # Hot-reload dev server
+dx serve -p oxcrypt-desktop --features fuse  # With FUSE backend
+dx build -p oxcrypt-desktop --release    # Production build
+dx bundle -p oxcrypt-desktop --release   # Bundle for distribution
 ```
 
-**Benchmarking**: `cargo bench -p oxidized-cryptolib` or use `oxbench --help` for cross-implementation comparisons.
+**Benchmarking**: `cargo bench -p oxcrypt-core` or use `oxbench --help` for cross-implementation comparisons.
 
 **CLI commands** (`oxcrypt`):
 - Vault operations: `ls`, `cat`, `tree`, `mkdir`, `touch`, `rm`, `cp`, `mv`, `write`, `info`
@@ -82,14 +79,14 @@ Mount commands require backend features: `--features fuse,webdav,nfs`
 
 ## Architecture
 
-All mount backends share common infrastructure from `oxidized-mount-common`:
+All mount backends share common infrastructure from `oxcrypt-mount`:
 - `MountBackend` trait - unified interface for all backends
 - `WriteBuffer` - read-modify-write pattern for AES-GCM chunks
 - `HandleTable` - thread-safe file handle management
 - `moka_cache` - TTL-based attribute/entry caching (sync and async variants)
 - `VaultErrorCategory` - error classification for errno/HTTP status mapping
 
-### FUSE Mount (oxidized-fuse)
+### FUSE Mount (oxcrypt-fuse)
 ```
 CryptomatorFS (implements fuser::Filesystem)
         │
@@ -101,9 +98,9 @@ CryptomatorFS (implements fuser::Filesystem)
                 └── Crypto (AES-GCM, AES-SIV)
 ```
 
-### FSKit (oxidized-fskit-ffi, macOS 15.4+)
+### FSKit (oxcrypt-fskit, macOS 15.4+)
 ```
-VFS (Kernel) → XPC → OxVaultFSExtension (Swift) → FFI → CryptoFilesystem (Rust)
+VFS (Kernel) → XPC → OxCryptFSExtension (Swift) → FFI → CryptoFilesystem (Rust)
         │
         ├── ItemTable (item_id ↔ VaultPath mapping)
         ├── HandleTable (open file handles)
@@ -112,7 +109,7 @@ VFS (Kernel) → XPC → OxVaultFSExtension (Swift) → FFI → CryptoFilesystem
 
 Native FSKit via Swift FFI - no external bridge app required.
 
-### WebDAV (oxidized-webdav)
+### WebDAV (oxcrypt-webdav)
 ```
 WebDAV Client (Finder/Explorer) ←HTTP→ CryptomatorWebDav (dav-server)
         │
@@ -123,7 +120,7 @@ WebDAV Client (Finder/Explorer) ←HTTP→ CryptomatorWebDav (dav-server)
 
 Cross-platform, no kernel extensions. Server binds to localhost only.
 
-### NFS (oxidized-nfs)
+### NFS (oxcrypt-nfs)
 ```
 NFS Client (kernel) ←TCP→ CryptomatorNFS (nfsserve)
         │

@@ -1,5 +1,5 @@
 [package]
-name = "oxidized-cryptolib-fuzz"
+name = "oxcrypt-core-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -12,8 +12,8 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 secrecy = "0.10"
 
-[dependencies.oxidized-cryptolib]
-path = "../crates/oxidized-cryptolib"
+[dependencies.oxcrypt-core]
+path = "../crates/oxcrypt-core"
 
 # Prevent this from interfering with workspaces
 [workspace]

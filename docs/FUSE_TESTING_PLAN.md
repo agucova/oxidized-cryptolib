@@ -1,8 +1,8 @@
-# Filesystem Test Suite for oxidized-fuse
+# Filesystem Test Suite for oxcrypt-fuse
 
 ## Current Testing Status
 
-The oxidized-fuse crate has solid unit and integration testing:
+The oxcrypt-fuse crate has solid unit and integration testing:
 - **51 unit tests**: inode table, caches (attr/dir), handles, error mapping
 - **18 integration tests**: simulated FUSE operations, concurrency, edge cases
 - **Benchmarks**: performance testing with real vault operations
@@ -58,7 +58,7 @@ The oxidized-fuse crate has solid unit and integration testing:
 
 ### Part 1: Custom Rust Mount Tests
 
-**File**: `crates/oxidized-fuse/tests/mount_tests.rs`
+**File**: `crates/oxcrypt-fuse/tests/mount_tests.rs`
 
 ```rust
 // Pattern from fuser's own tests:
@@ -127,8 +127,8 @@ pjdfstest:
       run: |
         git clone https://github.com/pjd/pjdfstest
         cd pjdfstest && autoreconf -ifs && ./configure && make
-    - name: Build oxidized-fuse
-      run: cargo build --release -p oxidized-fuse
+    - name: Build oxcrypt-fuse
+      run: cargo build --release -p oxcrypt-fuse
     - name: Run pjdfstest
       run: sudo ./scripts/run-pjdfstest.sh test_vault /tmp/mnt
 ```
@@ -149,8 +149,8 @@ pjdfstest:
 
 | File | Action |
 |------|--------|
-| `crates/oxidized-fuse/tests/mount_tests.rs` | Create |
-| `crates/oxidized-fuse/Cargo.toml` | Add tempfile dev-dep |
+| `crates/oxcrypt-fuse/tests/mount_tests.rs` | Create |
+| `crates/oxcrypt-fuse/Cargo.toml` | Add tempfile dev-dep |
 | `scripts/run-pjdfstest.sh` | Create |
 | `.github/workflows/ci.yml` | Add pjdfstest job |
 
@@ -169,8 +169,8 @@ pjdfstest:
 
 | File | Description |
 |------|-------------|
-| `crates/oxidized-fuse/tests/mount_tests.rs` | 10 Rust mount tests covering read, write, mkdir, rename, symlinks, large files, concurrent access |
-| `crates/oxidized-fuse/tests/pjdfstest.rs` | Rust wrapper for pjdfstest POSIX compliance tests (7 test categories) |
+| `crates/oxcrypt-fuse/tests/mount_tests.rs` | 10 Rust mount tests covering read, write, mkdir, rename, symlinks, large files, concurrent access |
+| `crates/oxcrypt-fuse/tests/pjdfstest.rs` | Rust wrapper for pjdfstest POSIX compliance tests (7 test categories) |
 | `scripts/run-pjdfstest.sh` | Wrapper script to run pjdfstest against mounted vault |
 
 ### CI Workflows Updated
@@ -184,13 +184,13 @@ Added to `.github/workflows/rust.yml`:
 
 ```bash
 # Run mount tests (requires FUSE)
-cargo test -p oxidized-fuse --test mount_tests -- --ignored --test-threads=1
+cargo test -p oxcrypt-fuse --test mount_tests -- --ignored --test-threads=1
 
 # Run pjdfstest Rust wrapper (requires FUSE and pjdfstest binary)
 # In devenv, pjdfstest is available automatically
-cargo test -p oxidized-fuse --test pjdfstest "mkdir" -- --ignored --test-threads=1
-cargo test -p oxidized-fuse --test pjdfstest "open" -- --ignored --test-threads=1
-cargo test -p oxidized-fuse --test pjdfstest "symlink" -- --ignored --test-threads=1
+cargo test -p oxcrypt-fuse --test pjdfstest "mkdir" -- --ignored --test-threads=1
+cargo test -p oxcrypt-fuse --test pjdfstest "open" -- --ignored --test-threads=1
+cargo test -p oxcrypt-fuse --test pjdfstest "symlink" -- --ignored --test-threads=1
 
 # Run full pjdfstest suite (requires sudo for chown/chmod tests)
 sudo ./scripts/run-pjdfstest.sh --quick
@@ -224,11 +224,11 @@ sudo ./scripts/run-pjdfstest.sh --quick
 
 ### FSX (File System eXerciser) Tests
 
-Added in `crates/oxidized-fuse/tests/fsx_tests.rs`. FSX generates pseudorandom read/write/truncate operations and verifies data integrity on every read.
+Added in `crates/oxcrypt-fuse/tests/fsx_tests.rs`. FSX generates pseudorandom read/write/truncate operations and verifies data integrity on every read.
 
 **Installation**: Installed automatically by devenv.
 
-**Run**: `cargo test -p oxidized-fuse --test fsx_tests -- --ignored --nocapture`
+**Run**: `cargo test -p oxcrypt-fuse --test fsx_tests -- --ignored --nocapture`
 
 | Test | Operations | Status | Notes |
 |------|------------|--------|-------|
@@ -243,11 +243,11 @@ Added in `crates/oxidized-fuse/tests/fsx_tests.rs`. FSX generates pseudorandom r
 
 ### fsstress Tests (Linux only)
 
-Added in `crates/oxidized-fuse/tests/fsstress_tests.rs`. fsstress performs concurrent filesystem operations across multiple processes to find race conditions.
+Added in `crates/oxcrypt-fuse/tests/fsstress_tests.rs`. fsstress performs concurrent filesystem operations across multiple processes to find race conditions.
 
 **Available via**: devenv (Linux only)
 
-**Run**: `cargo test -p oxidized-fuse --test fsstress_tests -- --ignored --nocapture`
+**Run**: `cargo test -p oxcrypt-fuse --test fsstress_tests -- --ignored --nocapture`
 
 | Test | Operations | Processes | Notes |
 |------|------------|-----------|-------|

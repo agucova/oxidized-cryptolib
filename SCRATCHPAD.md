@@ -1,4 +1,4 @@
-# oxidized-cryptolib Implementation Scratchpad
+# oxcrypt-core Implementation Scratchpad
 
 ## Priority Tiers
 

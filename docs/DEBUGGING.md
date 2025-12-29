@@ -19,13 +19,13 @@ Uses dudect statistical methodology to detect timing side-channels in cryptograp
 
 ```bash
 # Run all timing tests
-cargo bench -p oxidized-cryptolib --bench timing_leaks
+cargo bench -p oxcrypt-core --bench timing_leaks
 
 # Run specific test
-cargo bench -p oxidized-cryptolib --bench timing_leaks -- --filter key_unwrap
+cargo bench -p oxcrypt-core --bench timing_leaks -- --filter key_unwrap
 
 # Continuous mode (runs until Ctrl+C)
-cargo bench -p oxidized-cryptolib --bench timing_leaks -- --continuous key_unwrap
+cargo bench -p oxcrypt-core --bench timing_leaks -- --continuous key_unwrap
 ```
 
 **Interpretation**: t-value < 4.5 = PASS (no timing leak), t-value > 4.5 = FAIL (potential leak)
@@ -38,18 +38,18 @@ cargo bench -p oxidized-cryptolib --bench timing_leaks -- --continuous key_unwra
 
 ## Async Debugging with tokio-console
 
-All mount backends (`oxidized-fuse`, `oxidized-fskit-legacy`, `oxidized-webdav`, `oxidized-nfs`) and the GUI support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection.
+All mount backends (`oxcrypt-fuse`, `oxcrypt-fskit`, `oxcrypt-webdav`, `oxcrypt-nfs`) and the GUI support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection.
 
 ```bash
 # Build a specific backend with console support
-cargo build -p oxidized-fuse --features tokio-console
-cargo build -p oxidized-fskit-legacy --features tokio-console
-cargo build -p oxidized-webdav --features tokio-console
-cargo build -p oxidized-nfs --features tokio-console
+cargo build -p oxcrypt-fuse --features tokio-console
+cargo build -p oxcrypt-fskit --features tokio-console
+cargo build -p oxcrypt-webdav --features tokio-console
+cargo build -p oxcrypt-nfs --features tokio-console
 
 # Or build CLI/GUI with console support (forwards to all enabled backends)
-cargo build -p oxidized-cli --features fuse,tokio-console
-cargo build -p oxidized-gui --features fuse,tokio-console
+cargo build -p oxcrypt --features fuse,tokio-console
+cargo build -p oxcrypt-desktop --features fuse,tokio-console
 
 # Terminal 1: Run the mount or GUI
 ./target/debug/oxmount ~/vault /mnt/point

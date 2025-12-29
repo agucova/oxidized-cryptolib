@@ -1,0 +1,5 @@
+module COxVaultFFI {
+    header "SwiftBridgeCore.h"
+    header "oxcrypt-fskit.h"
+    export *
+}

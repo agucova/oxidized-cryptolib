@@ -262,7 +262,7 @@ pub fn deep_path(depth: usize) -> String;
 ## File Structure
 
 ```
-crates/oxidized-{backend}/
+crates/oxcrypt-{backend}/
 ├── tests/
 │   ├── common/
 │   │   ├── mod.rs           # Re-exports
@@ -281,7 +281,7 @@ crates/oxidized-{backend}/
 
 ## Success Criteria
 
-- All tests run with `cargo test -p oxidized-{backend}`
+- All tests run with `cargo test -p oxcrypt-{backend}`
 - No external tool dependencies
 - Tests complete in < 60 seconds
 - All filesystem operations exercised

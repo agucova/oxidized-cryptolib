@@ -22,7 +22,7 @@ This preserves the legitimate architectural differences (async has locking, stre
 ## New Module Structure
 
 ```
-crates/oxidized-cryptolib/src/vault/
+crates/oxcrypt-core/src/vault/
 ├── operations/
 │   ├── mod.rs           # Exports
 │   ├── core.rs          # VaultCore<K> - shared logic

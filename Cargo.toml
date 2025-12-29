@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
-members = ["crates/oxidized-cryptolib", "crates/oxidized-cli", "crates/oxidized-fuse", "crates/oxidized-fskit-legacy", "crates/oxidized-fskit-ffi", "crates/oxidized-webdav", "crates/oxidized-nfs", "crates/oxidized-gui", "crates/oxidized-bench", "crates/oxidized-mount-common"]
-# Note: oxidized-fuse requires macFUSE (macOS) or libfuse (Linux) to be installed
-# Note: oxidized-fskit-legacy requires macOS 15.4+ and FSKitBridge.app (deprecated, use oxidized-fskit-ffi)
-# Note: oxidized-webdav provides WebDAV mounting (no kernel extensions required)
+members = ["crates/oxcrypt-core", "crates/oxcrypt", "crates/oxcrypt-fuse", "crates/oxcrypt-fskit", "crates/oxcrypt-webdav", "crates/oxcrypt-nfs", "crates/oxcrypt-desktop", "crates/oxbench", "crates/oxcrypt-mount"]
+# Note: oxcrypt-fuse requires macFUSE (macOS) or libfuse (Linux) to be installed
+# Note: oxcrypt-fskit requires macOS 15.4+ and the Swift extension enabled
+# Note: oxcrypt-webdav provides WebDAV mounting (no kernel extensions required)
 exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.90"
 license = "MPL-2.0"
-repository = "https://github.com/agucova/oxidized-cryptolib"
+repository = "https://github.com/agucova/oxcrypt"
 
 [workspace.dependencies]
-oxidized-cryptolib = { path = "crates/oxidized-cryptolib" }
+oxcrypt-core = { path = "crates/oxcrypt-core" }
 clap = { version = "4.5", features = ["derive", "wrap_help", "env"] }
 rpassword = "7.4"
 comfy-table = "7.2"

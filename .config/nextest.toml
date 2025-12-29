@@ -22,9 +22,9 @@
 #   cargo nextest run --profile stress -F fuse-tests
 #
 # Feature flags required for integration tests:
-#   -F fuse-tests   oxidized-fuse (Linux/macOS with libfuse)
-#   -F fskit-tests  oxidized-fskit-legacy (macOS 15.4+ only)
-#   -F nfs-tests    oxidized-nfs
+#   -F fuse-tests   oxcrypt-fuse (Linux/macOS with libfuse)
+#   -F fskit-tests  oxcrypt-fskit (macOS 15.4+ only)
+#   -F nfs-tests    oxcrypt-nfs
 #
 # =============================================================================
 
@@ -85,7 +85,7 @@ setup = 'kdf-setup'
 
 # Mount backend tests run serially to avoid conflicts
 [[profile.default.overrides]]
-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
 test-group = 'mount-tests'
 
 # Stress/concurrency tests get longer timeouts and limited concurrency
@@ -103,11 +103,11 @@ path = "target/nextest/default/junit.xml"
 # =============================================================================
 # Usage: cargo nextest run --profile unit
 #
-# Runs only oxidized-cryptolib tests (no mount backends, no CLI integration).
+# Runs only oxcrypt-core tests (no mount backends, no CLI integration).
 # Best for quick iteration on core crypto/vault logic.
 
 [profile.unit]
-default-filter = 'package(oxidized-cryptolib)'
+default-filter = 'package(oxcrypt-core)'
 retries = 0
 fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2 }
@@ -129,7 +129,7 @@ path = "target/nextest/unit/junit.xml"
 # backends you want to test.
 
 [profile.integration]
-default-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs) | package(oxidized-cli)'
+default-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt)'
 retries = 1
 fail-fast = true
 slow-timeout = { period = "120s", terminate-after = 2 }
@@ -141,7 +141,7 @@ filter = 'all()'
 setup = 'kdf-setup'
 
 [[profile.integration.overrides]]
-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
 test-group = 'mount-tests'
 
 [profile.integration.junit]
@@ -156,7 +156,7 @@ path = "target/nextest/integration/junit.xml"
 # Focused testing of filesystem mount backends without CLI tests.
 
 [profile.mounts]
-default-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+default-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
 retries = 1
 fail-fast = true
 slow-timeout = { period = "120s", terminate-after = 2 }
@@ -219,7 +219,7 @@ filter = 'all()'
 setup = 'kdf-setup'
 
 [[profile.ci.overrides]]
-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
 test-group = 'mount-tests'
 
 [[profile.ci.overrides]]

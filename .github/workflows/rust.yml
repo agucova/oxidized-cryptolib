@@ -38,15 +38,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: clippy
-      - name: Install FUSE (for oxidized-fuse)
+      - name: Install FUSE (for oxcrypt-fuse)
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - name: Run Clippy (cross-platform crates)
         # Exclude macOS-only crates and GUI (needs webkit2gtk on Linux)
         run: |
           cargo clippy --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui \
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop \
             -- -D warnings
 
   # =============================================================================
@@ -89,9 +89,9 @@ jobs:
       - name: Check MSRV (cross-platform crates)
         run: |
           cargo check --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop
 
   # =============================================================================
   # Unit Tests - Fast tests on cryptolib (runs on all platforms)
@@ -146,17 +146,17 @@ jobs:
       - name: Build workspace
         run: |
           cargo build --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop
 
       - name: Run integration tests (--profile integration)
         run: |
           cargo nextest run --profile integration \
             --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop
 
       - name: Upload test results
         if: always()
@@ -188,7 +188,7 @@ jobs:
       - name: Run stress tests (--profile stress)
         run: |
           cargo nextest run --profile stress \
-            -p oxidized-cryptolib
+            -p oxcrypt-core
 
       - name: Upload test results
         if: always()
@@ -219,14 +219,14 @@ jobs:
       - name: Build (no default features)
         run: |
           cargo build --no-default-features --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui \
-            --exclude oxidized-bench
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop \
+            --exclude oxbench
       - name: Test (no default features)
         run: |
           cargo nextest run --profile unit --no-default-features \
-            -p oxidized-cryptolib
+            -p oxcrypt-core
 
   # =============================================================================
   # Integration Tests - macOS
@@ -251,19 +251,19 @@ jobs:
       - name: Build workspace
         run: |
           cargo build --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop
 
       - name: Run integration tests (--profile integration)
-        # Exclude oxidized-fuse on macOS (macFUSE requires kernel extension approval)
+        # Exclude oxcrypt-fuse on macOS (macFUSE requires kernel extension approval)
         run: |
           cargo nextest run --profile integration \
             --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui \
-            --exclude oxidized-fuse
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop \
+            --exclude oxcrypt-fuse
 
       - name: Upload test results
         if: always()
@@ -296,13 +296,13 @@ jobs:
         run: cargo nextest run --profile unit
 
       - name: Build CLI (no mount backends)
-        run: cargo build -p oxidized-cli --no-default-features --verbose
+        run: cargo build -p oxcrypt --no-default-features --verbose
 
       - name: Build CLI with WebDAV
-        run: cargo build -p oxidized-cli --features webdav --verbose
+        run: cargo build -p oxcrypt --features webdav --verbose
 
       - name: Build WebDAV crate
-        run: cargo build -p oxidized-webdav --verbose
+        run: cargo build -p oxcrypt-webdav --verbose
 
   # =============================================================================
   # FSKit Build and Test (macOS 15+)
@@ -335,14 +335,14 @@ jobs:
       - name: Install protoc (for fskit-rs)
         run: brew install protobuf
 
-      - name: Build oxidized-fskit-legacy
-        run: cargo build -p oxidized-fskit-legacy --verbose
+      - name: Build oxcrypt-fskit
+        run: cargo build -p oxcrypt-fskit --verbose
 
-      - name: Build oxidized-fskit-legacy with setup feature
-        run: cargo build -p oxidized-fskit-legacy --features setup --verbose
+      - name: Build oxcrypt-fskit with setup feature
+        run: cargo build -p oxcrypt-fskit --features setup --verbose
 
       - name: Build oxfskit-setup tool
-        run: cargo build -p oxidized-fskit-legacy --features setup --bin oxfskit-setup --release
+        run: cargo build -p oxcrypt-fskit --features setup --bin oxfskit-setup --release
 
       - name: Install FSKitBridge using oxfskit-setup
         run: |
@@ -381,14 +381,14 @@ jobs:
           echo "=== Ping Check ==="
           ./target/release/oxfskit-setup ping --timeout 5 || echo "Ping failed (extension not running)"
 
-      - name: Run oxidized-fskit-legacy unit tests (--profile unit)
-        run: cargo nextest run -p oxidized-fskit-legacy --profile unit
+      - name: Run oxcrypt-fskit unit tests (--profile unit)
+        run: cargo nextest run -p oxcrypt-fskit --profile unit
 
-      - name: Run oxidized-fskit-legacy setup module tests
-        run: cargo nextest run -p oxidized-fskit-legacy --features setup --profile unit
+      - name: Run oxcrypt-fskit setup module tests
+        run: cargo nextest run -p oxcrypt-fskit --features setup --profile unit
 
-      - name: Run clippy on oxidized-fskit-legacy
-        run: cargo clippy -p oxidized-fskit-legacy --features setup -- -D warnings
+      - name: Run clippy on oxcrypt-fskit
+        run: cargo clippy -p oxcrypt-fskit --features setup -- -D warnings
         continue-on-error: true
 
   # =============================================================================
@@ -418,7 +418,7 @@ jobs:
         run: brew install protobuf
 
       - name: Build oxfskit-setup tool
-        run: cargo build -p oxidized-fskit-legacy --features setup --bin oxfskit-setup --release
+        run: cargo build -p oxcrypt-fskit --features setup --bin oxfskit-setup --release
 
       - name: Install FSKitBridge using oxfskit-setup
         run: |
@@ -435,7 +435,7 @@ jobs:
           ./target/release/oxfskit-setup ping --timeout 10 || echo "FSKitBridge not responding - integration tests will be skipped"
 
       - name: Build release binary
-        run: cargo build -p oxidized-fskit-legacy --release
+        run: cargo build -p oxcrypt-fskit --release
 
       - name: Run mount integration tests (--profile mounts)
         continue-on-error: true
@@ -445,7 +445,7 @@ jobs:
             exit 0
           fi
           echo "FSKitBridge available, running mount tests..."
-          cargo nextest run -p oxidized-fskit-legacy --profile mounts --features fskit-tests || true
+          cargo nextest run -p oxcrypt-fskit --profile mounts --features fskit-tests || true
 
   # =============================================================================
   # FUSE Mount Tests (Linux) - Requires privileged access
@@ -467,12 +467,12 @@ jobs:
       - name: Install FUSE
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
 
-      - name: Build oxidized-fuse (release)
-        run: cargo build --release -p oxidized-fuse
+      - name: Build oxcrypt-fuse (release)
+        run: cargo build --release -p oxcrypt-fuse
 
       - name: Run FUSE mount tests (--profile mounts)
         run: |
-          cargo nextest run -p oxidized-fuse --profile mounts --features fuse-tests 2>&1 || echo "Some mount tests failed (expected in CI without proper FUSE setup)"
+          cargo nextest run -p oxcrypt-fuse --profile mounts --features fuse-tests 2>&1 || echo "Some mount tests failed (expected in CI without proper FUSE setup)"
         continue-on-error: true
 
       - name: Upload test results
@@ -516,7 +516,7 @@ jobs:
         env:
           PJDFSTEST_BIN: /tmp/pjdfstest/pjdfstest
         run: |
-          cargo nextest run -p oxidized-fuse --profile stress --features fuse-tests \
+          cargo nextest run -p oxcrypt-fuse --profile stress --features fuse-tests \
             -E 'test(/pjdfstest/)' -- --nocapture || true
         continue-on-error: true
 
@@ -546,12 +546,12 @@ jobs:
       - name: Install fsx
         run: cargo install fsx
 
-      - name: Build oxidized-fuse (release)
-        run: cargo build --release -p oxidized-fuse
+      - name: Build oxcrypt-fuse (release)
+        run: cargo build --release -p oxcrypt-fuse
 
       - name: Run FSX tests (--profile stress)
         run: |
-          cargo nextest run -p oxidized-fuse --profile stress --features fuse-tests \
+          cargo nextest run -p oxcrypt-fuse --profile stress --features fuse-tests \
             -E 'test(/fsx/)' -- --nocapture || echo "FSX tests completed"
         continue-on-error: true
 
@@ -584,14 +584,14 @@ jobs:
           cd /tmp/secfs.test/fsstress
           make
 
-      - name: Build oxidized-fuse (release)
-        run: cargo build --release -p oxidized-fuse
+      - name: Build oxcrypt-fuse (release)
+        run: cargo build --release -p oxcrypt-fuse
 
       - name: Run fsstress tests (--profile stress)
         env:
           FSSTRESS_BIN: /tmp/secfs.test/fsstress/fsstress
         run: |
-          cargo nextest run -p oxidized-fuse --profile stress --features fuse-tests \
+          cargo nextest run -p oxcrypt-fuse --profile stress --features fuse-tests \
             -E 'test(/fsstress/)' -- --nocapture || echo "fsstress tests completed"
         continue-on-error: true
 
@@ -623,9 +623,9 @@ jobs:
         run: |
           cargo nextest run --profile ci \
             --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop
 
       - name: Upload test results
         if: always()
@@ -662,15 +662,15 @@ jobs:
         run: |
           cargo llvm-cov nextest --profile unit \
             --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui \
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop \
             --html
           cargo llvm-cov nextest --profile unit \
             --workspace \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui \
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop \
             --lcov --output-path lcov.info
 
       - name: Upload coverage report
@@ -701,8 +701,8 @@ jobs:
       - name: Build documentation
         run: |
           cargo doc --workspace --no-deps \
-            --exclude oxidized-fskit-legacy \
-            --exclude oxidized-fskit-legacy-ffi \
-            --exclude oxidized-gui
+            --exclude oxcrypt-fskit \
+            --exclude DELETED \
+            --exclude oxcrypt-desktop
         env:
           RUSTDOCFLAGS: "-D warnings"

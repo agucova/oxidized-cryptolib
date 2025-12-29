@@ -1,10 +1,10 @@
 # Security Model
 
-This document describes the security goals, threat model, and accepted trade-offs for `oxidized-cryptolib`.
+This document describes the security goals, threat model, and accepted trade-offs for `oxcrypt-core`.
 
 ## What This Library Is
 
-`oxidized-cryptolib` is a Rust implementation for reading and writing [Cryptomator](https://cryptomator.org/) vaults (Vault Format 8). It provides cryptographic operations for:
+`oxcrypt-core` is a Rust implementation for reading and writing [Cryptomator](https://cryptomator.org/) vaults (Vault Format 8). It provides cryptographic operations for:
 
 - Encrypting and decrypting file contents
 - Encrypting and decrypting filenames
