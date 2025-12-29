@@ -16,7 +16,7 @@ enum ForceLockContext {
     BackendChange,
 }
 
-use crate::backend::{generate_mountpoint, mount_manager, BackendType, MountOptions};
+use crate::backend::{generate_mountpoint, mount_manager, MountOptions};
 use crate::app::open_stats_window;
 use crate::dialogs::{BackendDialog, ChangePasswordDialog, ConfirmDialog, ErrorDialog, ForceLockDialog, UnlockDialog, VaultMountSettings};
 use crate::error::UserFacingError;
@@ -167,6 +167,9 @@ pub fn VaultDetail(
                 let mount_options = MountOptions {
                     local_mode,
                     attr_ttl: None, // Use defaults based on local_mode
+                    negative_ttl: None,
+                    background_refresh: None,
+                    concurrency_limit: None,
                 };
 
                 // Run mount in blocking task using the vault's preferred backend

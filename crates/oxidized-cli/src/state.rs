@@ -33,6 +33,9 @@ pub struct MountEntry {
     pub started_at: DateTime<Utc>,
     /// Whether this was a daemon mount (background)
     pub is_daemon: bool,
+    /// Path to the IPC socket for this mount (if running as daemon)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<PathBuf>,
 }
 
 impl MountEntry {
@@ -43,6 +46,7 @@ impl MountEntry {
         backend: impl Into<String>,
         pid: u32,
         is_daemon: bool,
+        socket_path: Option<PathBuf>,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -52,6 +56,7 @@ impl MountEntry {
             pid,
             started_at: Utc::now(),
             is_daemon,
+            socket_path,
         }
     }
 }
@@ -261,7 +266,12 @@ impl MountStateManager {
 
             for entry in std::mem::take(&mut state.mounts) {
                 let pid_alive = is_process_alive(entry.pid);
-                let in_system = system_mounts.contains(&entry.mountpoint);
+                // Canonicalize entry mountpoint for comparison (handles /tmp -> /private/tmp)
+                let canonical_mountpoint = entry
+                    .mountpoint
+                    .canonicalize()
+                    .unwrap_or_else(|_| entry.mountpoint.clone());
+                let in_system = system_mounts.contains(&canonical_mountpoint);
 
                 if pid_alive && in_system {
                     active.push(entry);
@@ -285,7 +295,12 @@ impl MountStateManager {
 
         for entry in state.mounts {
             let pid_alive = is_process_alive(entry.pid);
-            let in_system = system_mounts.contains(&entry.mountpoint);
+            // Canonicalize entry mountpoint for comparison (handles /tmp -> /private/tmp)
+            let canonical_mountpoint = entry
+                .mountpoint
+                .canonicalize()
+                .unwrap_or_else(|_| entry.mountpoint.clone());
+            let in_system = system_mounts.contains(&canonical_mountpoint);
 
             if pid_alive && in_system {
                 active.push(entry);
@@ -333,6 +348,8 @@ pub fn is_process_alive(_pid: u32) -> bool {
 }
 
 /// Get the set of currently mounted filesystem paths.
+///
+/// Paths are canonicalized to handle symlinks (e.g., /tmp -> /private/tmp on macOS).
 pub fn get_system_mounts() -> Result<std::collections::HashSet<PathBuf>> {
     let mut mounts = std::collections::HashSet::new();
 
@@ -345,7 +362,10 @@ pub fn get_system_mounts() -> Result<std::collections::HashSet<PathBuf>> {
             // Format: device mountpoint fstype options dump pass
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
-                mounts.insert(PathBuf::from(parts[1]));
+                let path = PathBuf::from(parts[1]);
+                // Canonicalize to resolve symlinks
+                let canonical = path.canonicalize().unwrap_or(path);
+                mounts.insert(canonical);
             }
         }
     }
@@ -362,7 +382,10 @@ pub fn get_system_mounts() -> Result<std::collections::HashSet<PathBuf>> {
             if let Some(on_idx) = line.find(" on ") {
                 let rest = &line[on_idx + 4..];
                 if let Some(paren_idx) = rest.find(" (") {
-                    mounts.insert(PathBuf::from(&rest[..paren_idx]));
+                    let path = PathBuf::from(&rest[..paren_idx]);
+                    // Canonicalize to resolve symlinks (e.g., /tmp -> /private/tmp)
+                    let canonical = path.canonicalize().unwrap_or(path);
+                    mounts.insert(canonical);
                 }
             }
         }
@@ -402,11 +425,13 @@ mod tests {
             "fuse",
             12345,
             true,
+            None,
         );
         assert!(!entry.id.is_empty());
         assert_eq!(entry.backend, "fuse");
         assert_eq!(entry.pid, 12345);
         assert!(entry.is_daemon);
+        assert!(entry.socket_path.is_none());
     }
 
     #[test]
@@ -418,6 +443,7 @@ mod tests {
             "fuse",
             1234,
             false,
+            None,
         ));
 
         let json = serde_json::to_string(&state).unwrap();

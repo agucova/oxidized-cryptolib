@@ -407,6 +407,19 @@ fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>
     let read_latency_ms = stats.avg_read_latency_ms();
     let write_latency_ms = stats.avg_write_latency_ms();
 
+    // Metadata stats
+    let metadata_ops = stats.metadata_op_count();
+    let metadata_latency_ms = stats.avg_metadata_latency_ms();
+
+    // Error stats
+    let error_count = stats.error_count();
+
+    // Operation counts for breakdown
+    let total_reads = stats.read_count();
+    let total_writes = stats.write_count();
+    let open_files = stats.open_file_count();
+    let open_dirs = stats.open_dir_count();
+
     // Cache stats
     let cache = stats.cache_stats();
     let hit_rate = cache.hit_rate();
@@ -424,9 +437,16 @@ fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>
         div {
             class: "flex items-center justify-between mb-4",
             ActivityBadge { status: activity }
-            span {
-                class: "text-sm text-gray-600 dark:text-gray-300",
-                "Session: {format_duration(session_duration)}"
+            div {
+                class: "flex items-center gap-3",
+                // Error indicator (shows only if errors > 0)
+                if error_count > 0 {
+                    ErrorBadge { count: error_count }
+                }
+                span {
+                    class: "text-sm text-gray-600 dark:text-gray-300",
+                    "Session: {format_duration(session_duration)}"
+                }
             }
         }
 
@@ -448,6 +468,41 @@ fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>
                 rate: write_rate,
                 latency_ms: write_latency_ms,
                 icon: "✏️",
+            }
+        }
+
+        // Operations Grid (reads, writes, metadata, open handles)
+        div {
+            class: "grid grid-cols-4 gap-2 mt-4",
+
+            OperationCounter { label: "Reads", count: total_reads, icon: "📖" }
+            OperationCounter { label: "Writes", count: total_writes, icon: "✏️" }
+            OperationCounter { label: "Metadata", count: metadata_ops, icon: "📋" }
+            div {
+                class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-2 text-center",
+                span {
+                    class: "text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                    "🔓 Open"
+                }
+                p {
+                    class: "text-sm font-semibold text-gray-900 dark:text-white mt-1",
+                    "{open_files}F / {open_dirs}D"
+                }
+            }
+        }
+
+        // Metadata Latency (if we have metadata ops)
+        if metadata_ops > 0 {
+            div {
+                class: "mt-3 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-between",
+                span {
+                    class: "text-xs text-gray-500 dark:text-gray-400",
+                    "📋 Metadata Latency"
+                }
+                span {
+                    class: "text-sm font-medium text-gray-700 dark:text-gray-200",
+                    "{format_latency(metadata_latency_ms)} avg"
+                }
             }
         }
 
@@ -663,5 +718,38 @@ fn format_duration(duration: Duration) -> String {
         format!("{}m {}s", mins, secs % 60)
     } else {
         format!("{}s", secs)
+    }
+}
+
+/// Operation counter card (reads, writes, metadata)
+#[component]
+fn OperationCounter(label: &'static str, count: u64, icon: &'static str) -> Element {
+    rsx! {
+        div {
+            class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-2 text-center",
+            span {
+                class: "text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                "{icon} {label}"
+            }
+            p {
+                class: "text-sm font-semibold text-gray-900 dark:text-white mt-1",
+                "{count}"
+            }
+        }
+    }
+}
+
+/// Error badge showing error count with warning styling
+#[component]
+fn ErrorBadge(count: u64) -> Element {
+    let label = if count == 1 { "error" } else { "errors" };
+    rsx! {
+        div {
+            class: "inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-100 dark:bg-red-900/30",
+            span {
+                class: "text-xs font-medium text-red-700 dark:text-red-400",
+                "⚠️ {count} {label}"
+            }
+        }
     }
 }

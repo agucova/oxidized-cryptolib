@@ -135,11 +135,29 @@ pub fn compute_stats(result: &BenchmarkResult) -> BenchmarkStats {
     }
 }
 
-/// Calculate percentile from sorted data.
+/// Calculate percentile from sorted data using linear interpolation.
+///
+/// Uses NumPy's "linear" interpolation method for accurate percentiles
+/// even with small sample sizes. This ensures P95 and P99 give different
+/// values when there's sufficient data spread.
 fn percentile(sorted: &[u64], p: usize) -> u64 {
     if sorted.is_empty() {
         return 0;
     }
-    let idx = (sorted.len() * p / 100).min(sorted.len() - 1);
-    sorted[idx]
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+
+    // NumPy-style linear interpolation
+    // idx = p/100 * (n - 1), then interpolate between floor(idx) and ceil(idx)
+    let n = sorted.len() as f64;
+    let idx = (p as f64 / 100.0) * (n - 1.0);
+
+    let lo = idx.floor() as usize;
+    let hi = (lo + 1).min(sorted.len() - 1);
+    let frac = idx - lo as f64;
+
+    // Linear interpolation between adjacent values
+    let result = sorted[lo] as f64 * (1.0 - frac) + sorted[hi] as f64 * frac;
+    result.round() as u64
 }

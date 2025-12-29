@@ -10,10 +10,13 @@ pub use external::ExternalMount;
 // Re-export MountBackend types from mount-common
 pub use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle};
 
+// Import stale mount detection utilities
+use oxidized_mount_common::{get_system_mounts_detailed, is_our_mount};
+
 // Re-export backend implementations
 pub use oxidized_fuse::{FuseBackend, FuseMountHandle};
 #[cfg(target_os = "macos")]
-pub use oxidized_fskit::{FSKitBackend, FSKitMountHandle};
+pub use oxidized_fskit_legacy::{FSKitBackend, FSKitMountHandle};
 pub use oxidized_webdav::WebDavBackend;
 pub use oxidized_nfs::NfsBackend;
 
@@ -231,14 +234,56 @@ pub fn mount_implementation(
 }
 
 /// Ensure a mount point directory exists, cleaning up any stale mounts first.
+///
+/// # Safety
+///
+/// This function verifies that any existing mount at the path belongs to
+/// oxidized-cryptolib (via `is_our_mount()`) before attempting cleanup.
+/// Foreign mounts will cause an error rather than being unmounted.
 pub fn ensure_mount_point(path: &Path) -> Result<()> {
     // If the path exists and is a mount point from a previous interrupted run, unmount it
     if path.exists() && is_mount_point(path).unwrap_or(false) {
-        tracing::warn!(
-            "Detected stale mount at {}, attempting cleanup...",
-            path.display()
-        );
-        cleanup_stale_mount(path)?;
+        // Verify this is our mount before cleaning up (safety check)
+        let system_mounts = get_system_mounts_detailed()
+            .context("Failed to get system mounts for stale detection")?;
+
+        // Canonicalize paths for comparison (handles /tmp -> /private/tmp symlinks on macOS)
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        let mount_entry = system_mounts.iter().find(|m| {
+            m.mountpoint
+                .canonicalize()
+                .unwrap_or_else(|_| m.mountpoint.clone())
+                == canonical
+        });
+
+        if let Some(mount) = mount_entry {
+            if is_our_mount(mount) {
+                tracing::warn!(
+                    "Detected stale oxidized-cryptolib mount at {} (fsname: {}), cleaning up...",
+                    path.display(),
+                    mount.fsname
+                );
+                cleanup_stale_mount(path)?;
+            } else {
+                // Foreign mount - do not touch, return error
+                anyhow::bail!(
+                    "Mount point {} is occupied by a foreign mount (fsname: {}, fstype: {}). \
+                    Please unmount it manually before running benchmarks.",
+                    path.display(),
+                    mount.fsname,
+                    mount.fstype
+                );
+            }
+        } else {
+            // Mount point exists but not in system mounts table - weird state
+            // This shouldn't happen, but try to clean up anyway
+            tracing::warn!(
+                "Path {} appears to be a mount point but not in system mounts table, attempting cleanup...",
+                path.display()
+            );
+            cleanup_stale_mount(path)?;
+        }
     }
 
     if !path.exists() {

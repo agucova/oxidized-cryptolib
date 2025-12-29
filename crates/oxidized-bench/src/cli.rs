@@ -47,12 +47,16 @@ pub struct Cli {
     pub suite: String,
 
     /// Number of iterations per benchmark.
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "50")]
     pub iterations: usize,
 
     /// Disable warmup iterations.
     #[arg(long)]
     pub no_warmup: bool,
+
+    /// Export results to JSON file.
+    #[arg(long, value_name = "PATH")]
+    pub json: Option<PathBuf>,
 
     /// Disable colored output.
     #[arg(long)]

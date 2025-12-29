@@ -74,7 +74,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 directories = "6.0.0"
 chrono = { version = "0.4.42", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["v4"] }
-nix = { version = "0.30.1", features = ["signal", "process"] }
+nix = { version = "0.30.1", features = ["signal", "process", "user"] }
 fs2 = "0.4.3"
 oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
 

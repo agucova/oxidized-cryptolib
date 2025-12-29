@@ -9,17 +9,54 @@
 
 use nfsserve::tcp::NFSTcp;
 use oxidized_cryptolib::vault::VaultCreator;
+use oxidized_mount_common::{cleanup_test_mounts, force_unmount};
 use oxidized_nfs::CryptomatorNFS;
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
+
+/// Ensure stale test mounts are cleaned up before running tests.
+/// This runs at most once per test process.
+static CLEANUP_ONCE: Once = Once::new();
+
+/// Clean up any stale test mounts from previous test runs.
+///
+/// This function is called automatically before creating new mounts,
+/// and runs at most once per test process. It cleans up mounts with
+/// `cryptomator-test` in their fsname that are unresponsive.
+fn cleanup_stale_test_mounts() {
+    CLEANUP_ONCE.call_once(|| {
+        // Use a short timeout - if mount is unresponsive for 500ms, it's stale
+        let timeout = Duration::from_millis(500);
+        match cleanup_test_mounts(timeout) {
+            Ok(results) => {
+                for result in results {
+                    if result.success {
+                        if let oxidized_mount_common::CleanupAction::Unmounted = result.action {
+                            eprintln!(
+                                "[nfs-test-harness] Cleaned stale test mount: {}",
+                                result.mountpoint.display()
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[nfs-test-harness] Warning: Failed to clean stale mounts: {}",
+                    e
+                );
+            }
+        }
+    });
+}
 
 /// Test password for temporary vaults.
 pub const TEST_PASSWORD: &str = "test-password-12345";
@@ -85,6 +122,9 @@ impl TestMount {
 
     /// Mount a vault at the given path.
     fn mount_vault(vault_path: &Path, password: &str, temp_vault: Option<TempDir>) -> io::Result<Self> {
+        // Clean up any stale test mounts from previous runs
+        cleanup_stale_test_mounts();
+
         // Create runtime
         let runtime = Arc::new(Runtime::new()?);
 
@@ -363,16 +403,24 @@ impl TestMount {
 
 impl Drop for TestMount {
     fn drop(&mut self) {
-        // Unmount if mounted
-        if self.mounted {
-            if let Err(e) = self.run_unmount() {
-                eprintln!("Warning: Failed to unmount: {}", e);
-            }
-        }
-
-        // Abort server task
+        // Abort server task first to stop accepting new requests
         if let Some(handle) = self.server_handle.take() {
             handle.abort();
+        }
+
+        // Unmount if mounted, using force_unmount from mount-common
+        if self.mounted {
+            // Try graceful unmount first
+            if let Err(_) = self.run_unmount() {
+                // Fall back to force_unmount from mount-common
+                if let Err(e) = force_unmount(&self.mount_point) {
+                    eprintln!(
+                        "[nfs-test-harness] Warning: Failed to unmount {}: {}",
+                        self.mount_point.display(),
+                        e
+                    );
+                }
+            }
         }
     }
 }

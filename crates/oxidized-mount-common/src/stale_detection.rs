@@ -96,9 +96,18 @@ pub fn check_mount_status(
     check_timeout: Duration,
 ) -> MountStatus {
     // Step 1: Check if this mount is in the system mount table
-    let system_mount = system_mounts
-        .iter()
-        .find(|m| m.mountpoint == tracked.mountpoint);
+    // Canonicalize paths for comparison (handles /tmp -> /private/tmp symlinks on macOS)
+    let tracked_canonical = tracked
+        .mountpoint
+        .canonicalize()
+        .unwrap_or_else(|_| tracked.mountpoint.clone());
+    let system_mount = system_mounts.iter().find(|m| {
+        let mount_canonical = m
+            .mountpoint
+            .canonicalize()
+            .unwrap_or_else(|_| m.mountpoint.clone());
+        mount_canonical == tracked_canonical
+    });
 
     // Step 2: If not in system mounts, it's already unmounted (just stale state entry)
     let Some(system_mount) = system_mount else {
@@ -144,9 +153,21 @@ pub fn check_mount_status(
 pub fn find_orphaned_mounts(tracked_mountpoints: &[&Path]) -> anyhow::Result<Vec<SystemMount>> {
     let our_mounts = find_our_mounts()?;
 
+    // Canonicalize tracked paths for comparison (handles /tmp -> /private/tmp symlinks on macOS)
+    let tracked_canonical: Vec<_> = tracked_mountpoints
+        .iter()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+        .collect();
+
     let orphans: Vec<SystemMount> = our_mounts
         .into_iter()
-        .filter(|m| !tracked_mountpoints.contains(&m.mountpoint.as_path()))
+        .filter(|m| {
+            let mount_canonical = m
+                .mountpoint
+                .canonicalize()
+                .unwrap_or_else(|_| m.mountpoint.clone());
+            !tracked_canonical.contains(&mount_canonical)
+        })
         .collect();
 
     Ok(orphans)

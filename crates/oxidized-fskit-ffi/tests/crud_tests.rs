@@ -199,14 +199,19 @@ fn test_overwrite_middle_of_file() {
     let fs = TestFilesystem::new();
     let root = fs.root_id();
 
+    // Write 10 A's: "AAAAAAAAAA"
     let item_id = fs.write_new_file(root, "overwrite.txt", b"AAAAAAAAAA").unwrap();
 
+    // Overwrite 3 bytes at offset 3 with "BBB"
+    // Position: 0 1 2 3 4 5 6 7 8 9
+    // Before:   A A A A A A A A A A
+    // After:    A A A B B B A A A A
     let handle = fs.open_file(item_id, true).unwrap();
     fs.write_file(handle, 3, b"BBB").unwrap();
     fs.close_file(handle).unwrap();
 
     let content = fs.read_entire_file(item_id).unwrap();
-    assert_eq!(&content, b"AAABBBAAA");
+    assert_eq!(&content, b"AAABBBAAAA"); // 10 bytes, not 9
 }
 
 // ============================================================================

@@ -79,16 +79,6 @@ impl Implementation {
         matches!(self, Self::OxidizedWebDav | Self::OxidizedNfs)
     }
 
-    /// Get the maximum recommended directory size for this backend.
-    ///
-    /// Network backends use smaller sizes to keep benchmarks reasonable.
-    pub fn max_directory_size(&self) -> usize {
-        if self.is_network_backend() {
-            100 // Max 100 files for network backends
-        } else {
-            1000 // Full 1000 files for kernel backends
-        }
-    }
 }
 
 /// Benchmark suite to run.
@@ -271,8 +261,8 @@ impl BenchmarkConfig {
             cryptomator_path: None,
             implementations: vec![Implementation::OxidizedFuse],
             suite: BenchmarkSuite::Full,
-            iterations: 10,
-            warmup_iterations: 3,
+            iterations: 50,
+            warmup_iterations: 10,
             color: true,
             verbose: false,
         }
@@ -300,27 +290,10 @@ impl BenchmarkConfig {
     }
 
     /// Get directory sizes for benchmarks.
-    ///
-    /// Directory sizes are capped based on the slowest backend in the benchmark.
-    /// Network backends (WebDAV, NFS) use smaller sizes to keep benchmarks reasonable.
     pub fn directory_sizes(&self) -> Vec<usize> {
         match self.suite {
             BenchmarkSuite::Quick => vec![10],
-            _ => {
-                // Find the minimum max_directory_size across all implementations
-                let max_size = self
-                    .implementations
-                    .iter()
-                    .map(|impl_type| impl_type.max_directory_size())
-                    .min()
-                    .unwrap_or(1000);
-
-                // Filter standard sizes by the cap
-                vec![10, 100, 1000]
-                    .into_iter()
-                    .filter(|&size| size <= max_size)
-                    .collect()
-            }
+            _ => vec![10, 100, 1000],
         }
     }
 

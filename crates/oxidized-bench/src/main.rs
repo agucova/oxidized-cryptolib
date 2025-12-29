@@ -7,7 +7,7 @@ use oxidized_bench::{
     bench::{create_suite, BenchmarkRunner},
     cli::Cli,
     config::{BenchmarkConfig, Implementation},
-    results::generate_report,
+    results::{export_json, generate_report},
 };
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -26,6 +26,9 @@ fn main() -> Result<()> {
         .with(fmt::layer().with_target(false))
         .with(filter)
         .init();
+
+    // Extract JSON output path before consuming cli
+    let json_output = cli.json.clone();
 
     // Build configuration
     let config = cli.into_config().context("Failed to create benchmark config")?;
@@ -46,9 +49,15 @@ fn main() -> Result<()> {
     // Run benchmarks
     let results = runner.run(&benchmarks).context("Benchmark execution failed")?;
 
-    // Generate report
+    // Generate terminal report
     let mut stdout = std::io::stdout();
     generate_report(&mut stdout, &results, &config)?;
+
+    // Export JSON if requested
+    if let Some(path) = json_output {
+        export_json(&results, &config, &path).context("Failed to export JSON")?;
+        println!("Results exported to: {}", path.display());
+    }
 
     Ok(())
 }

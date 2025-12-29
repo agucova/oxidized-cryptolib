@@ -18,4 +18,4 @@ node_modules
 **/generated/
 
 # Specific Swift package build directories
-swift/OxVaultFSExtension/.build/
+crates/oxidized-fskit-ffi/extension/.build/

@@ -1,0 +1,68 @@
+name: OxVaultFS
+options:
+  bundleIdPrefix: com.agucova.oxidized
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: 2LR4AGRZW3
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+
+targets:
+  # Host app (container for the extension)
+  OxVaultFS:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp
+        createIntermediateGroups: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxidized.oxvaultfs
+        INFOPLIST_FILE: HostApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: HostApp/OxVaultFS.entitlements
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(PROJECT_DIR)/../../../target/release
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/../Frameworks"
+    dependencies:
+      - target: OxVaultFSExtension
+        embed: true
+        codeSign: true
+
+  # FSKit Extension
+  OxVaultFSExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Sources
+        createIntermediateGroups: true
+      - path: ../swift/Sources/OxVaultFFI
+        createIntermediateGroups: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxidized.oxvaultfs.extension
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: OxVaultFSExtension.entitlements
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(PROJECT_DIR)/../swift/include
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(PROJECT_DIR)/../../../target/release
+        OTHER_LDFLAGS:
+          - -loxidized_fskit_ffi
+        SWIFT_INCLUDE_PATHS:
+          - $(PROJECT_DIR)/../swift/include
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/../Frameworks"
+          - "@loader_path/../Frameworks"

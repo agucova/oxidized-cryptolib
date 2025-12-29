@@ -10,10 +10,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use oxidized_cryptolib::{
-    BackendInfo, BackendType, MountBackend, MountHandle,
+use oxidized_mount_common::{
+    BackendInfo, BackendType, MountBackend, MountHandle, VaultStats,
     first_available_backend, list_backend_info, select_backend,
 };
+
+use crate::ipc::{self, IpcServer};
 
 #[cfg(feature = "fuse")]
 use oxidized_fuse::FuseBackend;
@@ -223,6 +225,36 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
 
     eprintln!("Vault mounted at {}", handle.mountpoint().display());
 
+    // Get stats from the mount handle (if supported by backend)
+    let stats: Option<Arc<VaultStats>> = handle.stats();
+
+    // Generate a unique mount ID for the IPC socket
+    let mount_id = uuid::Uuid::new_v4().to_string();
+
+    // Set up IPC server (only if stats are available and in daemon mode)
+    let ipc_server: Option<IpcServer> = if args.internal_daemon_child {
+        match ipc::socket_path_for_mount(&mount_id) {
+            Ok(socket_path) => match IpcServer::new(socket_path.clone()) {
+                Ok(server) => {
+                    tracing::info!("IPC server started at {}", socket_path.display());
+                    Some(server)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to start IPC server: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to determine socket path: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let socket_path = ipc_server.as_ref().map(|s| s.socket_path().to_path_buf());
+
     // Register in state file
     let state_manager = crate::state::MountStateManager::new()
         .context("Failed to initialize state manager")?;
@@ -232,6 +264,7 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
         backend.id(),
         std::process::id(),
         args.internal_daemon_child,
+        socket_path.clone(),
     );
     state_manager
         .add_mount(mount_entry)
@@ -239,6 +272,9 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
 
     if args.internal_daemon_child {
         eprintln!("Daemon mount started (PID: {})", std::process::id());
+        if let Some(ref path) = socket_path {
+            eprintln!("IPC socket: {}", path.display());
+        }
     } else {
         eprintln!("Press Ctrl+C to unmount and exit");
     }
@@ -254,9 +290,26 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
     })
     .context("Failed to set signal handler")?;
 
-    // Wait for signal
+    // Main loop: wait for signal while handling IPC requests
     while running.load(Ordering::SeqCst) {
+        // Handle IPC requests if server is running and stats are available
+        if let (Some(server), Some(stats)) = (&ipc_server, &stats) {
+            if let Err(e) = server.try_accept(|request| {
+                ipc::handle_request(request, stats)
+            }) {
+                tracing::debug!("IPC accept error: {}", e);
+            }
+        }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Clean up IPC server socket
+    if let Some(server) = ipc_server {
+        let socket_path = server.socket_path().to_path_buf();
+        drop(server);
+        if let Err(e) = std::fs::remove_file(&socket_path) {
+            tracing::debug!("Failed to remove IPC socket: {}", e);
+        }
     }
 
     // Remove from state file before unmounting

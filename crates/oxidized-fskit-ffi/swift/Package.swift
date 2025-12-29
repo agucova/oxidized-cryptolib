@@ -23,14 +23,8 @@ let package = Package(
         .target(
             name: "OxVaultFFI",
             dependencies: ["COxVaultFFI"],
-            path: "Sources/OxVaultFFI",
-            linkerSettings: [
-                // Link against the Rust static library
-                .unsafeFlags([
-                    "-L", "../../../../target/release",
-                    "-loxidized_fskit_ffi"
-                ])
-            ]
+            path: "Sources/OxVaultFFI"
+            // Linker settings are provided by the consuming Xcode project
         ),
         // Integration tests
         .testTarget(

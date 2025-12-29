@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use comfy_table::{Cell, Color, Table};
-use oxidized_cryptolib::BackendInfo;
+use oxidized_mount_common::BackendInfo;
 
 use super::mount::list_backends;
 

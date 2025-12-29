@@ -2,6 +2,7 @@
 
 mod auth;
 mod commands;
+mod ipc;
 mod output;
 mod state;
 
@@ -21,7 +22,7 @@ use oxidized_mount_common::{
 };
 
 use crate::auth::prompt_passphrase;
-use crate::commands::{cat, cp, info, init, ls, mkdir, mounts, mv, rm, touch, tree, write};
+use crate::commands::{cat, cp, info, init, ls, mkdir, mounts, mv, rm, stats, touch, tree, write};
 use crate::state::MountStateManager;
 
 #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
@@ -85,6 +86,9 @@ enum Commands {
 
     /// List active mounts
     Mounts(mounts::Args),
+
+    /// Show statistics for mounted vaults
+    Stats(stats::StatsArgs),
 
     #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
     /// Mount the vault as a filesystem
@@ -171,6 +175,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Init(args) => return init::execute(args.clone()),
         Commands::Mounts(args) => return mounts::execute(args.clone()),
+        Commands::Stats(args) => return stats::run(args.clone()),
         #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
         Commands::Mount(args) => return mount::execute(args.clone(), cli.vault.clone()),
         #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
@@ -225,7 +230,7 @@ fn main() -> Result<()> {
     // Execute command
     match cli.command {
         // These are handled above (before vault unlock)
-        Commands::Init(_) | Commands::Mounts(_) => unreachable!(),
+        Commands::Init(_) | Commands::Mounts(_) | Commands::Stats(_) => unreachable!(),
         #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
         Commands::Mount(_) | Commands::Unmount(_) | Commands::Backends(_) => unreachable!(),
         Commands::Ls(args) => ls::execute(&vault_ops, args),

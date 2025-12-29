@@ -15,9 +15,10 @@ use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use oxidized_cryptolib::fs::streaming::encrypted_to_plaintext_size_or_zero_for_cipher;
 use oxidized_cryptolib::vault::operations_async::VaultOperationsAsync;
 use oxidized_cryptolib::vault::path::{DirId, VaultPath};
+use oxidized_mount_common::moka_cache::SyncTtlCache;
 use oxidized_mount_common::{VaultStats, WriteBuffer};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, trace};
 
 /// NFS filesystem implementation for Cryptomator vaults.
@@ -35,6 +36,11 @@ use tracing::{debug, trace};
 /// - setattr with truncate is called
 /// - The file is removed
 /// - A rename operation occurs
+/// TTL for read cache entries.
+/// Short TTL (5 seconds) allows consecutive reads to reuse decrypted content
+/// while ensuring freshness for external modifications.
+const READ_CACHE_TTL: Duration = Duration::from_secs(5);
+
 pub struct CryptomatorNFS {
     /// Vault operations for reading/writing encrypted files.
     ops: Arc<VaultOperationsAsync>,
@@ -43,6 +49,10 @@ pub struct CryptomatorNFS {
     /// Write buffers for files with pending writes.
     /// Key: file ID, Value: WriteBuffer containing pending data.
     write_buffers: DashMap<fileid3, WriteBuffer>,
+    /// Read cache for decrypted file contents.
+    /// Key: file ID, Value: decrypted content.
+    /// This prevents re-decrypting the entire file on each NFS READ RPC.
+    read_cache: SyncTtlCache<fileid3, Vec<u8>>,
     /// Server generation number (for cookieverf3).
     generation: u64,
     /// UID for all files (from process).
@@ -65,6 +75,7 @@ impl CryptomatorNFS {
             ops,
             inodes: NfsInodeTable::new(),
             write_buffers: DashMap::new(),
+            read_cache: SyncTtlCache::new(READ_CACHE_TTL),
             generation,
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
@@ -405,6 +416,8 @@ impl NFSFileSystem for CryptomatorNFS {
 
                 // Discard any pending buffer - we're replacing content
                 self.write_buffers.remove(&id);
+                // Invalidate read cache since content is being truncated
+                self.read_cache.invalidate(&id);
 
                 if size == 0 {
                     // Truncate to empty - create empty file
@@ -470,6 +483,8 @@ impl NFSFileSystem for CryptomatorNFS {
         // Check if we have buffered writes - if so, flush first for read-after-write consistency
         if self.write_buffers.contains_key(&id) {
             debug!(id, "Flushing buffer before read for consistency");
+            // Invalidate read cache since we're about to write new content
+            self.read_cache.invalidate(&id);
             if let Err(e) = self.flush_buffer(id).await {
                 self.stats.record_read_latency(op_start.elapsed());
                 self.stats.record_error();
@@ -477,19 +492,33 @@ impl NFSFileSystem for CryptomatorNFS {
             }
         }
 
-        self.stats.start_read();
-        let result = self.ops.read_file(&dir_id, &name).await;
-        self.stats.finish_read();
+        // Try to get content from cache first
+        let content = if let Some(cached) = self.read_cache.get(&id) {
+            trace!(id, "Read cache hit");
+            cached.value
+        } else {
+            // Cache miss - decrypt the file and cache it
+            trace!(id, "Read cache miss, decrypting file");
+            self.stats.start_read();
+            let result = self.ops.read_file(&dir_id, &name).await;
+            self.stats.finish_read();
 
-        let decrypted = match result {
-            Ok(d) => d,
-            Err(e) => {
-                self.stats.record_read_latency(op_start.elapsed());
-                self.stats.record_error();
-                return Err(vault_error_to_nfsstat(&e));
-            }
+            let decrypted = match result {
+                Ok(d) => d,
+                Err(e) => {
+                    self.stats.record_read_latency(op_start.elapsed());
+                    self.stats.record_error();
+                    return Err(vault_error_to_nfsstat(&e));
+                }
+            };
+
+            // Cache the decrypted content for subsequent reads
+            let content = decrypted.content;
+            self.read_cache.insert(id, content.clone());
+            self.stats.record_decrypted(content.len() as u64);
+            content
         };
-        let content = &decrypted.content;
+
         let start = offset as usize;
         let end = (offset as usize + count as usize).min(content.len());
 
@@ -501,9 +530,8 @@ impl NFSFileSystem for CryptomatorNFS {
         let data = content[start..end].to_vec();
         let eof = end >= content.len();
 
-        // Record bytes read and decrypted
+        // Record bytes read
         self.stats.record_read(data.len() as u64);
-        self.stats.record_decrypted(data.len() as u64);
         self.stats.record_read_latency(op_start.elapsed());
 
         Ok((data, eof))
@@ -530,6 +558,9 @@ impl NFSFileSystem for CryptomatorNFS {
             }
         };
         drop(entry); // Release the borrow before async operations
+
+        // Invalidate read cache since file content is changing
+        self.read_cache.invalidate(&id);
 
         // Get or create write buffer for this file
         let mut buffer = match self.get_or_create_buffer(id, &dir_id, &name).await {
@@ -746,11 +777,13 @@ impl NFSFileSystem for CryptomatorNFS {
             }
         };
 
-        // Get file ID to discard any pending write buffer
+        // Get file ID to discard any pending write buffer and read cache
         let child_path = parent_path.join(name);
         if let Some(file_id) = self.inodes.get_id(&child_path) {
             // Discard pending writes - file is being deleted
             self.write_buffers.remove(&file_id);
+            // Invalidate read cache for the deleted file
+            self.read_cache.invalidate(&file_id);
         }
 
         // Try to remove as file first
@@ -846,6 +879,8 @@ impl NFSFileSystem for CryptomatorNFS {
             && self.write_buffers.contains_key(&file_id)
         {
             debug!(file_id, "Flushing buffer before rename");
+            // Invalidate read cache since we're writing new content
+            self.read_cache.invalidate(&file_id);
             if let Err(e) = self.flush_buffer(file_id).await {
                 self.stats.record_error();
                 self.stats.record_metadata_latency(start.elapsed());

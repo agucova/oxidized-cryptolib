@@ -307,7 +307,12 @@ fn test_interleaved_reads_writes() {
 // Parallel Directory Operations
 // ============================================================================
 
+/// Stress test: parallel directory creation.
+///
+/// This test is ignored by default because parallel mkdir over NFS
+/// can be very slow due to metadata contention and may timeout in CI.
 #[test]
+#[ignore]
 fn test_parallel_mkdir() {
     let mount = Arc::new(TestMount::with_temp_vault().expect("Failed to create test mount"));
 

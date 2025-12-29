@@ -228,7 +228,7 @@ EOF
       ${xcodeSwift} build
 
       echo "Building OxVaultFSExtension..."
-      cd ../../../swift/OxVaultFSExtension
+      cd ../../oxidized-fskit-ffi/extension
       ${xcodeSwift} build
 
       echo "Swift packages built successfully!"
@@ -248,7 +248,7 @@ EOF
     fskit-clean.exec = ''
       echo "Cleaning Swift build artifacts..."
       rm -rf crates/oxidized-fskit-legacy-ffi/swift/.build
-      rm -rf swift/OxVaultFSExtension/.build
+      rm -rf crates/oxidized-fskit-ffi/extension/.build
       echo "Clean complete"
     '';
   };

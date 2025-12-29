@@ -4,12 +4,21 @@ Guidance for Claude Code when working with this repository.
 
 ## Workspace Crates
 
+**Applications:**
+- `oxidized-cli` - CLI tool (`oxcrypt`) - vault operations, mount/unmount, init
+- `oxidized-gui` - Desktop app (`oxvault`) using Dioxus with system tray
+- `oxidized-bench` - Benchmark harness (`oxbench`) for multi-backend comparison
+
+**Libraries:**
 - `oxidized-cryptolib` - Core Cryptomator encryption library (AES-GCM, AES-SIV, scrypt)
-- `oxidized-cli` - CLI tool (`oxcrypt`) - ls, cat, tree, mkdir, rm, cp, mv, info
-- `oxidized-fuse` - FUSE filesystem mount (`oxmount`) for Linux/macOS
-- `oxidized-fskit-legacy` - FSKit filesystem mount (`oxmount-fskit`) for macOS 15.4+
-- `oxidized-gui` - Desktop app (`oxvault`) using Dioxus
-- `oxidized-bench` - Benchmark harness (`oxbench`) for comparing implementations
+- `oxidized-mount-common` - Shared mount utilities (MountBackend trait, WriteBuffer, caching, HandleTable)
+
+**Mount Backends:**
+- `oxidized-fuse` - FUSE backend (Linux/macOS with macFUSE)
+- `oxidized-fskit-legacy` - FSKit via FSKitBridge.app (macOS 15.4+, deprecated)
+- `oxidized-fskit-ffi` - Native FSKit via Swift FFI (macOS 15.4+)
+- `oxidized-webdav` - WebDAV server backend (cross-platform, no kernel extensions)
+- `oxidized-nfs` - NFS server backend (Linux/macOS, no kernel extensions)
 
 ## Version Control
 
@@ -31,17 +40,24 @@ cargo nextest run                    # All tests
 cargo nextest run -p oxidized-fuse --features fuse-tests  # FUSE integration tests
 ```
 
-**FUSE integration tests** require external tools (pjdfstest, fsx) and include POSIX compliance, data integrity, and stress testing.
+**Mount backend tests** (FUSE, WebDAV, NFS):
+```bash
+cargo nextest run -p oxidized-fuse --features fuse-tests   # FUSE integration tests
+cargo nextest run -p oxidized-webdav                       # WebDAV tests
+cargo nextest run -p oxidized-nfs                          # NFS tests
+```
+
+FUSE integration tests require external tools (pjdfstest, fsx) and include POSIX compliance, data integrity, and stress testing.
 
 **FSKit prerequisites** (macOS 15.4+):
 1. `protoc` installed (provided by devenv)
-2. FSKitBridge.app (auto-installed to ~/Applications by devenv on first shell entry)
-3. Enable in System Settings → General → Login Items & Extensions → File System Extensions
-
-The `oxidized-fskit-legacy` crate provides setup utilities via `oxidized_fskit::setup`:
-- `get_status()` / `get_status_sync()` - Check FSKitBridge availability
-- `find_installation()` - Find FSKitBridge.app path
-- With `setup` feature: `download_latest()`, `install_to()` - Download from GitHub
+2. For `oxidized-fskit-legacy`: FSKitBridge.app (deprecated)
+3. For `oxidized-fskit-ffi`: Build Swift package:
+   ```bash
+   cd crates/oxidized-fskit-ffi/extension
+   swift build
+   ```
+4. Enable in System Settings → General → Login Items & Extensions → File System Extensions
 
 **GUI development** (uses `dx` CLI from dioxus-cli):
 ```bash
@@ -53,34 +69,70 @@ dx bundle -p oxidized-gui --release   # Bundle for distribution
 
 **Benchmarking**: `cargo bench -p oxidized-cryptolib` or use `oxbench --help` for cross-implementation comparisons.
 
+**CLI commands** (`oxcrypt`):
+- Vault operations: `ls`, `cat`, `tree`, `mkdir`, `touch`, `rm`, `cp`, `mv`, `write`, `info`
+- Vault creation: `init`
+- Mount management: `mount`, `unmount`, `mounts`, `backends`, `stats`
+
+Mount commands require backend features: `--features fuse,webdav,nfs`
+
 **Debugging tools**: Code coverage (`cargo-llvm-cov`), timing leak detection (`dudect`), async introspection (`tokio-console`). See `docs/DEBUGGING.md` for details.
 
 **Test vault**: `test_vault/` contains a sample vault for integration testing.
 
 ## Architecture
 
+All mount backends share common infrastructure from `oxidized-mount-common`:
+- `MountBackend` trait - unified interface for all backends
+- `WriteBuffer` - read-modify-write pattern for AES-GCM chunks
+- `HandleTable` - thread-safe file handle management
+- `moka_cache` - TTL-based attribute/entry caching (sync and async variants)
+- `VaultErrorCategory` - error classification for errno/HTTP status mapping
+
 ### FUSE Mount (oxidized-fuse)
 ```
 CryptomatorFS (implements fuser::Filesystem)
         │
         ├── InodeTable (DashMap, lock-free)
-        ├── AttrCache (TTL-based, 1s default)
-        └── VaultOperationsAsync (from oxidized-cryptolib)
+        ├── SyncTtlCache (Moka-based, 1s TTL)
+        └── VaultOperationsAsync
                 │
-                ├── HandleTable (file I/O handles)
+                ├── HandleTable<WriteBuffer>
                 └── Crypto (AES-GCM, AES-SIV)
 ```
 
-### FSKit Mount (oxidized-fskit-legacy, macOS 15.4+)
+### FSKit (oxidized-fskit-ffi, macOS 15.4+)
 ```
-VFS (Kernel) → XPC → FSKitBridge.app → TCP+Protobuf → CryptomatorFSKit
+VFS (Kernel) → XPC → OxVaultFSExtension (Swift) → FFI → CryptoFilesystem (Rust)
         │
         ├── ItemTable (item_id ↔ VaultPath mapping)
         ├── HandleTable (open file handles)
-        └── VaultOperationsAsync (from oxidized-cryptolib)
+        └── VaultOperationsAsync
 ```
 
-FSKit provides native macOS integration without kernel extensions. Requires FSKitBridge.app to bridge XPC to Rust.
+Native FSKit via Swift FFI - no external bridge app required.
+
+### WebDAV (oxidized-webdav)
+```
+WebDAV Client (Finder/Explorer) ←HTTP→ CryptomatorWebDav (dav-server)
+        │
+        ├── AsyncTtlCache (Moka-based)
+        ├── HandleTable<WriteBuffer>
+        └── VaultOperationsAsync
+```
+
+Cross-platform, no kernel extensions. Server binds to localhost only.
+
+### NFS (oxidized-nfs)
+```
+NFS Client (kernel) ←TCP→ CryptomatorNFS (nfsserve)
+        │
+        ├── NfsInodeTable (fileid ↔ VaultPath)
+        ├── HandleTable<WriteBuffer>
+        └── VaultOperationsAsync
+```
+
+Userspace NFSv3 server. No kernel extensions required.
 
 ## Security
 

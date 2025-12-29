@@ -30,7 +30,7 @@ pub use webdav::WebDavBackend;
 // Re-export traits and types from mount-common
 pub use oxidized_mount_common::{
     ActivityStatus, BackendInfo, BackendType, MountBackend, MountError, MountHandle, MountOptions,
-    VaultStats, first_available_backend, format_bytes, list_backend_info, select_backend,
+    VaultStats, first_available_backend, list_backend_info, select_backend,
 };
 
 use std::collections::HashMap;

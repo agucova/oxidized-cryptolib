@@ -50,10 +50,14 @@ const FUSE_FSTYPES: &[&str] = &[];
 
 /// Check if a mount belongs to oxidized-cryptolib based on its markers.
 ///
-/// Returns `true` if the mount's fsname matches one of our patterns:
-/// - Starts with `cryptomator:`
-/// - Equals `cryptomator-test`
-/// - Equals `cryptomator`
+/// Returns `true` if:
+/// - The mount's fsname matches one of our FUSE patterns:
+///   - Starts with `cryptomator:`
+///   - Equals `cryptomator-test`
+///   - Equals `cryptomator`
+/// - OR the mount is a WebDAV mount (fstype = "webdav")
+///   - Note: WebDAV mounts can't have custom fsnames, so we identify them by fstype
+///   - The state file + process check provides the safety verification
 ///
 /// # Safety
 ///
@@ -62,11 +66,26 @@ const FUSE_FSTYPES: &[&str] = &[];
 /// considered for cleanup operations.
 pub fn is_our_mount(mount: &SystemMount) -> bool {
     let fsname_lower = mount.fsname.to_lowercase();
+    let fstype_lower = mount.fstype.to_lowercase();
 
+    // Check for our FUSE mount markers
     for prefix in FSNAME_PREFIXES {
         if fsname_lower.starts_with(prefix) || fsname_lower == *prefix {
             return true;
         }
+    }
+
+    // WebDAV mounts don't support custom fsnames in the mount table,
+    // so we identify them by fstype. The state file provides additional
+    // verification that we own the mount (via PID and socket path).
+    if fstype_lower == "webdav" {
+        return true;
+    }
+
+    // NFS mounts also don't support custom fsnames - identify by localhost + port pattern
+    // Our NFS server runs on localhost with a high port number
+    if fstype_lower == "nfs" && fsname_lower.starts_with("127.0.0.1:") {
+        return true;
     }
 
     false

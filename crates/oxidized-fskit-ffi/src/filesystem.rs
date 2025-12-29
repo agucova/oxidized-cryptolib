@@ -723,8 +723,8 @@ impl CryptoFilesystem {
         let parent_dir_id_clone = parent_dir_id.clone();
 
         let result: Result<(ItemKind, FileType), FsError> = self.runtime.block_on(async move {
-            // Try file first
-            if ops.find_file(&parent_dir_id_clone, &name_clone).await.is_ok() {
+            // Try file first - find_file returns Ok(Some(...)) if found, Ok(None) if not found
+            if let Ok(Some(_file_info)) = ops.find_file(&parent_dir_id_clone, &name_clone).await {
                 return Ok((
                     ItemKind::File {
                         dir_id: parent_dir_id_clone.clone(),
@@ -734,7 +734,7 @@ impl CryptoFilesystem {
                 ));
             }
 
-            // Try directory - returns Option<VaultDirectoryInfo>
+            // Try directory - returns Ok(Some(...)) if found
             if let Ok(Some(dir_info)) = ops.find_directory(&parent_dir_id_clone, &name_clone).await {
                 return Ok((
                     ItemKind::Directory { dir_id: dir_info.directory_id },
@@ -742,11 +742,9 @@ impl CryptoFilesystem {
                 ));
             }
 
-            // Try symlink
-            if ops
-                .find_symlink(&parent_dir_id_clone, &name_clone)
-                .await
-                .is_ok()
+            // Try symlink - find_symlink returns Ok(Some(...)) if found, Ok(None) if not found
+            if let Ok(Some(_symlink_info)) =
+                ops.find_symlink(&parent_dir_id_clone, &name_clone).await
             {
                 return Ok((
                     ItemKind::Symlink {
@@ -1093,11 +1091,38 @@ impl CryptoFilesystem {
         };
         drop(entry);
 
+        // Check if file, directory, or symlink with this name already exists
         let ops = Arc::clone(&self.ops);
         let name_clone = name.clone();
         let dir_id_clone = dir_id.clone();
 
+        let exists = self.runtime.block_on(async {
+            // Check for file
+            if let Ok(Some(_)) = ops.find_file(&dir_id_clone, &name_clone).await {
+                return true;
+            }
+            // Check for directory
+            if let Ok(Some(_)) = ops.find_directory(&dir_id_clone, &name_clone).await {
+                return true;
+            }
+            // Check for symlink
+            if let Ok(Some(_)) = ops.find_symlink(&dir_id_clone, &name_clone).await {
+                return true;
+            }
+            false
+        });
+
+        if exists {
+            self.stats.record_error();
+            self.stats.record_metadata_latency(start.elapsed());
+            return Err(FsError::AlreadyExists);
+        }
+
         // Create empty file
+        let ops = Arc::clone(&self.ops);
+        let name_clone = name.clone();
+        let dir_id_clone = dir_id.clone();
+
         self.runtime
             .block_on(async move { ops.write_file(&dir_id_clone, &name_clone, &[]).await })
             .map_err(|e| {
@@ -1396,6 +1421,9 @@ impl CryptoFilesystem {
         let dst_parent_path = dst_parent.path.clone();
         drop(dst_parent);
 
+        // Clone dst_dir_id for later use in path table update (before async moves consume it)
+        let dst_dir_id_for_path_update = dst_dir_id.clone();
+
         let ops = Arc::clone(&self.ops);
         let src_name_clone = src_name.clone();
         let dst_name_clone = dst_name.clone();
@@ -1520,11 +1548,26 @@ impl CryptoFilesystem {
             }
         }
 
-        // Update path table
+        // Update path table and ItemKind with new name (and dir_id for cross-directory moves)
         let new_path = dst_parent_path.join(&dst_name);
+        let new_name = dst_name.clone();
         self.items
             .update_path(item_id, &old_path, new_path, |entry, path| {
                 entry.path = path;
+                // Also update the name (and dir_id) in the ItemKind
+                match &mut entry.kind {
+                    ItemKind::File { dir_id, name } => {
+                        *name = new_name.clone();
+                        *dir_id = dst_dir_id_for_path_update.clone();
+                    }
+                    ItemKind::Symlink { dir_id, name } => {
+                        *name = new_name.clone();
+                        *dir_id = dst_dir_id_for_path_update.clone();
+                    }
+                    // Directories don't have a name field, but they might need dir_id update
+                    // for parent directory reference (not implemented for cross-dir moves)
+                    ItemKind::Directory { .. } | ItemKind::Root => {}
+                }
             });
 
         // Invalidate cache

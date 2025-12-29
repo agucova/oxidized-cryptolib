@@ -6,6 +6,7 @@ pub mod ls;
 pub mod mkdir;
 pub mod mv;
 pub mod rm;
+pub mod stats;
 pub mod touch;
 pub mod tree;
 pub mod write;

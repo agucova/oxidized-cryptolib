@@ -5,13 +5,23 @@
 
 A Rust implementation for reading and writing [Cryptomator](https://cryptomator.org/) vaults (Vault Format 8).
 
-This monorepo contains six crates:
-- **oxidized-cryptolib** - Core library implementing all cryptographic and vault operations
-- **[oxidized-cli](crates/oxidized-cli/)** (`oxcrypt`) - Command-line interface for interacting with vaults
-- **[oxidized-fuse](crates/oxidized-fuse/)** (`oxmount`) - FUSE filesystem for mounting vaults (Linux/macOS)
-- **[oxidized-fskit-legacy](crates/oxidized-fskit-legacy/)** (`oxmount-fskit`) - FSKit filesystem for mounting vaults (macOS 15.4+)
+This monorepo contains ten crates:
+
+**Applications:**
+- **[oxidized-cli](crates/oxidized-cli/)** (`oxcrypt`) - Command-line interface for vault operations and mounting
 - **[oxidized-gui](crates/oxidized-gui/)** (`oxvault`) - Desktop GUI for vault management
 - **[oxidized-bench](crates/oxidized-bench/)** (`oxbench`) - Cross-implementation filesystem benchmark harness
+
+**Libraries:**
+- **oxidized-cryptolib** - Core library implementing all cryptographic and vault operations
+- **[oxidized-mount-common](crates/oxidized-mount-common/)** - Shared utilities for mount backends (caching, handles, WriteBuffer)
+
+**Mount Backends:**
+- **[oxidized-fuse](crates/oxidized-fuse/)** - FUSE filesystem (Linux/macOS with macFUSE)
+- **[oxidized-fskit-legacy](crates/oxidized-fskit-legacy/)** - FSKit via FSKitBridge.app (macOS 15.4+, deprecated)
+- **[oxidized-fskit-ffi](crates/oxidized-fskit-ffi/)** - Native FSKit via Swift FFI (macOS 15.4+)
+- **[oxidized-webdav](crates/oxidized-webdav/)** - WebDAV server backend (cross-platform, no kernel extensions)
+- **[oxidized-nfs](crates/oxidized-nfs/)** - NFS server backend (Linux/macOS, no kernel extensions)
 
 The goal is to build a full-featured, high-performance Cryptomator client in Rust. The library implements master key derivation, file and filename encryption/decryption, directory traversal, and file operations including symlinks.
 
@@ -20,8 +30,9 @@ Cryptographic operations use established RustCrypto libraries (aes-gcm, aes-siv,
 ## CLI Usage
 
 ```bash
-# Build and install
-cargo install --path crates/oxidized-cli
+# Build and install (choose backends based on your platform)
+cargo install --path crates/oxidized-cli --features fuse,webdav  # Linux/macOS
+cargo install --path crates/oxidized-cli --features webdav       # Windows
 
 # List vault contents
 oxcrypt --vault /path/to/vault ls
@@ -48,6 +59,17 @@ oxcrypt --vault /path/to/vault rm unwanted.txt
 
 # Show vault info
 oxcrypt --vault /path/to/vault info
+
+# Initialize a new vault
+oxcrypt init /path/to/new-vault
+
+# Mount commands (requires backend features)
+oxcrypt backends                        # List available backends
+oxcrypt mount /path/to/vault /mnt/vault # Mount using best available backend
+oxcrypt mount /path/to/vault -b webdav  # Mount using specific backend
+oxcrypt mounts                          # List active mounts
+oxcrypt unmount /mnt/vault              # Unmount a vault
+oxcrypt stats                           # Show vault statistics
 ```
 
 Set `OXCRYPT_VAULT` to avoid passing `--vault` every time.
@@ -99,39 +121,78 @@ umount /tmp/vault  # or Ctrl+C
 
 See the [FSKit README](crates/oxidized-fskit-legacy/README.md) for full documentation.
 
+## WebDAV Mount Usage
+
+WebDAV provides cross-platform mounting without kernel extensions - ideal for Windows or when FUSE/FSKit aren't available.
+
+```bash
+# Start WebDAV server for a vault
+oxcrypt --vault /path/to/vault mount -b webdav /tmp/webdav-mount
+
+# Connect via:
+# - macOS: Finder → Go → Connect to Server → http://127.0.0.1:PORT
+# - Windows: Explorer → Map network drive → http://127.0.0.1:PORT
+# - Linux: File manager → Connect to Server → dav://127.0.0.1:PORT
+```
+
+## NFS Mount Usage
+
+NFS provides userspace mounting on Unix systems without kernel extensions.
+
+```bash
+# Start NFS server for a vault
+oxcrypt --vault /path/to/vault mount -b nfs /mnt/vault
+
+# The vault is automatically mounted via system mount command
+```
+
 ## GUI Usage
 
 ```bash
-# Build and install
-cargo install --path crates/oxidized-gui
+# Build with FUSE backend (Linux/macOS)
+cargo build -p oxidized-gui --release --features fuse
+./target/release/oxvault
 
-# Run the GUI
-oxvault
+# Build with WebDAV backend (cross-platform)
+cargo build -p oxidized-gui --release --features webdav
+./target/release/oxvault
 
-# Or with FSKit support (macOS 15.4+ only)
-cargo build -p oxidized-gui --features fskit
+# Build with multiple backends (macOS)
+cargo build -p oxidized-gui --release --features fuse,webdav,nfs
 ./target/release/oxvault
 ```
 
+The GUI includes:
+- Vault browser with unlock/lock
+- Mount management with backend selection
+- System tray for background operation
+- Real-time vault statistics
+
 ## Benchmark Usage
 
-Compare filesystem performance across FUSE, FSKit, and official Cryptomator:
+Compare filesystem performance across FUSE, FSKit, WebDAV, NFS, and official Cryptomator:
 
 ```bash
 # Build and install
 cargo install --path crates/oxidized-bench
 
 # Benchmark FUSE implementation only
-oxbench /path/to/vault
+oxbench /path/to/vault fuse
 
-# Benchmark both FUSE and FSKit (macOS 15.4+)
-oxbench /path/to/vault fuse fskit
+# Benchmark multiple backends
+oxbench /path/to/vault fuse webdav nfs
+
+# Benchmark all available backends (macOS 15.4+)
+oxbench /path/to/vault fuse fskit webdav nfs
 
 # Compare with official Cryptomator (mount it first, then provide path)
 oxbench /path/to/vault fuse --cryptomator /Volumes/MyVault
 
 # Quick benchmark (fewer iterations, smaller files)
-oxbench /path/to/vault -s quick
+oxbench /path/to/vault fuse -s quick
+
+# Full benchmark suite with all tests
+oxbench /path/to/vault fuse -s full
 ```
 
 See the [Benchmark README](crates/oxidized-bench/README.md) for full documentation.
@@ -228,25 +289,35 @@ let target = vault.read_symlink(&dir_id, "link_name")?;
 
 ```
 crates/
-├── oxidized-cryptolib/    # Core library
+├── oxidized-cryptolib/       # Core library
 │   ├── src/
-│   │   ├── crypto/        # MasterKey, RFC 3394 key wrapping
-│   │   ├── vault/         # VaultOperations, config, master key extraction
-│   │   ├── fs/            # File/directory/symlink encryption
-│   │   ├── mount/         # MountBackend trait for filesystem backends
-│   │   └── error/         # Unified error types
-│   ├── benches/           # Performance and timing leak benchmarks
-│   └── tests/             # Integration tests
-├── oxidized-cli/          # CLI tool (oxcrypt)
-│   └── src/commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
-├── oxidized-fuse/         # FUSE filesystem (oxmount)
-│   └── src/               # FUSE trait impl, inode table, caches
-├── oxidized-fskit-legacy/        # FSKit filesystem (oxmount-fskit, macOS 15.4+)
-│   └── src/               # FSKit trait impl, item table, handles
-├── oxidized-gui/          # Desktop GUI (oxvault)
-│   └── src/               # Dioxus app, backend integration
-└── oxidized-bench/        # Benchmark harness (oxbench)
-    └── src/               # Benchmark runner, mount management, results
+│   │   ├── crypto/           # MasterKey, RFC 3394 key wrapping
+│   │   ├── vault/            # VaultOperations, config, master key extraction
+│   │   ├── fs/               # File/directory/symlink encryption
+│   │   └── error/            # Unified error types
+│   ├── benches/              # Performance and timing leak benchmarks
+│   └── tests/                # Integration tests
+├── oxidized-cli/             # CLI tool (oxcrypt)
+│   └── src/commands/         # ls, cat, tree, mkdir, rm, cp, mv, mount, unmount, etc.
+├── oxidized-gui/             # Desktop GUI (oxvault)
+│   └── src/                  # Dioxus app, system tray, backend integration
+├── oxidized-bench/           # Benchmark harness (oxbench)
+│   └── src/                  # Benchmark runner, multi-backend comparison
+├── oxidized-mount-common/    # Shared mount utilities
+│   └── src/                  # MountBackend trait, WriteBuffer, caching, HandleTable
+├── oxidized-fuse/            # FUSE backend
+│   └── src/                  # fuser trait impl, inode table, attr cache
+├── oxidized-fskit-legacy/    # FSKit via FSKitBridge (deprecated)
+│   └── src/                  # Protobuf-based bridge protocol
+├── oxidized-fskit-ffi/       # Native FSKit via Swift FFI
+│   ├── src/                  # Rust FFI layer (swift-bridge)
+│   └── swift/                # Generated Swift bindings
+├── oxidized-webdav/          # WebDAV backend
+│   └── src/                  # HTTP/WebDAV server, dav-server integration
+└── oxidized-nfs/             # NFS backend
+    └── src/                  # NFSv3 server via nfsserve
+swift/
+└── OxVaultFSExtension/       # Native macOS FSKit extension (Swift)
 ```
 
 ## Security
@@ -290,9 +361,13 @@ cargo bench -p oxidized-cryptolib --bench timing_leaks
 See [ROADMAP.md](ROADMAP.md) for planned features. Key milestones completed:
 - ✅ Async I/O support (VaultOperationsAsync)
 - ✅ Streaming API for large files
-- ✅ FUSE filesystem integration (oxidized-fuse)
-- ✅ FSKit filesystem integration (oxidized-fskit-legacy, macOS 15.4+)
-- ✅ Desktop GUI (oxidized-gui)
+- ✅ FUSE filesystem backend (oxidized-fuse)
+- ✅ FSKit filesystem backend (oxidized-fskit-ffi, macOS 15.4+)
+- ✅ WebDAV server backend (oxidized-webdav, cross-platform)
+- ✅ NFS server backend (oxidized-nfs, Linux/macOS)
+- ✅ Desktop GUI with system tray (oxidized-gui)
+- ✅ CLI mount/unmount commands with backend selection
+- ✅ Cross-implementation benchmark harness (oxidized-bench)
 
 ## Contributing
 
