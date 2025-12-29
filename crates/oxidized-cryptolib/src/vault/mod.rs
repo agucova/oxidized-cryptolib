@@ -19,7 +19,7 @@ pub use handles::{OpenHandle, VaultHandleTable};
 #[cfg(feature = "async")]
 pub use locks::{VaultLockManager, VaultLockRegistry};
 #[cfg(feature = "async")]
-pub use operations_async::VaultOperationsAsync;
+pub use operations_async::{change_password_async, ChangePasswordAsyncError, VaultOperationsAsync};
 
 // Re-export commonly used types
 pub use config::{
@@ -28,7 +28,8 @@ pub use config::{
 };
 pub use creator::{VaultCreationError, VaultCreator};
 pub use master_key::{
-    create_masterkey_file, create_masterkey_file_with_pepper, MasterKeyCreationError, MasterKeyFile,
+    change_password, change_password_with_pepper, create_masterkey_file,
+    create_masterkey_file_with_pepper, ChangePasswordError, MasterKeyCreationError, MasterKeyFile,
 };
 pub use operations::{
     debug_read_files_in_tree, DirEntry, VaultDirectoryInfo, VaultFileInfo, VaultOperationError,

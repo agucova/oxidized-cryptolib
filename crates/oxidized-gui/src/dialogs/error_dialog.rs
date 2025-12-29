@@ -24,64 +24,35 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
     rsx! {
         // Backdrop
         div {
-            style: "
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |_| props.on_dismiss.call(()),
 
             // Dialog
             div {
-                style: "
-                    background: white;
-                    border-radius: 12px;
-                    width: 420px;
-                    max-width: 90vw;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-                    overflow: hidden;
-                ",
+                class: "dialog w-[420px]",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header with error icon
                 div {
-                    style: "
-                        padding: 24px 24px 0 24px;
-                        display: flex;
-                        align-items: flex-start;
-                        gap: 16px;
-                    ",
+                    class: "p-6 pb-0 flex items-start gap-4",
 
                     // Error icon
                     div {
-                        style: "
-                            width: 48px;
-                            height: 48px;
-                            border-radius: 50%;
-                            background: #fef2f2;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            flex-shrink: 0;
-                        ",
+                        class: "w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0",
                         span {
-                            style: "font-size: 24px;",
+                            class: "text-2xl",
                             "❌"
                         }
                     }
 
                     div {
-                        style: "flex: 1;",
+                        class: "flex-1",
                         h2 {
-                            style: "margin: 0 0 4px 0; font-size: 18px; font-weight: 600; color: #1a1a1a;",
+                            class: "mb-1 text-lg font-semibold text-gray-900 dark:text-gray-100",
                             "{props.error.title}"
                         }
                         p {
-                            style: "margin: 0; font-size: 14px; color: #555; line-height: 1.5;",
+                            class: "text-sm text-gray-600 dark:text-gray-400 leading-relaxed",
                             "{props.error.message}"
                         }
                     }
@@ -89,28 +60,20 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
 
                 // Content
                 div {
-                    style: "padding: 16px 24px;",
+                    class: "p-4 px-6",
 
                     // Suggestion (if provided)
                     if let Some(suggestion) = &props.error.suggestion {
                         div {
-                            style: "
-                                padding: 12px 16px;
-                                background: #eff6ff;
-                                border: 1px solid #3b82f6;
-                                border-radius: 8px;
-                                display: flex;
-                                gap: 10px;
-                                align-items: flex-start;
-                            ",
+                            class: "alert-info",
 
                             span {
-                                style: "font-size: 16px; flex-shrink: 0;",
+                                class: "text-base shrink-0",
                                 "💡"
                             }
 
                             p {
-                                style: "margin: 0; font-size: 13px; color: #1e40af; line-height: 1.4;",
+                                class: "text-sm leading-normal",
                                 "{suggestion}"
                             }
                         }
@@ -119,27 +82,17 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
                     // Technical details (expandable)
                     if has_technical {
                         div {
-                            style: "margin-top: 16px;",
+                            class: "mt-4",
 
                             button {
-                                style: "
-                                    background: none;
-                                    border: none;
-                                    padding: 0;
-                                    color: #6b7280;
-                                    font-size: 13px;
-                                    cursor: pointer;
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 4px;
-                                ",
+                                class: "p-0 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200",
                                 onclick: move |_| show_technical.set(!show_technical()),
 
                                 {
-                                    let rotation = if show_technical() { "90deg" } else { "0deg" };
+                                    let rotation = if show_technical() { "rotate-90" } else { "" };
                                     rsx! {
                                         span {
-                                            style: "display: inline-block; transition: transform 0.15s ease; transform: rotate({rotation});",
+                                            class: "inline-block transition-transform duration-150 {rotation}",
                                             "▶"
                                         }
                                     }
@@ -150,19 +103,7 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
                             if show_technical() {
                                 if let Some(details) = &props.error.technical_details {
                                     pre {
-                                        style: "
-                                            margin: 8px 0 0 0;
-                                            padding: 12px;
-                                            background: #f3f4f6;
-                                            border-radius: 6px;
-                                            font-size: 12px;
-                                            font-family: ui-monospace, monospace;
-                                            color: #374151;
-                                            white-space: pre-wrap;
-                                            word-break: break-word;
-                                            max-height: 150px;
-                                            overflow-y: auto;
-                                        ",
+                                        class: "mt-2 p-3 bg-gray-100 dark:bg-neutral-700 rounded-md text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words max-h-[150px] overflow-y-auto",
                                         "{details}"
                                     }
                                 }
@@ -173,24 +114,10 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
 
                 // Footer
                 div {
-                    style: "
-                        padding: 16px 24px;
-                        background: #f9fafb;
-                        display: flex;
-                        justify-content: flex-end;
-                    ",
+                    class: "dialog-footer",
 
                     button {
-                        style: "
-                            padding: 10px 24px;
-                            background: #2196f3;
-                            color: white;
-                            border: none;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            font-weight: 500;
-                            cursor: pointer;
-                        ",
+                        class: "btn-primary",
                         onclick: move |_| props.on_dismiss.call(()),
                         "OK"
                     }

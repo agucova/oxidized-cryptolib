@@ -171,11 +171,17 @@ impl MountBackend for FuseBackend {
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
         // Configure mount options
-        let options = vec![
+        let mut options = vec![
             MountOption::FSName(format!("cryptomator:{}", vault_id)),
             MountOption::Subtype("oxidized".to_string()),
             MountOption::AutoUnmount,
         ];
+
+        // On macOS, set the volume name shown in Finder
+        #[cfg(target_os = "macos")]
+        {
+            options.push(MountOption::CUSTOM(format!("volname={}", vault_id)));
+        }
 
         // Mount the filesystem in a background thread
         let session = fuser::spawn_mount2(fs, mountpoint, &options)?;

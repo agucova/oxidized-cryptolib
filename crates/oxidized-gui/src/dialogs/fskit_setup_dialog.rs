@@ -74,27 +74,12 @@ pub fn FSKitSetupDialog(props: FSKitSetupDialogProps) -> Element {
     rsx! {
         // Backdrop
         div {
-            style: "
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |_| props.on_dismiss.call(()),
 
             // Dialog
             div {
-                style: "
-                    background: white;
-                    border-radius: 16px;
-                    padding: 32px;
-                    width: 500px;
-                    max-width: 90vw;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-                ",
+                class: "dialog w-[500px] max-w-[90vw] p-8",
                 onclick: move |e| e.stop_propagation(),
 
                 match step() {
@@ -168,17 +153,6 @@ pub fn FSKitSetupDialog(props: FSKitSetupDialogProps) -> Element {
                 }
             }
         }
-
-        // CSS animations
-        style { "
-            @keyframes spin {{
-                to {{ transform: rotate(360deg); }}
-            }}
-            @keyframes pulse {{
-                0%, 100% {{ opacity: 1; }}
-                50% {{ opacity: 0.5; }}
-            }}
-        " }
     }
 }
 
@@ -198,35 +172,30 @@ fn StepIntroduction(props: StepIntroductionProps) -> Element {
     rsx! {
         // Header
         div {
-            style: "text-align: center; margin-bottom: 24px;",
+            class: "text-center mb-6",
             div {
-                style: "font-size: 48px; margin-bottom: 16px;",
+                class: "text-5xl mb-4",
                 "🔧"
             }
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-2 text-2xl font-semibold text-gray-900 dark:text-gray-100",
                 "FSKit Setup Required"
             }
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "FSKitBridge is needed for native vault mounting on macOS 15.4+"
             }
         }
 
         // Benefits list
         div {
-            style: "
-                background: #f8f9fa;
-                border-radius: 8px;
-                padding: 16px;
-                margin-bottom: 24px;
-            ",
+            class: "bg-gray-50 dark:bg-neutral-800 rounded-lg p-4 mb-6",
             h3 {
-                style: "margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #333;",
+                class: "mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100",
                 "Why FSKit?"
             }
             ul {
-                style: "margin: 0; padding-left: 20px; font-size: 13px; color: #555; line-height: 1.8;",
+                class: "pl-5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed list-disc",
                 li { "No kernel extensions required (unlike macFUSE)" }
                 li { "Better system integration and stability" }
                 li { "Survives sleep/wake cycles reliably" }
@@ -236,49 +205,22 @@ fn StepIntroduction(props: StepIntroductionProps) -> Element {
 
         // Buttons
         div {
-            style: "display: flex; flex-direction: column; gap: 12px;",
+            class: "flex flex-col gap-3",
 
             button {
-                style: "
-                    width: 100%;
-                    padding: 14px 24px;
-                    background: #007aff;
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 16px;
-                    font-weight: 500;
-                    cursor: pointer;
-                ",
+                class: "btn-primary w-full py-3.5 text-base",
                 onclick: move |_| props.on_start.call(()),
                 "Install FSKitBridge Automatically"
             }
 
             button {
-                style: "
-                    width: 100%;
-                    padding: 12px 24px;
-                    background: transparent;
-                    color: #007aff;
-                    border: 1px solid #007aff;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    cursor: pointer;
-                ",
+                class: "w-full py-3 px-6 bg-transparent text-blue-500 dark:text-blue-400 border border-blue-500 dark:border-blue-400 rounded-lg text-sm cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20",
                 onclick: move |_| props.on_manual.call(()),
                 "Download Manually from GitHub"
             }
 
             button {
-                style: "
-                    width: 100%;
-                    padding: 12px 24px;
-                    background: transparent;
-                    color: #666;
-                    border: none;
-                    font-size: 14px;
-                    cursor: pointer;
-                ",
+                class: "btn-ghost w-full",
                 onclick: move |_| props.on_dismiss.call(()),
                 "Skip for Now"
             }
@@ -290,28 +232,20 @@ fn StepIntroduction(props: StepIntroductionProps) -> Element {
 fn StepDownloading() -> Element {
     rsx! {
         div {
-            style: "text-align: center;",
+            class: "text-center",
 
             // Spinner
             div {
-                style: "
-                    width: 64px;
-                    height: 64px;
-                    margin: 0 auto 24px;
-                    border: 4px solid #e0e0e0;
-                    border-top-color: #007aff;
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                ",
+                class: "w-16 h-16 mx-auto mb-6 border-4 border-gray-200 dark:border-neutral-600 border-t-blue-500 rounded-full animate-spin",
             }
 
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
                 "Downloading FSKitBridge..."
             }
 
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "Please wait while we download from GitHub..."
             }
         }
@@ -322,27 +256,19 @@ fn StepDownloading() -> Element {
 fn StepInstalling() -> Element {
     rsx! {
         div {
-            style: "text-align: center;",
+            class: "text-center",
 
             div {
-                style: "
-                    width: 64px;
-                    height: 64px;
-                    margin: 0 auto 24px;
-                    border: 4px solid #e0e0e0;
-                    border-top-color: #007aff;
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                ",
+                class: "w-16 h-16 mx-auto mb-6 border-4 border-gray-200 dark:border-neutral-600 border-t-blue-500 rounded-full animate-spin",
             }
 
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
                 "Installing..."
             }
 
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "Copying FSKitBridge.app to ~/Applications"
             }
         }
@@ -359,64 +285,37 @@ struct StepRemoveQuarantineProps {
 fn StepRemoveQuarantine(props: StepRemoveQuarantineProps) -> Element {
     rsx! {
         div {
-            style: "text-align: center; margin-bottom: 24px;",
+            class: "text-center mb-6",
             div {
-                style: "font-size: 48px; margin-bottom: 16px;",
+                class: "text-5xl mb-4",
                 "🛡️"
             }
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-2 text-2xl font-semibold text-gray-900 dark:text-gray-100",
                 "Security Approval Needed"
             }
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "FSKitBridge was downloaded from the internet and needs approval"
             }
         }
 
         div {
-            style: "
-                background: #fff3cd;
-                border: 1px solid #ffc107;
-                border-radius: 8px;
-                padding: 16px;
-                margin-bottom: 24px;
-                font-size: 13px;
-                color: #856404;
-            ",
+            class: "alert-warning mb-6",
             "macOS quarantines downloaded apps for security. We need to remove this to allow FSKitBridge to run."
         }
 
         div {
-            style: "display: flex; gap: 12px;",
+            class: "flex gap-3",
 
             button {
-                style: "
-                    flex: 1;
-                    padding: 12px 24px;
-                    background: #f5f5f5;
-                    color: #333;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    cursor: pointer;
-                ",
+                class: "btn-secondary flex-1",
                 onclick: move |_| props.on_skip.call(()),
                 "Skip"
             }
 
             button {
-                style: "
-                    flex: 1;
-                    padding: 12px 24px;
-                    background: #007aff;
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    font-weight: 500;
-                    cursor: pointer;
-                ",
+                class: "btn-primary flex-1",
                 onclick: move |_| props.on_remove.call(()),
                 "Remove Quarantine"
             }
@@ -434,68 +333,44 @@ struct StepEnableExtensionProps {
 fn StepEnableExtension(props: StepEnableExtensionProps) -> Element {
     rsx! {
         div {
-            style: "text-align: center; margin-bottom: 24px;",
+            class: "text-center mb-6",
             div {
-                style: "font-size: 48px; margin-bottom: 16px;",
+                class: "text-5xl mb-4",
                 "⚙️"
             }
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-2 text-2xl font-semibold text-gray-900 dark:text-gray-100",
                 "Enable FSKit Extension"
             }
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "One more step - enable the extension in System Settings"
             }
         }
 
         // Instructions
         div {
-            style: "
-                background: #f8f9fa;
-                border-radius: 8px;
-                padding: 16px;
-                margin-bottom: 24px;
-            ",
+            class: "bg-gray-50 dark:bg-neutral-800 rounded-lg p-4 mb-6",
             ol {
-                style: "margin: 0; padding-left: 20px; font-size: 13px; color: #555; line-height: 2;",
-                li { "Open " strong { "System Settings" } }
-                li { "Go to " strong { "General" } " → " strong { "Login Items & Extensions" } }
-                li { "Scroll to " strong { "File System Extensions" } }
-                li { "Enable " strong { "FSKitBridge" } }
+                class: "pl-5 text-sm text-gray-600 dark:text-gray-400 leading-loose list-decimal",
+                li { "Open " strong { class: "text-gray-900 dark:text-gray-100", "System Settings" } }
+                li { "Go to " strong { class: "text-gray-900 dark:text-gray-100", "General" } " → " strong { class: "text-gray-900 dark:text-gray-100", "Login Items & Extensions" } }
+                li { "Scroll to " strong { class: "text-gray-900 dark:text-gray-100", "File System Extensions" } }
+                li { "Enable " strong { class: "text-gray-900 dark:text-gray-100", "FSKitBridge" } }
             }
         }
 
         div {
-            style: "display: flex; flex-direction: column; gap: 12px;",
+            class: "flex flex-col gap-3",
 
             button {
-                style: "
-                    width: 100%;
-                    padding: 14px 24px;
-                    background: #007aff;
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 16px;
-                    font-weight: 500;
-                    cursor: pointer;
-                ",
+                class: "btn-primary w-full py-3.5 text-base",
                 onclick: move |_| props.on_open_settings.call(()),
                 "Open System Settings"
             }
 
             button {
-                style: "
-                    width: 100%;
-                    padding: 12px 24px;
-                    background: #28a745;
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    cursor: pointer;
-                ",
+                class: "btn-success w-full",
                 onclick: move |_| props.on_verify.call(()),
                 "I've Enabled It - Verify"
             }
@@ -507,27 +382,19 @@ fn StepEnableExtension(props: StepEnableExtensionProps) -> Element {
 fn StepVerifying() -> Element {
     rsx! {
         div {
-            style: "text-align: center;",
+            class: "text-center",
 
             div {
-                style: "
-                    width: 64px;
-                    height: 64px;
-                    margin: 0 auto 24px;
-                    border: 4px solid #e0e0e0;
-                    border-top-color: #28a745;
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                ",
+                class: "w-16 h-16 mx-auto mb-6 border-4 border-gray-200 dark:border-neutral-600 border-t-green-500 rounded-full animate-spin",
             }
 
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
                 "Verifying..."
             }
 
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "Checking if FSKitBridge is responding"
             }
         }
@@ -543,33 +410,23 @@ struct StepCompleteProps {
 fn StepComplete(props: StepCompleteProps) -> Element {
     rsx! {
         div {
-            style: "text-align: center; margin-bottom: 24px;",
+            class: "text-center mb-6",
             div {
-                style: "font-size: 64px; margin-bottom: 16px;",
+                class: "text-6xl mb-4",
                 "✅"
             }
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #28a745;",
+                class: "mb-2 text-2xl font-semibold text-green-600 dark:text-green-400",
                 "FSKit Ready!"
             }
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "FSKitBridge is installed and working. You can now mount vaults using FSKit."
             }
         }
 
         button {
-            style: "
-                width: 100%;
-                padding: 14px 24px;
-                background: #28a745;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: 500;
-                cursor: pointer;
-            ",
+            class: "btn-success w-full py-3.5 text-base",
             onclick: move |_| props.on_close.call(()),
             "Done"
         }
@@ -587,51 +444,32 @@ struct StepErrorProps {
 fn StepError(props: StepErrorProps) -> Element {
     rsx! {
         div {
-            style: "text-align: center; margin-bottom: 24px;",
+            class: "text-center mb-6",
             div {
-                style: "font-size: 64px; margin-bottom: 16px;",
+                class: "text-6xl mb-4",
                 "❌"
             }
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #dc3545;",
+                class: "mb-2 text-2xl font-semibold text-red-600 dark:text-red-400",
                 "Setup Failed"
             }
             p {
-                style: "margin: 0; font-size: 14px; color: #666;",
+                class: "text-sm text-gray-600 dark:text-gray-400",
                 "{props.message}"
             }
         }
 
         div {
-            style: "display: flex; gap: 12px;",
+            class: "flex gap-3",
 
             button {
-                style: "
-                    flex: 1;
-                    padding: 12px 24px;
-                    background: #f5f5f5;
-                    color: #333;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    cursor: pointer;
-                ",
+                class: "btn-secondary flex-1",
                 onclick: move |_| props.on_dismiss.call(()),
                 "Dismiss"
             }
 
             button {
-                style: "
-                    flex: 1;
-                    padding: 12px 24px;
-                    background: #007aff;
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    font-weight: 500;
-                    cursor: pointer;
-                ",
+                class: "btn-primary flex-1",
                 onclick: move |_| props.on_retry.call(()),
                 "Try Again"
             }

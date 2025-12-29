@@ -2,6 +2,8 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serial_test::file_serial;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 const TEST_PASSWORD: &str = "test-password-123";
@@ -571,6 +573,262 @@ fn test_wrong_password_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("passphrase").or(predicate::str::contains("master key")));
+}
+
+// ============================================================================
+// Mount command tests (without actual mounting)
+// ============================================================================
+
+/// Helper to get the state file path
+fn get_state_file_path() -> PathBuf {
+    directories::ProjectDirs::from("com", "oxidized", "oxcrypt")
+        .expect("Failed to get project dirs")
+        .config_dir()
+        .join("mounts.json")
+}
+
+/// Helper to write a mock state file
+fn write_mock_state(entries: &[serde_json::Value]) {
+    let state_path = get_state_file_path();
+    if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let state = serde_json::json!({
+        "version": 1,
+        "mounts": entries
+    });
+    std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+}
+
+/// Helper to clean up the state file
+fn cleanup_state_file() {
+    let state_path = get_state_file_path();
+    std::fs::remove_file(&state_path).ok();
+}
+
+/// Create a mock mount entry with a live PID (current process)
+#[allow(dead_code)]
+fn mock_entry_live(vault: &str, mountpoint: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "vault_path": vault,
+        "mountpoint": mountpoint,
+        "backend": "fuse",
+        "pid": std::process::id(),  // Current process - always alive
+        "started_at": chrono::Utc::now().to_rfc3339(),
+        "is_daemon": true
+    })
+}
+
+/// Create a mock mount entry with a dead PID
+fn mock_entry_stale(vault: &str, mountpoint: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "vault_path": vault,
+        "mountpoint": mountpoint,
+        "backend": "fskit",
+        "pid": 999999999u32,  // Very unlikely to be a real PID
+        "started_at": "2024-01-01T00:00:00Z",
+        "is_daemon": true
+    })
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_command_empty() {
+    cleanup_state_file();
+
+    // mounts command should work without any vault
+    // May see "No active mounts" or "0 active mount(s)" depending on whether
+    // stale entries from other test runs were cleaned up
+    oxcrypt_no_password()
+        .arg("mounts")
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("No active mounts")
+                .or(predicate::str::contains("0 active mount(s)"))
+        );
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_json_output_empty() {
+    cleanup_state_file();
+
+    oxcrypt_no_password()
+        .arg("mounts")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"active\""))
+        .stdout(predicate::str::contains("[]"));
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_displays_entries_from_state_file() {
+    // Create a mock entry - note: it will be detected as stale since
+    // the mountpoint doesn't actually exist, but with --include-stale it shows
+    write_mock_state(&[
+        mock_entry_stale("/home/user/vault1", "/mnt/vault1"),
+    ]);
+
+    oxcrypt_no_password()
+        .arg("mounts")
+        .arg("--include-stale")
+        .arg("--no-cleanup")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vault1"));
+
+    cleanup_state_file();
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_json_shows_stale_entries() {
+    write_mock_state(&[
+        mock_entry_stale("/home/user/my-vault", "/tmp/my-mount"),
+    ]);
+
+    oxcrypt_no_password()
+        .arg("mounts")
+        .arg("--json")
+        .arg("--include-stale")
+        .arg("--no-cleanup")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"stale\""))
+        .stdout(predicate::str::contains("my-vault"));
+
+    cleanup_state_file();
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_auto_cleanup_removes_stale() {
+    let state_path = get_state_file_path();
+
+    // Write stale entry
+    write_mock_state(&[
+        mock_entry_stale("/vault", "/mnt"),
+    ]);
+
+    // Run mounts WITHOUT --no-cleanup (default behavior)
+    oxcrypt_no_password()
+        .arg("mounts")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Cleaned up"));
+
+    // Verify state file is now empty or has no mounts
+    let contents = std::fs::read_to_string(&state_path).unwrap_or_default();
+    let state: serde_json::Value = serde_json::from_str(&contents).unwrap_or(serde_json::json!({}));
+    let mounts = state.get("mounts").and_then(|m| m.as_array());
+    assert!(mounts.map(|m| m.is_empty()).unwrap_or(true), "Stale entry should be cleaned up");
+
+    cleanup_state_file();
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_no_cleanup_preserves_stale() {
+    let state_path = get_state_file_path();
+
+    // Write stale entry
+    write_mock_state(&[
+        mock_entry_stale("/vault", "/mnt"),
+    ]);
+
+    // Run mounts WITH --no-cleanup
+    oxcrypt_no_password()
+        .arg("mounts")
+        .arg("--no-cleanup")
+        .assert()
+        .success();
+
+    // Verify state file still has the entry
+    let contents = std::fs::read_to_string(&state_path).unwrap();
+    let state: serde_json::Value = serde_json::from_str(&contents).unwrap();
+    let mounts = state.get("mounts").and_then(|m| m.as_array()).unwrap();
+    assert_eq!(mounts.len(), 1, "Entry should be preserved with --no-cleanup");
+
+    cleanup_state_file();
+}
+
+#[test]
+#[file_serial]
+fn test_mounts_include_stale_shows_both() {
+    write_mock_state(&[
+        mock_entry_stale("/vault1", "/mnt1"),
+        mock_entry_stale("/vault2", "/mnt2"),
+    ]);
+
+    oxcrypt_no_password()
+        .arg("mounts")
+        .arg("--include-stale")
+        .arg("--no-cleanup")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vault1"))
+        .stdout(predicate::str::contains("vault2"));
+
+    cleanup_state_file();
+}
+
+#[test]
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+fn test_mount_help_shows_daemon_flag() {
+    oxcrypt_no_password()
+        .arg("mount")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--daemon"))
+        .stdout(predicate::str::contains("--here"));
+}
+
+#[test]
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+fn test_mount_requires_vault_or_mountpoint() {
+    oxcrypt_no_password()
+        .arg("mount")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--mountpoint").or(predicate::str::contains("--here")));
+}
+
+#[test]
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+fn test_backends_command() {
+    oxcrypt_no_password()
+        .arg("backends")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backend"));
+}
+
+#[test]
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+fn test_backends_json_output() {
+    oxcrypt_no_password()
+        .arg("backends")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"available\""));
+}
+
+#[test]
+#[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
+fn test_unmount_nonexistent_path() {
+    oxcrypt_no_password()
+        .arg("unmount")
+        .arg("/nonexistent/mount/path")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not exist"));
 }
 
 // ============================================================================

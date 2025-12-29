@@ -14,6 +14,8 @@ pub use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle}
 pub use oxidized_fuse::{FuseBackend, FuseMountHandle};
 #[cfg(target_os = "macos")]
 pub use oxidized_fskit::{FSKitBackend, FSKitMountHandle};
+pub use oxidized_webdav::WebDavBackend;
+pub use oxidized_nfs::NfsBackend;
 
 use crate::config::Implementation;
 use anyhow::{Context, Result};
@@ -27,6 +29,12 @@ static FUSE_BACKEND: OnceLock<FuseBackend> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static FSKIT_BACKEND: OnceLock<FSKitBackend> = OnceLock::new();
 
+/// Global WebDAV backend instance
+static WEBDAV_BACKEND: OnceLock<WebDavBackend> = OnceLock::new();
+
+/// Global NFS backend instance
+static NFS_BACKEND: OnceLock<NfsBackend> = OnceLock::new();
+
 /// Get the FUSE backend
 pub fn fuse_backend() -> &'static FuseBackend {
     FUSE_BACKEND.get_or_init(FuseBackend::new)
@@ -38,6 +46,16 @@ pub fn fskit_backend() -> &'static FSKitBackend {
     FSKIT_BACKEND.get_or_init(FSKitBackend::new)
 }
 
+/// Get the WebDAV backend
+pub fn webdav_backend() -> &'static WebDavBackend {
+    WEBDAV_BACKEND.get_or_init(WebDavBackend::new)
+}
+
+/// Get the NFS backend
+pub fn nfs_backend() -> &'static NfsBackend {
+    NFS_BACKEND.get_or_init(NfsBackend::new)
+}
+
 /// Check if a backend is available for the given implementation.
 pub fn is_backend_available(implementation: Implementation) -> bool {
     match implementation {
@@ -46,6 +64,8 @@ pub fn is_backend_available(implementation: Implementation) -> bool {
         Implementation::OxidizedFsKit => fskit_backend().is_available(),
         #[cfg(not(target_os = "macos"))]
         Implementation::OxidizedFsKit => false,
+        Implementation::OxidizedWebDav => webdav_backend().is_available(),
+        Implementation::OxidizedNfs => nfs_backend().is_available(),
         Implementation::OfficialCryptomator => true, // External, always "available" (user manages it)
     }
 }

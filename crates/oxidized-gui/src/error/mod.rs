@@ -6,7 +6,12 @@
 use thiserror::Error;
 
 /// Errors that can occur during GUI operations
+///
+/// These variants are prepared for structured error handling.
+/// The From<GuiError> for UserFacingError implementation provides
+/// user-friendly messages for each variant.
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum GuiError {
     #[error("Failed to unlock vault: {0}")]
     UnlockFailed(String),

@@ -28,6 +28,12 @@ comfy-table = { workspace = true }
 oxidized-fuse = { path = "../oxidized-fuse" }
 fuser = "0.16"
 
+# WebDAV backend
+oxidized-webdav = { path = "../oxidized-webdav" }
+
+# NFS backend
+oxidized-nfs = { path = "../oxidized-nfs" }
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros", "fs", "io-util"] }
 

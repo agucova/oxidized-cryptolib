@@ -9,6 +9,58 @@ use thiserror::Error;
 // Re-export BackendType from cryptolib for convenience
 pub use oxidized_cryptolib::BackendType;
 
+/// User preference for application theme
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    /// Follow system preference (default)
+    #[default]
+    System,
+    /// Always use light theme
+    Light,
+    /// Always use dark theme
+    Dark,
+}
+
+impl ThemePreference {
+    /// Get all available theme preferences
+    pub fn all() -> &'static [ThemePreference] {
+        &[
+            ThemePreference::System,
+            ThemePreference::Light,
+            ThemePreference::Dark,
+        ]
+    }
+
+    /// Get a user-friendly display name
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ThemePreference::System => "System",
+            ThemePreference::Light => "Light",
+            ThemePreference::Dark => "Dark",
+        }
+    }
+
+    /// Get description for the UI
+    pub fn description(&self) -> &'static str {
+        match self {
+            ThemePreference::System => "Match your system settings",
+            ThemePreference::Light => "Always use light mode",
+            ThemePreference::Dark => "Always use dark mode",
+        }
+    }
+
+    /// Get the CSS class to apply to the root element
+    /// Returns None for System (let the browser handle it)
+    pub fn css_class(&self) -> Option<&'static str> {
+        match self {
+            ThemePreference::System => None,
+            ThemePreference::Light => Some("theme-light"),
+            ThemePreference::Dark => Some("theme-dark"),
+        }
+    }
+}
+
 /// Errors that can occur during configuration operations
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -85,6 +137,9 @@ pub struct AppConfig {
     /// Enable debug logging (verbose output)
     #[serde(default)]
     pub debug_logging: bool,
+    /// Theme preference (system, light, or dark)
+    #[serde(default)]
+    pub theme: ThemePreference,
 }
 
 impl AppConfig {

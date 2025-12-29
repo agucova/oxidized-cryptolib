@@ -10,6 +10,9 @@ pub mod touch;
 pub mod tree;
 pub mod write;
 
+// Mount state listing is always available
+pub mod mounts;
+
 // Mount-related modules require at least one backend feature
 #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
 pub mod backends;

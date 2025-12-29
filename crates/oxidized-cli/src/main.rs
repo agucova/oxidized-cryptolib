@@ -3,6 +3,7 @@
 mod auth;
 mod commands;
 mod output;
+mod state;
 
 use std::fs;
 use std::path::PathBuf;
@@ -15,7 +16,7 @@ use oxidized_cryptolib::vault::config::{extract_master_key, validate_vault_claim
 use oxidized_cryptolib::vault::operations::VaultOperations;
 
 use crate::auth::prompt_passphrase;
-use crate::commands::{cat, cp, info, init, ls, mkdir, mv, rm, touch, tree, write};
+use crate::commands::{cat, cp, info, init, ls, mkdir, mounts, mv, rm, touch, tree, write};
 
 #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
 use crate::commands::{backends, mount, unmount};
@@ -76,6 +77,9 @@ enum Commands {
     /// Show vault information
     Info(info::Args),
 
+    /// List active mounts
+    Mounts(mounts::Args),
+
     #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
     /// Mount the vault as a filesystem
     Mount(mount::Args),
@@ -105,17 +109,16 @@ fn main() -> Result<()> {
         .init();
 
     // Handle commands that don't require an unlocked vault
-    #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
     match &cli.command {
         Commands::Init(args) => return init::execute(args.clone()),
+        Commands::Mounts(args) => return mounts::execute(args.clone()),
+        #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
         Commands::Mount(args) => return mount::execute(args.clone(), cli.vault.clone()),
+        #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
         Commands::Unmount(args) => return unmount::execute(args.clone()),
+        #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
         Commands::Backends(args) => return backends::execute(args.clone()),
         _ => {}
-    }
-    #[cfg(not(any(feature = "fuse", feature = "fskit", feature = "webdav")))]
-    if let Commands::Init(args) = &cli.command {
-        return init::execute(args.clone());
     }
 
     // All other commands require a vault path
@@ -163,7 +166,7 @@ fn main() -> Result<()> {
     // Execute command
     match cli.command {
         // These are handled above (before vault unlock)
-        Commands::Init(_) => unreachable!(),
+        Commands::Init(_) | Commands::Mounts(_) => unreachable!(),
         #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
         Commands::Mount(_) | Commands::Unmount(_) | Commands::Backends(_) => unreachable!(),
         Commands::Ls(args) => ls::execute(&vault_ops, args),

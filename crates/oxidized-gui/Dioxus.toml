@@ -1,14 +1,12 @@
 [application]
 name = "oxvault"
 default_platform = "desktop"
+asset_dir = "assets"
 
 [desktop]
 title = "Oxidized Vault"
 width = 900
 height = 600
-
-[application.asset_dir]
-path = "assets"
 
 # Disable automatic web builds
 [web]

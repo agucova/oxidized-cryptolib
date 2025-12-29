@@ -32,6 +32,11 @@ unix-backends = ["fuse", "fskit", "webdav", "nfs"]
 # Enable all mount backends that work on the current platform
 all-backends = ["fuse", "fskit", "webdav", "nfs"]
 
+# Platform-specific convenience features
+macos-defaults = ["fuse", "fskit", "webdav"]
+linux-defaults = ["fuse", "webdav"]
+windows-defaults = ["webdav"]
+
 [dependencies]
 oxidized-cryptolib.workspace = true
 clap.workspace = true
@@ -50,12 +55,25 @@ oxidized-fuse = { path = "../oxidized-fuse", optional = true }
 oxidized-fskit = { path = "../oxidized-fskit", optional = true }
 oxidized-webdav = { path = "../oxidized-webdav", optional = true }
 oxidized-nfs = { path = "../oxidized-nfs", optional = true }
+serde = { version = "1.0.228", features = ["derive"] }
+directories = "6.0.0"
+chrono = { version = "0.4.42", features = ["serde"] }
+uuid = { version = "1.19.0", features = ["v4"] }
+nix = { version = "0.30.1", features = ["signal", "process"] }
+
+# Platform-specific dependencies for process management
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2.1"
 predicates = "3.1"
 tempfile = "3"
 criterion = { version = "0.8", features = ["html_reports"] }
+uuid = { version = "1.19.0", features = ["v4"] }
+chrono = "0.4.42"
+directories = "6.0.0"
+serial_test = { version = "3.2.0", features = ["file_locks"] }
 
 [[bench]]
 name = "cli_operations"

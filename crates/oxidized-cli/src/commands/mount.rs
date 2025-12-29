@@ -66,8 +66,12 @@ pub struct Args {
     pub vault: Option<PathBuf>,
 
     /// Directory where the vault will be mounted
-    #[arg(short, long)]
-    pub mountpoint: PathBuf,
+    #[arg(short, long, required_unless_present = "here")]
+    pub mountpoint: Option<PathBuf>,
+
+    /// Mount in current directory using vault name (e.g., ./my-vault)
+    #[arg(long, conflicts_with = "mountpoint")]
+    pub here: bool,
 
     /// Backend to use for mounting (if not specified, uses first available)
     #[arg(short, long, value_enum)]
@@ -80,6 +84,14 @@ pub struct Args {
     /// Create the mountpoint directory if it doesn't exist
     #[arg(long, default_value = "false")]
     pub create_mountpoint: bool,
+
+    /// Run mount in background (daemon mode)
+    #[arg(short, long)]
+    pub daemon: bool,
+
+    /// Internal flag: this process is the daemon child (don't spawn again)
+    #[arg(long, hide = true)]
+    pub internal_daemon_child: bool,
 }
 
 /// Build the list of available backends based on enabled features
@@ -120,6 +132,7 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
     // Get vault path from args or global flag
     let vault_path = args
         .vault
+        .clone()
         .or(vault_path)
         .ok_or_else(|| anyhow::anyhow!("--vault is required (or set OXCRYPT_VAULT)"))?;
 
@@ -131,21 +144,47 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
         anyhow::bail!("Vault path is not a directory: {}", vault_path.display());
     }
 
+    // Compute mountpoint from --here or --mountpoint
+    let mountpoint = if args.here {
+        let vault_name = vault_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("vault");
+        std::env::current_dir()
+            .context("Failed to get current directory")?
+            .join(vault_name)
+    } else {
+        args.mountpoint
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--mountpoint is required (or use --here)"))?
+    };
+
+    // Handle daemon mode: spawn child process and exit
+    if args.daemon && !args.internal_daemon_child {
+        return spawn_daemon_mount(&args, &vault_path, &mountpoint);
+    }
+
     // Get passphrase
     let password = match args.password {
-        Some(p) => p,
+        Some(ref p) => p.clone(),
         None => crate::auth::prompt_passphrase()?,
     };
 
-    // Handle mountpoint
-    let mountpoint = &args.mountpoint;
+    // Handle mountpoint creation
     if !mountpoint.exists() {
-        if args.create_mountpoint {
-            std::fs::create_dir_all(mountpoint)
+        if args.create_mountpoint || args.here {
+            std::fs::create_dir_all(&mountpoint)
                 .with_context(|| format!("Failed to create mountpoint: {}", mountpoint.display()))?;
+        } else if mountpoint.parent().map(|p| p.exists()).unwrap_or(false) {
+            anyhow::bail!(
+                "Mountpoint does not exist: {}\n\
+                 Parent directory exists - use --create-mountpoint to create it.",
+                mountpoint.display()
+            );
         } else {
             anyhow::bail!(
-                "Mountpoint does not exist: {}. Use --create-mountpoint to create it.",
+                "Mountpoint does not exist: {}\n\
+                 Create the parent directory first, or use --here to mount in current directory.",
                 mountpoint.display()
             );
         }
@@ -179,15 +218,35 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
     // Mount the vault
     eprintln!("Mounting vault at {}...", mountpoint.display());
     let handle: Box<dyn MountHandle> = backend
-        .mount(vault_id, &vault_path, &password, mountpoint)
+        .mount(vault_id, &vault_path, &password, &mountpoint)
         .context("Failed to mount vault")?;
 
     eprintln!("Vault mounted at {}", handle.mountpoint().display());
-    eprintln!("Press Ctrl+C to unmount and exit");
+
+    // Register in state file
+    let state_manager = crate::state::MountStateManager::new()
+        .context("Failed to initialize state manager")?;
+    let mount_entry = crate::state::MountEntry::new(
+        vault_path.clone(),
+        mountpoint.clone(),
+        backend.id(),
+        std::process::id(),
+        args.internal_daemon_child,
+    );
+    state_manager
+        .add_mount(mount_entry)
+        .context("Failed to register mount in state file")?;
+
+    if args.internal_daemon_child {
+        eprintln!("Daemon mount started (PID: {})", std::process::id());
+    } else {
+        eprintln!("Press Ctrl+C to unmount and exit");
+    }
 
     // Set up signal handler
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
+    let mountpoint_for_cleanup = mountpoint.clone();
 
     ctrlc::set_handler(move || {
         eprintln!("\nReceived interrupt signal, unmounting...");
@@ -200,10 +259,84 @@ pub fn execute(args: Args, vault_path: Option<PathBuf>) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
+    // Remove from state file before unmounting
+    if let Ok(manager) = crate::state::MountStateManager::new() {
+        let _ = manager.remove_by_mountpoint(&mountpoint_for_cleanup);
+    }
+
     // Unmount
     eprintln!("Unmounting...");
     handle.unmount().context("Failed to unmount")?;
     eprintln!("Unmounted successfully");
+
+    Ok(())
+}
+
+/// Spawn a daemon process to run the mount in background.
+fn spawn_daemon_mount(args: &Args, vault_path: &PathBuf, mountpoint: &PathBuf) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    // Get password before spawning (interactive prompt in parent)
+    let password = match &args.password {
+        Some(p) => p.clone(),
+        None => crate::auth::prompt_passphrase()?,
+    };
+
+    // Build command to re-invoke ourselves with --internal-daemon-child
+    let exe = std::env::current_exe().context("Failed to get current executable path")?;
+    let mut cmd = Command::new(&exe);
+
+    cmd.arg("mount");
+    cmd.arg("--vault").arg(vault_path);
+    cmd.arg("--mountpoint").arg(mountpoint);
+    cmd.arg("--create-mountpoint");
+    cmd.arg("--internal-daemon-child");
+
+    if let Some(backend) = &args.backend {
+        let backend_str = match backend {
+            #[cfg(feature = "fuse")]
+            BackendArg::Fuse => "fuse",
+            #[cfg(feature = "fskit")]
+            BackendArg::Fskit => "fskit",
+            #[cfg(feature = "webdav")]
+            BackendArg::Webdav => "webdav",
+            #[cfg(feature = "nfs")]
+            BackendArg::Nfs => "nfs",
+        };
+        cmd.arg("--backend").arg(backend_str);
+    }
+
+    // Pass password via env var (not in command line args for security)
+    cmd.env("OXCRYPT_PASSWORD", &password);
+
+    // Detach from parent
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0); // New process group
+    }
+
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    let child = cmd.spawn().context("Failed to spawn daemon process")?;
+    let pid = child.id();
+
+    // Give it a moment to start and potentially fail
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Check if the mount appeared
+    if mountpoint.exists() && mountpoint.is_dir() {
+        eprintln!("Mount started in background (PID: {})", pid);
+        eprintln!("Mountpoint: {}", mountpoint.display());
+        eprintln!();
+        eprintln!("Use 'oxcrypt mounts' to list active mounts");
+        eprintln!("Use 'oxcrypt unmount {}' to stop", mountpoint.display());
+    } else {
+        eprintln!("Mount daemon started (PID: {})", pid);
+        eprintln!("Note: Mount may still be initializing. Use 'oxcrypt mounts' to check status.");
+    }
 
     Ok(())
 }

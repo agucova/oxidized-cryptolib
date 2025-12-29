@@ -7,29 +7,24 @@ use dioxus::prelude::*;
 pub fn EmptyState() -> Element {
     rsx! {
         div {
-            class: "empty-state",
-            style: "
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100%;
-                text-align: center;
-                color: #666;
-            ",
+            class: "flex flex-col items-center justify-center h-full text-center p-8",
 
+            // Icon container with subtle background
             div {
-                style: "font-size: 64px; margin-bottom: 16px; opacity: 0.5;",
-                "🔐"
+                class: "w-24 h-24 flex items-center justify-center bg-gray-100 dark:bg-neutral-700 rounded-full mb-6",
+                span {
+                    class: "text-5xl opacity-80",
+                    "🔐"
+                }
             }
 
             h2 {
-                style: "margin: 0 0 8px 0; font-size: 20px; font-weight: 500; color: #333;",
+                class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
                 "Select a Vault"
             }
 
             p {
-                style: "margin: 0; font-size: 14px; max-width: 280px;",
+                class: "text-sm text-gray-600 dark:text-gray-400 max-w-[300px] leading-relaxed",
                 "Choose a vault from the sidebar to view its details and manage it."
             }
         }

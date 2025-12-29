@@ -2685,6 +2685,80 @@ impl VaultOperationsAsync {
     }
 }
 
+/// Change the vault password asynchronously.
+///
+/// This is a standalone async function that changes the vault password by:
+/// 1. Reading the existing masterkey file
+/// 2. Unlocking with the old passphrase
+/// 3. Re-wrapping the keys with the new passphrase
+/// 4. Atomically writing the new masterkey file
+///
+/// The master keys (AES and MAC) never change - only the key encryption key (KEK)
+/// derived from the passphrase is replaced.
+///
+/// # Arguments
+///
+/// * `vault_path` - Path to the vault root directory
+/// * `old_passphrase` - Current passphrase (for unlocking)
+/// * `new_passphrase` - New passphrase (for re-wrapping)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The vault cannot be read
+/// - The old passphrase is incorrect
+/// - The new masterkey file cannot be written
+///
+/// # Example
+///
+/// ```ignore
+/// change_password_async(Path::new("my_vault"), "old_password", "new_password").await?;
+/// ```
+#[instrument(level = "info", skip(old_passphrase, new_passphrase), fields(vault_path = %vault_path.display()))]
+pub async fn change_password_async(
+    vault_path: &Path,
+    old_passphrase: &str,
+    new_passphrase: &str,
+) -> Result<(), ChangePasswordAsyncError> {
+    use crate::vault::master_key::change_password;
+
+    let masterkey_dir = vault_path.join("masterkey");
+    let masterkey_path = masterkey_dir.join("masterkey.cryptomator");
+
+    // Clone values for the blocking task
+    let path = masterkey_path.clone();
+    let old_pw = old_passphrase.to_string();
+    let new_pw = new_passphrase.to_string();
+
+    // Run crypto operations in blocking task (scrypt is CPU-intensive)
+    let new_content = tokio::task::spawn_blocking(move || {
+        change_password(&path, &old_pw, &new_pw)
+    })
+    .await
+    .map_err(|e| ChangePasswordAsyncError::TaskJoin(e.to_string()))??;
+
+    // Atomic write: write to temp file, then rename
+    let temp_path = masterkey_dir.join("masterkey.cryptomator.tmp");
+    fs::write(&temp_path, &new_content).await?;
+    fs::rename(&temp_path, &masterkey_path).await?;
+
+    info!("Vault password changed successfully");
+    Ok(())
+}
+
+/// Errors that can occur when changing the vault password asynchronously.
+#[derive(Error, Debug)]
+pub enum ChangePasswordAsyncError {
+    #[error("Password change failed: {0}")]
+    ChangePassword(#[from] crate::vault::master_key::ChangePasswordError),
+
+    #[error("Failed to write new masterkey file: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Task join error: {0}")]
+    TaskJoin(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

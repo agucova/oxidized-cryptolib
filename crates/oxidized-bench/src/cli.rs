@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// Cross-implementation filesystem benchmark harness for Cryptomator vaults.
 ///
 /// Compares performance between oxidized-fuse, oxidized-fskit (macOS 15.4+),
-/// and the official Cryptomator application.
+/// oxidized-webdav, oxidized-nfs, and the official Cryptomator application.
 #[derive(Parser, Debug)]
 #[command(name = "oxbench")]
 #[command(author, version, about, long_about = None)]
@@ -19,7 +19,7 @@ pub struct Cli {
 
     /// Implementations to benchmark.
     ///
-    /// Valid values: fuse, fskit, cryptomator
+    /// Valid values: fuse, fskit, webdav, nfs, cryptomator
     /// If not specified, auto-detects available implementations.
     #[arg(value_name = "IMPL")]
     pub implementations: Vec<String>,
@@ -145,8 +145,16 @@ impl Cli {
                         Implementation::OxidizedFsKit
                     }
                 }
+                "webdav" => Implementation::OxidizedWebDav,
+                "nfs" => {
+                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                    bail!("NFS is only available on macOS and Linux");
+
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    Implementation::OxidizedNfs
+                }
                 "cryptomator" | "official" => Implementation::OfficialCryptomator,
-                _ => bail!("Unknown implementation: {s}. Valid options: fuse, fskit, cryptomator"),
+                _ => bail!("Unknown implementation: {s}. Valid options: fuse, fskit, webdav, nfs, cryptomator"),
             };
             if !impls.contains(&impl_type) {
                 impls.push(impl_type);
@@ -165,6 +173,15 @@ impl Cli {
             if crate::platform::fskit_available() {
                 impls.push(Implementation::OxidizedFsKit);
             }
+        }
+
+        // WebDAV is always available (no kernel extensions needed)
+        impls.push(Implementation::OxidizedWebDav);
+
+        // NFS is available on macOS and Linux
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            impls.push(Implementation::OxidizedNfs);
         }
 
         // Only include Cryptomator if path is provided

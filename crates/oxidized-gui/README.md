@@ -79,6 +79,29 @@ When using `BackendType::Auto`, the GUI will:
 
 ## Development
 
+The project uses the Dioxus CLI (`dx`) for development. It's included in the devenv.
+
+### Using dx (recommended)
+
+```bash
+# Hot-reload development server
+dx serve -p oxidized-gui
+
+# With FUSE backend enabled
+dx serve -p oxidized-gui --features fuse
+
+# With FSKit backend enabled
+dx serve -p oxidized-gui --features fskit
+
+# Production build
+dx build -p oxidized-gui --release
+
+# Bundle for distribution (creates .app on macOS)
+dx bundle -p oxidized-gui --release
+```
+
+### Using cargo
+
 ```bash
 # Run in development mode
 cargo run -p oxidized-gui

@@ -212,48 +212,30 @@ pub fn CreateVaultDialog(
     rsx! {
         // Modal overlay
         div {
-            style: "
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |e| e.stop_propagation(),
 
             // Dialog
             div {
-                style: "
-                    background: #fff;
-                    border-radius: 12px;
-                    width: 480px;
-                    max-height: 90vh;
-                    overflow: hidden;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-                ",
+                class: "dialog w-[480px] max-h-[90vh] overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header with progress
                 div {
-                    style: "padding: 20px 24px; border-bottom: 1px solid #eee;",
+                    class: "px-6 py-5 border-b border-gray-200 dark:border-neutral-700",
 
                     // Step indicator
                     StepIndicator { current_step: step_number }
 
                     h2 {
-                        style: "margin: 0; font-size: 18px; font-weight: 600; color: #1a1a1a;",
+                        class: "m-0 text-lg font-semibold text-gray-900 dark:text-gray-100",
                         "{step_title}"
                     }
                 }
 
                 // Content
                 div {
-                    style: "padding: 24px;",
+                    class: "p-6",
 
                     // Step 1: Choose Location
                     if is_location_step {
@@ -298,12 +280,7 @@ pub fn CreateVaultDialog(
 
                 // Footer with buttons
                 div {
-                    style: "
-                        padding: 16px 24px;
-                        border-top: 1px solid #eee;
-                        display: flex;
-                        justify-content: space-between;
-                    ",
+                    class: "dialog-footer justify-between",
 
                     // Back/Cancel button
                     {
@@ -311,14 +288,7 @@ pub fn CreateVaultDialog(
                         let disabled = is_creating_step && !is_success && !is_error;
                         rsx! {
                             button {
-                                style: "
-                                    padding: 10px 20px;
-                                    background: transparent;
-                                    border: 1px solid #ddd;
-                                    border-radius: 6px;
-                                    font-size: 14px;
-                                    cursor: pointer;
-                                ",
+                                class: "btn-secondary",
                                 onclick: move |_| {
                                     if is_location_step || is_success {
                                         on_cancel.call(());
@@ -336,21 +306,11 @@ pub fn CreateVaultDialog(
                     // Next/Create button
                     {
                         let show_next = !is_creating_step || is_error;
-                        let btn_bg = if can_proceed { "#2196f3" } else { "#ccc" };
-                        let btn_cursor = if can_proceed { "pointer" } else { "not-allowed" };
                         let btn_text = if is_password_step { "Create Vault" } else { "Next" };
                         if show_next {
                             rsx! {
                                 button {
-                                    style: "
-                                        padding: 10px 20px;
-                                        background: {btn_bg};
-                                        color: #fff;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        cursor: {btn_cursor};
-                                    ",
+                                    class: "btn-primary",
                                     onclick: next_step,
                                     disabled: !can_proceed,
                                     "{btn_text}"
@@ -369,26 +329,20 @@ pub fn CreateVaultDialog(
 /// Step indicator showing progress through wizard
 #[component]
 fn StepIndicator(current_step: i32) -> Element {
-    let line1_bg = if 1 < current_step { "#4caf50" } else { "#ddd" };
-    let line2_bg = if 2 < current_step { "#4caf50" } else { "#ddd" };
-    let line3_bg = if 3 < current_step { "#4caf50" } else { "#ddd" };
+    let line1_class = if 1 < current_step { "flex-1 h-0.5 bg-green-500" } else { "flex-1 h-0.5 bg-gray-300 dark:bg-neutral-600" };
+    let line2_class = if 2 < current_step { "flex-1 h-0.5 bg-green-500" } else { "flex-1 h-0.5 bg-gray-300 dark:bg-neutral-600" };
+    let line3_class = if 3 < current_step { "flex-1 h-0.5 bg-green-500" } else { "flex-1 h-0.5 bg-gray-300 dark:bg-neutral-600" };
 
     rsx! {
         div {
-            style: "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;",
+            class: "flex items-center gap-2 mb-2",
 
             StepDot { step: 1, current: current_step }
-            span {
-                style: "flex: 1; height: 2px; background: {line1_bg};",
-            }
+            span { class: line1_class }
             StepDot { step: 2, current: current_step }
-            span {
-                style: "flex: 1; height: 2px; background: {line2_bg};",
-            }
+            span { class: line2_class }
             StepDot { step: 3, current: current_step }
-            span {
-                style: "flex: 1; height: 2px; background: {line3_bg};",
-            }
+            span { class: line3_class }
             StepDot { step: 4, current: current_step }
         }
     }
@@ -399,29 +353,18 @@ fn StepIndicator(current_step: i32) -> Element {
 fn StepDot(step: i32, current: i32) -> Element {
     let is_current = step == current;
     let is_completed = step < current;
-    let bg = if is_current {
-        "#2196f3"
+
+    let class = if is_current {
+        "w-6 h-6 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-semibold"
     } else if is_completed {
-        "#4caf50"
+        "w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center text-xs font-semibold"
     } else {
-        "#ddd"
+        "w-6 h-6 rounded-full bg-gray-300 dark:bg-neutral-600 text-gray-600 dark:text-gray-400 flex items-center justify-center text-xs font-semibold"
     };
-    let color = if is_current || is_completed { "#fff" } else { "#666" };
 
     rsx! {
         span {
-            style: "
-                width: 24px;
-                height: 24px;
-                border-radius: 50%;
-                background: {bg};
-                color: {color};
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 12px;
-                font-weight: 600;
-            ",
+            class: class,
             "{step}"
         }
     }
@@ -435,52 +378,36 @@ fn LocationStep(
 ) -> Element {
     rsx! {
         p {
-            style: "margin: 0 0 16px 0; color: #666; font-size: 14px;",
+            class: "mb-4 text-sm text-gray-600 dark:text-gray-400",
             "Choose the folder where your new vault will be created."
         }
 
         div {
-            style: "
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                padding: 12px;
-                background: #f9f9f9;
-                border-radius: 6px;
-                border: 1px dashed #ccc;
-            ",
+            class: "flex items-center gap-3 p-3 bg-gray-50 dark:bg-neutral-800 rounded-lg border border-dashed border-gray-300 dark:border-neutral-600",
 
             span {
-                style: "font-size: 24px;",
+                class: "text-2xl",
                 ""
             }
 
             div {
-                style: "flex: 1;",
+                class: "flex-1",
 
                 if let Some(path) = parent_path {
                     span {
-                        style: "font-size: 13px; color: #333; word-break: break-all;",
+                        class: "text-sm text-gray-900 dark:text-gray-100 break-all",
                         "{path.display()}"
                     }
                 } else {
                     span {
-                        style: "font-size: 13px; color: #999;",
+                        class: "text-sm text-gray-500 dark:text-gray-500",
                         "No folder selected"
                     }
                 }
             }
 
             button {
-                style: "
-                    padding: 8px 16px;
-                    background: #2196f3;
-                    color: #fff;
-                    border: none;
-                    border-radius: 4px;
-                    font-size: 13px;
-                    cursor: pointer;
-                ",
+                class: "btn-primary btn-sm",
                 onclick: move |_| on_browse.call(()),
                 "Browse..."
             }
@@ -498,34 +425,27 @@ fn NameStep(
 ) -> Element {
     rsx! {
         p {
-            style: "margin: 0 0 16px 0; color: #666; font-size: 14px;",
+            class: "mb-4 text-sm text-gray-600 dark:text-gray-400",
             "Enter a name for your new vault."
         }
 
         input {
             r#type: "text",
+            class: "input text-base",
             placeholder: "My Vault",
             value: "{vault_name}",
             oninput: move |e| on_name_change.call(e.value().clone()),
-            style: "
-                width: 100%;
-                padding: 12px;
-                font-size: 16px;
-                border: 1px solid #ddd;
-                border-radius: 6px;
-                box-sizing: border-box;
-            ",
         }
 
         if let Some(preview) = vault_path_preview {
             div {
-                style: "margin-top: 12px; padding: 8px 12px; background: #f5f5f5; border-radius: 4px;",
+                class: "mt-3 p-2 px-3 bg-gray-100 dark:bg-neutral-700 rounded",
                 p {
-                    style: "margin: 0 0 4px 0; font-size: 12px; color: #666;",
+                    class: "mb-1 text-xs text-gray-600 dark:text-gray-400",
                     "Vault will be created at:"
                 }
                 p {
-                    style: "margin: 0; font-size: 13px; color: #333; word-break: break-all;",
+                    class: "text-sm text-gray-900 dark:text-gray-100 break-all",
                     "{preview.display()}"
                 }
             }
@@ -533,7 +453,7 @@ fn NameStep(
 
         if let Some(error) = validation_error {
             p {
-                style: "margin: 12px 0 0 0; color: #f44336; font-size: 13px;",
+                class: "mt-3 text-sm text-red-600 dark:text-red-400",
                 "{error}"
             }
         }
@@ -551,68 +471,51 @@ fn PasswordStep(
 ) -> Element {
     rsx! {
         p {
-            style: "margin: 0 0 16px 0; color: #666; font-size: 14px;",
+            class: "mb-4 text-sm text-gray-600 dark:text-gray-400",
             "Create a strong password to protect your vault. This password cannot be recovered."
         }
 
         div {
-            style: "margin-bottom: 12px;",
+            class: "mb-3",
 
             label {
-                style: "display: block; font-size: 13px; color: #666; margin-bottom: 4px;",
+                class: "label",
                 "Password"
             }
             input {
                 r#type: "password",
+                class: "input",
                 placeholder: "Enter password",
                 value: "{password}",
                 oninput: move |e| on_password_change.call(e.value().clone()),
-                style: "
-                    width: 100%;
-                    padding: 12px;
-                    font-size: 14px;
-                    border: 1px solid #ddd;
-                    border-radius: 6px;
-                    box-sizing: border-box;
-                ",
             }
         }
 
         div {
             label {
-                style: "display: block; font-size: 13px; color: #666; margin-bottom: 4px;",
+                class: "label",
                 "Confirm Password"
             }
             input {
                 r#type: "password",
+                class: "input",
                 placeholder: "Confirm password",
                 value: "{confirm_password}",
                 oninput: move |e| on_confirm_change.call(e.value().clone()),
-                style: "
-                    width: 100%;
-                    padding: 12px;
-                    font-size: 14px;
-                    border: 1px solid #ddd;
-                    border-radius: 6px;
-                    box-sizing: border-box;
-                ",
             }
         }
 
         if let Some(error) = password_error {
             p {
-                style: "margin: 12px 0 0 0; color: #f44336; font-size: 13px;",
+                class: "mt-3 text-sm text-red-600 dark:text-red-400",
                 "{error}"
             }
         }
 
         // Password requirements hint
         div {
-            style: "margin-top: 12px; padding: 8px 12px; background: #fff8e1; border-radius: 4px;",
-            p {
-                style: "margin: 0; font-size: 12px; color: #f57c00;",
-                "Minimum 8 characters required. Choose a strong, unique password."
-            }
+            class: "alert-warning mt-3",
+            "Minimum 8 characters required. Choose a strong, unique password."
         }
     }
 }
@@ -635,60 +538,53 @@ fn CreatingStep(
 
     rsx! {
         div {
-            style: "text-align: center; padding: 24px 0;",
+            class: "text-center py-6",
 
             if is_creating {
                 div {
-                    style: "font-size: 48px; margin-bottom: 16px;",
+                    class: "text-5xl mb-4",
                     ""
                 }
                 p {
-                    style: "margin: 0; color: #666; font-size: 14px;",
+                    class: "text-sm text-gray-600 dark:text-gray-400",
                     "Creating your vault..."
                 }
                 p {
-                    style: "margin: 8px 0 0 0; color: #999; font-size: 12px;",
+                    class: "mt-2 text-xs text-gray-500 dark:text-gray-500",
                     "This may take a few seconds"
                 }
             }
 
             if let Some(path) = success_path {
                 div {
-                    style: "font-size: 48px; margin-bottom: 16px;",
+                    class: "text-5xl mb-4",
                     ""
                 }
                 p {
-                    style: "margin: 0; color: #4caf50; font-size: 16px; font-weight: 500;",
+                    class: "text-base font-medium text-green-600 dark:text-green-400",
                     "Vault Created Successfully!"
                 }
                 p {
-                    style: "margin: 8px 0 0 0; color: #666; font-size: 13px; word-break: break-all;",
+                    class: "mt-2 text-sm text-gray-600 dark:text-gray-400 break-all",
                     "{path}"
                 }
             }
 
             if let Some(msg) = error_msg {
                 div {
-                    style: "font-size: 48px; margin-bottom: 16px;",
+                    class: "text-5xl mb-4",
                     ""
                 }
                 p {
-                    style: "margin: 0; color: #f44336; font-size: 16px; font-weight: 500;",
+                    class: "text-base font-medium text-red-600 dark:text-red-400",
                     "Failed to Create Vault"
                 }
                 p {
-                    style: "margin: 8px 0 0 0; color: #666; font-size: 13px;",
+                    class: "mt-2 text-sm text-gray-600 dark:text-gray-400",
                     "{msg}"
                 }
                 button {
-                    style: "
-                        margin-top: 16px;
-                        padding: 8px 16px;
-                        background: #f5f5f5;
-                        border: none;
-                        border-radius: 4px;
-                        cursor: pointer;
-                    ",
+                    class: "btn-secondary mt-4",
                     onclick: move |_| on_retry.call(()),
                     "Try Again"
                 }

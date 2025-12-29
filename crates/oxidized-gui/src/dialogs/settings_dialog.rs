@@ -5,7 +5,7 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{use_app_state, BackendType};
+use crate::state::{use_app_state, BackendType, ThemePreference};
 
 /// Active tab in the settings dialog
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -30,48 +30,27 @@ pub fn SettingsDialog(props: SettingsDialogProps) -> Element {
     rsx! {
         // Backdrop
         div {
-            style: "
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |_| props.on_close.call(()),
 
             // Dialog
             div {
-                style: "
-                    background: white;
-                    border-radius: 12px;
-                    width: 500px;
-                    max-width: 90vw;
-                    max-height: 80vh;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-                    display: flex;
-                    flex-direction: column;
-                    overflow: hidden;
-                ",
+                class: "dialog w-[500px] max-h-[80vh] flex flex-col",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header with tabs
                 div {
-                    style: "
-                        border-bottom: 1px solid #e0e0e0;
-                        padding: 16px 24px 0 24px;
-                    ",
+                    class: "border-b border-gray-200 dark:border-neutral-700 pt-4 px-6 pb-0",
 
                     // Title
                     h2 {
-                        style: "margin: 0 0 16px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;",
+                        class: "mb-4 text-xl font-semibold text-gray-900 dark:text-gray-100",
                         "Settings"
                     }
 
                     // Tab bar
                     div {
-                        style: "display: flex; gap: 0;",
+                        class: "tabs",
 
                         TabButton {
                             label: "General",
@@ -90,11 +69,7 @@ pub fn SettingsDialog(props: SettingsDialogProps) -> Element {
 
                 // Content area
                 div {
-                    style: "
-                        flex: 1;
-                        padding: 24px;
-                        overflow-y: auto;
-                    ",
+                    class: "flex-1 p-6 overflow-y-auto",
 
                     match active_tab() {
                         SettingsTab::General => rsx! { GeneralTab {} },
@@ -104,24 +79,10 @@ pub fn SettingsDialog(props: SettingsDialogProps) -> Element {
 
                 // Footer with close button
                 div {
-                    style: "
-                        padding: 16px 24px;
-                        border-top: 1px solid #e0e0e0;
-                        display: flex;
-                        justify-content: flex-end;
-                    ",
+                    class: "dialog-footer",
 
                     button {
-                        style: "
-                            padding: 10px 24px;
-                            background: #2196f3;
-                            color: white;
-                            border: none;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            font-weight: 500;
-                            cursor: pointer;
-                        ",
+                        class: "btn-primary",
                         onclick: move |_| props.on_close.call(()),
                         "Done"
                     }
@@ -145,29 +106,11 @@ struct TabButtonProps {
 
 #[component]
 fn TabButton(props: TabButtonProps) -> Element {
-    let base_style = "
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 10px 16px;
-        border: none;
-        background: transparent;
-        font-size: 14px;
-        cursor: pointer;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -1px;
-        transition: all 0.15s ease;
-    ";
-
-    let active_style = if props.is_active {
-        "color: #2196f3; border-bottom-color: #2196f3; font-weight: 500;"
-    } else {
-        "color: #666;"
-    };
+    let tab_class = if props.is_active { "tab active" } else { "tab" };
 
     rsx! {
         button {
-            style: "{base_style} {active_style}",
+            class: tab_class,
             onclick: move |_| props.on_click.call(()),
             span { "{props.icon}" }
             span { "{props.label}" }
@@ -244,30 +187,78 @@ fn GeneralTab() -> Element {
     };
 
     rsx! {
-        // Default Backend Section
+        // Theme Section
         div {
-            style: "margin-bottom: 24px;",
+            class: "mb-6",
 
             h3 {
-                style: "margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #333;",
+                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
+                "Appearance"
+            }
+            p {
+                class: "mb-3 text-sm text-gray-600 dark:text-gray-400",
+                "Choose how the application looks."
+            }
+
+            // Theme toggle buttons
+            div {
+                class: "flex gap-2",
+
+                for theme in ThemePreference::all() {
+                    {
+                        let is_selected = config.theme == *theme;
+                        let button_class = if is_selected {
+                            "flex-1 px-3 py-2.5 border-2 border-blue-500 bg-blue-50 dark:bg-blue-900/30 rounded-lg text-sm cursor-pointer text-blue-700 dark:text-blue-300 font-medium transition-colors"
+                        } else {
+                            "flex-1 px-3 py-2.5 border border-gray-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 rounded-lg text-sm cursor-pointer text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-neutral-700 transition-colors"
+                        };
+                        let theme_value = format!("{:?}", theme);
+                        rsx! {
+                            button {
+                                key: "{theme_value}",
+                                class: "{button_class}",
+                                onclick: move |_| {
+                                    app_state.write().config.theme = *theme;
+                                    if let Err(e) = app_state.read().save() {
+                                        tracing::error!("Failed to save config: {}", e);
+                                    }
+                                },
+
+                                div {
+                                    class: "flex flex-col items-center gap-1",
+                                    span {
+                                        class: "text-lg",
+                                        match theme {
+                                            ThemePreference::System => "💻",
+                                            ThemePreference::Light => "☀️",
+                                            ThemePreference::Dark => "🌙",
+                                        }
+                                    }
+                                    span { "{theme.display_name()}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Default Backend Section
+        div {
+            class: "mb-6",
+
+            h3 {
+                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
                 "Default Mount Backend"
             }
             p {
-                style: "margin: 0 0 12px 0; font-size: 13px; color: #666;",
+                class: "mb-3 text-sm text-gray-600 dark:text-gray-400",
                 "Choose the filesystem backend used when mounting new vaults."
             }
 
             select {
-                style: "
-                    width: 100%;
-                    padding: 10px 12px;
-                    border: 1px solid #ddd;
-                    border-radius: 6px;
-                    font-size: 14px;
-                    background: white;
-                    cursor: pointer;
-                    outline: none;
-                ",
+                class: "w-full px-3 py-2.5 border border-gray-300 dark:border-neutral-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-neutral-800 cursor-pointer outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500",
+                style: "appearance: auto; -webkit-appearance: menulist;",
                 value: "{config.default_backend:?}",
                 onchange: handle_backend_change,
 
@@ -283,41 +274,34 @@ fn GeneralTab() -> Element {
 
         // Default Mount Location Section
         div {
-            style: "margin-bottom: 24px;",
+            class: "mb-6",
 
             h3 {
-                style: "margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #333;",
+                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
                 "Default Mount Location"
             }
             p {
-                style: "margin: 0 0 12px 0; font-size: 13px; color: #666;",
+                class: "mb-3 text-sm text-gray-600 dark:text-gray-400",
                 "Choose where vaults are mounted by default. Leave empty for system default."
             }
 
             div {
-                style: "display: flex; gap: 8px;",
+                class: "flex gap-2",
 
                 // Path display
                 {
-                    let text_color = if config.default_mount_prefix.is_some() { "#333" } else { "#999" };
+                    let text_class = if config.default_mount_prefix.is_some() {
+                        "flex-1 px-3 py-2.5 border border-gray-300 dark:border-neutral-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 bg-gray-50 dark:bg-neutral-700 overflow-hidden text-ellipsis whitespace-nowrap"
+                    } else {
+                        "flex-1 px-3 py-2.5 border border-gray-300 dark:border-neutral-600 rounded-lg text-sm text-gray-500 bg-gray-50 dark:bg-neutral-700 overflow-hidden text-ellipsis whitespace-nowrap"
+                    };
                     let display_text = config.default_mount_prefix
                         .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "System default".to_string());
                     rsx! {
                         div {
-                            style: "
-                                flex: 1;
-                                padding: 10px 12px;
-                                border: 1px solid #ddd;
-                                border-radius: 6px;
-                                font-size: 14px;
-                                color: {text_color};
-                                background: #f9f9f9;
-                                overflow: hidden;
-                                text-overflow: ellipsis;
-                                white-space: nowrap;
-                            ",
+                            class: "{text_class}",
                             "{display_text}"
                         }
                     }
@@ -325,15 +309,7 @@ fn GeneralTab() -> Element {
 
                 // Browse button
                 button {
-                    style: "
-                        padding: 10px 16px;
-                        background: #f5f5f5;
-                        color: #333;
-                        border: 1px solid #ddd;
-                        border-radius: 6px;
-                        font-size: 14px;
-                        cursor: pointer;
-                    ",
+                    class: "btn-secondary",
                     onclick: handle_browse_mount_prefix,
                     "Browse"
                 }
@@ -341,15 +317,7 @@ fn GeneralTab() -> Element {
                 // Clear button (only show if set)
                 if config.default_mount_prefix.is_some() {
                     button {
-                        style: "
-                            padding: 10px 12px;
-                            background: transparent;
-                            color: #666;
-                            border: 1px solid #ddd;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            cursor: pointer;
-                        ",
+                        class: "px-3 py-2.5 bg-transparent text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-neutral-600 rounded-lg text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-neutral-700",
                         onclick: handle_clear_mount_prefix,
                         title: "Reset to system default",
                         "×"
@@ -360,30 +328,19 @@ fn GeneralTab() -> Element {
 
         // Debug Logging Section
         div {
-            style: "margin-bottom: 24px;",
+            class: "mb-6",
 
             h3 {
-                style: "margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #333;",
+                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
                 "Debug Logging"
             }
 
             label {
-                style: "
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    color: #333;
-                ",
+                class: "flex items-center gap-2.5 cursor-pointer text-sm text-gray-900 dark:text-gray-100",
 
                 input {
                     r#type: "checkbox",
-                    style: "
-                        width: 18px;
-                        height: 18px;
-                        cursor: pointer;
-                    ",
+                    class: "w-4 h-4 cursor-pointer accent-blue-500",
                     checked: config.debug_logging,
                     onchange: handle_debug_toggle,
                 }
@@ -392,7 +349,7 @@ fn GeneralTab() -> Element {
             }
 
             p {
-                style: "margin: 8px 0 0 28px; font-size: 12px; color: #999;",
+                class: "mt-2 ml-7 text-xs text-gray-500",
                 "Useful for troubleshooting issues. Increases log output significantly."
             }
         }
@@ -411,36 +368,36 @@ fn AboutTab() -> Element {
 
     rsx! {
         div {
-            style: "text-align: center;",
+            class: "text-center",
 
             // App icon/logo placeholder
             div {
-                style: "font-size: 64px; margin-bottom: 16px;",
+                class: "text-6xl mb-4",
                 "🔐"
             }
 
             // App name
             h2 {
-                style: "margin: 0 0 4px 0; font-size: 24px; font-weight: 600; color: #1a1a1a;",
+                class: "mb-1 text-2xl font-semibold text-gray-900 dark:text-gray-100",
                 "Oxidized Vault"
             }
 
             // Version
             p {
-                style: "margin: 0 0 24px 0; font-size: 14px; color: #666;",
+                class: "mb-6 text-sm text-gray-600 dark:text-gray-400",
                 "Version {version}"
             }
 
             // Description
             p {
-                style: "margin: 0 0 24px 0; font-size: 14px; color: #555; line-height: 1.6;",
+                class: "mb-6 text-sm text-gray-700 dark:text-gray-300 leading-relaxed",
                 "A fast, secure Cryptomator vault manager written in Rust. "
                 "Open source under the MIT license."
             }
 
             // Links
             div {
-                style: "display: flex; flex-direction: column; gap: 12px; align-items: center;",
+                class: "flex flex-col gap-3 items-center",
 
                 LinkButton {
                     label: "View on GitHub",
@@ -455,7 +412,7 @@ fn AboutTab() -> Element {
 
             // Copyright
             p {
-                style: "margin: 32px 0 0 0; font-size: 12px; color: #999;",
+                class: "mt-8 text-xs text-gray-500",
                 "MIT License"
             }
         }
@@ -474,16 +431,7 @@ fn LinkButton(props: LinkButtonProps) -> Element {
 
     rsx! {
         button {
-            style: "
-                padding: 10px 24px;
-                background: transparent;
-                color: #2196f3;
-                border: 1px solid #2196f3;
-                border-radius: 6px;
-                font-size: 14px;
-                cursor: pointer;
-                min-width: 180px;
-            ",
+            class: "px-6 py-2.5 bg-transparent text-blue-500 dark:text-blue-400 border border-blue-500 dark:border-blue-400 rounded-lg text-sm cursor-pointer min-w-[180px] hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors",
             onclick: move |_| {
                 let _ = open::that(url);
             },

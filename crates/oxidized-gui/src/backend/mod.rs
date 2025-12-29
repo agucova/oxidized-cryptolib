@@ -220,11 +220,26 @@ pub fn mount_manager() -> Arc<MountManager> {
         .clone()
 }
 
+/// Unmount all vaults and exit the application
+///
+/// This is the standard shutdown routine used by signal handlers and quit actions.
+/// Ensures all mounted vaults are cleanly unmounted before terminating.
+pub fn cleanup_and_exit() -> ! {
+    tracing::info!("App exiting, unmounting all vaults...");
+    mount_manager().unmount_all();
+    std::process::exit(0)
+}
+
 /// Generate a platform-appropriate mount point path for a vault
 pub fn generate_mountpoint(vault_name: &str) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        PathBuf::from("/Volumes").join(vault_name)
+        // Use ~/Vaults/ instead of /Volumes/ since /Volumes requires root
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let mount_dir = PathBuf::from(home).join("Vaults");
+        // Create the directory if it doesn't exist
+        let _ = std::fs::create_dir_all(&mount_dir);
+        mount_dir.join(vault_name)
     }
     #[cfg(target_os = "linux")]
     {

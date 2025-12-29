@@ -9,8 +9,12 @@ use crate::backend::{mount_manager, BackendInfo, BackendType};
 pub struct BackendDialogProps {
     /// Currently selected backend
     pub current_backend: BackendType,
-    /// Called when a backend is selected
+    /// Whether the vault is currently mounted
+    pub is_mounted: bool,
+    /// Called when a backend is selected (save only)
     pub on_select: EventHandler<BackendType>,
+    /// Called when user wants to unmount and apply immediately
+    pub on_unmount_and_apply: EventHandler<BackendType>,
     /// Called when dialog is cancelled
     pub on_cancel: EventHandler<()>,
 }
@@ -23,6 +27,8 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
 
     let mut selected = use_signal(|| props.current_backend);
 
+    let is_mounted = props.is_mounted;
+
     let handle_confirm = {
         let on_select = props.on_select;
         move |_| {
@@ -30,86 +36,79 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
         }
     };
 
+    let handle_unmount_and_apply = {
+        let on_unmount_and_apply = props.on_unmount_and_apply;
+        move |_| {
+            on_unmount_and_apply.call(selected());
+        }
+    };
+
     rsx! {
         // Backdrop
         div {
-            style: "
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |_| props.on_cancel.call(()),
 
             // Dialog
             div {
-                style: "
-                    background: white;
-                    border-radius: 12px;
-                    padding: 24px;
-                    width: 450px;
-                    max-width: 90vw;
-                    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
-                ",
+                class: "dialog w-[450px]",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header
-                h2 {
-                    style: "margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;",
-                    "Select Backend"
-                }
-
-                p {
-                    style: "margin: 0 0 20px 0; font-size: 14px; color: #666;",
-                    "Choose which filesystem backend to use for mounting this vault."
-                }
-
-                // Backend options
                 div {
-                    style: "display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px;",
+                    class: "dialog-body",
 
-                    for backend in backends.iter() {
-                        BackendOption {
-                            info: backend.clone(),
-                            is_selected: selected() == backend.backend_type,
-                            on_click: move |backend_type| {
-                                selected.set(backend_type);
-                            },
+                    h2 {
+                        class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
+                        "Select Backend"
+                    }
+
+                    p {
+                        class: "mb-4 text-sm text-gray-600 dark:text-gray-400",
+                        "Choose which filesystem backend to use for mounting this vault."
+                    }
+
+                    // Mount state alert
+                    if is_mounted {
+                        div {
+                            class: "alert-warning mb-4",
+                            "This vault is currently mounted. The new backend will be used next time you unlock this vault."
+                        }
+                    } else {
+                        div {
+                            class: "alert-info mb-4",
+                            "Change takes effect next time you unlock this vault."
+                        }
+                    }
+
+                    // Backend options
+                    div {
+                        class: "flex flex-col gap-2",
+
+                        for backend in backends.iter() {
+                            BackendOption {
+                                info: backend.clone(),
+                                is_selected: selected() == backend.backend_type,
+                                on_click: move |backend_type| {
+                                    selected.set(backend_type);
+                                },
+                            }
                         }
                     }
                 }
 
                 // Buttons
                 div {
-                    style: "display: flex; gap: 12px; justify-content: flex-end;",
+                    class: "dialog-footer",
 
                     button {
-                        style: "
-                            padding: 10px 20px;
-                            background: #f5f5f5;
-                            color: #333;
-                            border: none;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            cursor: pointer;
-                        ",
+                        class: "btn-secondary",
                         onclick: move |_| props.on_cancel.call(()),
                         "Cancel"
                     }
 
                     button {
-                        style: "
-                            padding: 10px 20px;
-                            background: #2196f3;
-                            color: white;
-                            border: none;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            cursor: pointer;
-                        ",
+                        class: "btn-primary",
                         onclick: handle_confirm,
                         "Save"
                     }
@@ -127,35 +126,30 @@ fn BackendOption(
     on_click: EventHandler<BackendType>,
 ) -> Element {
     let is_available = info.available;
-    let border_color = if is_selected { "#2196f3" } else { "#ddd" };
-    let bg_color = if is_selected { "#e3f2fd" } else if !is_available { "#f5f5f5" } else { "#fff" };
-    let opacity = if is_available { "1" } else { "0.6" };
-    let cursor = if is_available { "pointer" } else { "not-allowed" };
-    let radio_border_color = if is_selected { "#2196f3" } else { "#999" };
+
+    let button_class = match (is_selected, is_available) {
+        (true, _) => "flex flex-col gap-1 p-3 px-4 bg-blue-50 dark:bg-blue-900/20 border-2 border-blue-500 rounded-lg text-left cursor-pointer transition-colors w-full",
+        (false, true) => "flex flex-col gap-1 p-3 px-4 bg-white dark:bg-neutral-800 border-2 border-gray-200 dark:border-neutral-600 rounded-lg text-left cursor-pointer transition-colors w-full hover:border-gray-300 dark:hover:border-neutral-500",
+        (false, false) => "flex flex-col gap-1 p-3 px-4 bg-gray-100 dark:bg-neutral-700 border-2 border-gray-200 dark:border-neutral-600 rounded-lg text-left cursor-not-allowed opacity-60 w-full",
+    };
+
+    let radio_class = if is_selected {
+        "w-4 h-4 border-2 border-blue-500 rounded-full flex items-center justify-center"
+    } else {
+        "w-4 h-4 border-2 border-gray-400 dark:border-neutral-500 rounded-full flex items-center justify-center"
+    };
 
     let status_badge = if is_available {
         rsx! {
             span {
-                style: "
-                    font-size: 11px;
-                    padding: 2px 8px;
-                    background: #e8f5e9;
-                    color: #2e7d32;
-                    border-radius: 10px;
-                ",
+                class: "badge badge-success",
                 "Available"
             }
         }
     } else {
         rsx! {
             span {
-                style: "
-                    font-size: 11px;
-                    padding: 2px 8px;
-                    background: #fff3e0;
-                    color: #e65100;
-                    border-radius: 10px;
-                ",
+                class: "badge badge-warning",
                 "Unavailable"
             }
         }
@@ -165,19 +159,7 @@ fn BackendOption(
 
     rsx! {
         button {
-            style: "
-                display: flex;
-                flex-direction: column;
-                gap: 4px;
-                padding: 12px 16px;
-                background: {bg_color};
-                border: 2px solid {border_color};
-                border-radius: 8px;
-                text-align: left;
-                cursor: {cursor};
-                opacity: {opacity};
-                transition: border-color 0.15s ease;
-            ",
+            class: button_class,
             disabled: !is_available,
             onclick: move |_| {
                 if is_available {
@@ -187,36 +169,23 @@ fn BackendOption(
 
             // Header row
             div {
-                style: "display: flex; align-items: center; justify-content: space-between; width: 100%;",
+                class: "flex items-center justify-between w-full",
 
                 div {
-                    style: "display: flex; align-items: center; gap: 8px;",
+                    class: "flex items-center gap-2",
 
                     // Radio indicator
                     span {
-                        style: "
-                            width: 16px;
-                            height: 16px;
-                            border: 2px solid {radio_border_color};
-                            border-radius: 50%;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                        ",
+                        class: radio_class,
                         if is_selected {
                             span {
-                                style: "
-                                    width: 8px;
-                                    height: 8px;
-                                    background: #2196f3;
-                                    border-radius: 50%;
-                                ",
+                                class: "w-2 h-2 bg-blue-500 rounded-full",
                             }
                         }
                     }
 
                     span {
-                        style: "font-size: 14px; font-weight: 500; color: #1a1a1a;",
+                        class: "text-sm font-medium text-gray-900 dark:text-gray-100",
                         "{info.name}"
                     }
                 }
@@ -226,7 +195,7 @@ fn BackendOption(
 
             // Description
             p {
-                style: "margin: 4px 0 0 24px; font-size: 12px; color: #666;",
+                class: "mt-1 ml-6 text-sm text-gray-600 dark:text-gray-400",
                 "{info.description}"
             }
 
@@ -234,7 +203,7 @@ fn BackendOption(
             if !is_available {
                 if let Some(reason) = &info.unavailable_reason {
                     p {
-                        style: "margin: 4px 0 0 24px; font-size: 11px; color: #e65100;",
+                        class: "mt-1 ml-6 text-xs text-amber-600 dark:text-amber-400",
                         "{reason}"
                     }
                 }

@@ -102,13 +102,24 @@ fn main() -> Result<()> {
     let fs = CryptomatorFS::new(&cli.vault, &password)
         .context("Failed to initialize filesystem")?;
 
+    // Derive vault name from path for display
+    let vault_name = cli
+        .vault
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Vault".to_string());
+
     // Mount options
     // Always use AutoUnmount as kernel-level fallback for unexpected termination
     let mut options = vec![
-        fuser::MountOption::FSName("cryptomator".to_string()),
+        fuser::MountOption::FSName(format!("cryptomator:{}", vault_name)),
         fuser::MountOption::Subtype("oxidized".to_string()),
         fuser::MountOption::AutoUnmount,
     ];
+
+    // On macOS, set the volume name shown in Finder
+    #[cfg(target_os = "macos")]
+    options.push(fuser::MountOption::CUSTOM(format!("volname={}", vault_name)));
 
     if cli.read_only {
         options.push(fuser::MountOption::RO);

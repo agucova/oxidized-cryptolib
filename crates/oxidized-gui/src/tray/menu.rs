@@ -136,6 +136,15 @@ fn build_vault_submenu(vault: &ManagedVault) -> Submenu {
                 None,
             );
             let _ = submenu.append(&unlock);
+
+            // Show vault location in Finder
+            let reveal = MenuItem::with_id(
+                ids::vault_reveal(&vault.config.id),
+                "Show in Finder",
+                true,
+                None,
+            );
+            let _ = submenu.append(&reveal);
         }
         VaultState::Mounted { mountpoint } => {
             // Reveal in Finder

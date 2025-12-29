@@ -413,6 +413,96 @@ pub fn create_masterkey_file_with_pepper(
     Ok(serde_json::to_string_pretty(&masterkey_file)?)
 }
 
+/// Change the vault password by re-wrapping the master keys with a new passphrase.
+///
+/// This function:
+/// 1. Reads the existing masterkey file
+/// 2. Unlocks with the old passphrase to retrieve the raw keys
+/// 3. Re-wraps the same keys with a new passphrase-derived KEK
+/// 4. Returns the new masterkey file JSON content
+///
+/// The master keys (AES and MAC) never change - only the key encryption key (KEK)
+/// derived from the passphrase is replaced.
+///
+/// # Arguments
+///
+/// * `masterkey_path` - Path to the existing masterkey.cryptomator file
+/// * `old_passphrase` - Current passphrase (for unlocking)
+/// * `new_passphrase` - New passphrase (for re-wrapping)
+///
+/// # Errors
+///
+/// - `CryptoError::InvalidScryptParams`: Invalid scrypt parameters in the master key file
+/// - `CryptoError::KeyDerivationFailed`: Scrypt key derivation failed
+/// - `CryptoError::KeyUnwrapIntegrityFailed`: Wrong old passphrase or corrupted vault
+/// - `MasterKeyCreationError`: Failed to create new masterkey file
+///
+/// # Reference Implementation
+/// - Swift: [`MasterkeyFile.changePassphrase()`](https://github.com/cryptomator/cryptomator-ios/blob/main/Cryptomator/Util/MasterkeyFileHelper.swift)
+pub fn change_password(
+    masterkey_path: &std::path::Path,
+    old_passphrase: &str,
+    new_passphrase: &str,
+) -> Result<String, ChangePasswordError> {
+    // 1. Read existing masterkey file
+    let file_content = std::fs::read_to_string(masterkey_path)?;
+    let masterkey_file: MasterKeyFile = serde_json::from_str(&file_content)?;
+
+    // 2. Unlock with old passphrase to get raw keys
+    let master_key = masterkey_file.unlock(old_passphrase)?;
+
+    // 3. Re-wrap with new passphrase and return new file content
+    let new_content = create_masterkey_file(&master_key, new_passphrase)?;
+
+    Ok(new_content)
+}
+
+/// Change the vault password with pepper support.
+///
+/// Similar to [`change_password`], but supports vaults created with a pepper.
+/// Both old and new passphrases use the same pepper.
+///
+/// # Arguments
+///
+/// * `masterkey_path` - Path to the existing masterkey.cryptomator file
+/// * `old_passphrase` - Current passphrase (for unlocking)
+/// * `new_passphrase` - New passphrase (for re-wrapping)
+/// * `pepper` - Additional secret bytes for key derivation (must match original)
+pub fn change_password_with_pepper(
+    masterkey_path: &std::path::Path,
+    old_passphrase: &str,
+    new_passphrase: &str,
+    pepper: &[u8],
+) -> Result<String, ChangePasswordError> {
+    // 1. Read existing masterkey file
+    let file_content = std::fs::read_to_string(masterkey_path)?;
+    let masterkey_file: MasterKeyFile = serde_json::from_str(&file_content)?;
+
+    // 2. Unlock with old passphrase and pepper to get raw keys
+    let master_key = masterkey_file.unlock_with_pepper(old_passphrase, pepper)?;
+
+    // 3. Re-wrap with new passphrase and same pepper
+    let new_content = create_masterkey_file_with_pepper(&master_key, new_passphrase, pepper)?;
+
+    Ok(new_content)
+}
+
+/// Errors that can occur when changing the vault password.
+#[derive(Error, Debug)]
+pub enum ChangePasswordError {
+    #[error("Failed to read masterkey file: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Failed to parse masterkey file: {0}")]
+    Parse(#[from] serde_json::Error),
+
+    #[error("Failed to unlock vault: {0}")]
+    Unlock(#[from] CryptoError),
+
+    #[error("Failed to create new masterkey file: {0}")]
+    Create(#[from] MasterKeyCreationError),
+}
+
 /// Derive a new master key and KEK from a passphrase.
 ///
 /// Note: This function generates a new salt each time it's called, so the returned
@@ -589,5 +679,70 @@ mod tests {
             let computed = hmac::sign(&key, &expected_version_bytes);
             assert_eq!(computed.as_ref(), masterkey_file.version_mac.as_slice());
         }).unwrap();
+    }
+
+    #[test]
+    fn test_change_password() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+
+        // Create a master key and initial masterkey file
+        let master_key = MasterKey::random().unwrap();
+        let old_passphrase = "old-password-123";
+        let new_passphrase = "new-password-456";
+
+        // Create initial masterkey file
+        let json = create_masterkey_file(&master_key, old_passphrase).unwrap();
+
+        // Write to temp file
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Change password
+        let new_json = change_password(temp_file.path(), old_passphrase, new_passphrase).unwrap();
+
+        // Verify new file can be unlocked with new password
+        let new_masterkey_file: MasterKeyFile = serde_json::from_str(&new_json).unwrap();
+        let unlocked = new_masterkey_file.unlock(new_passphrase).unwrap();
+
+        // Verify keys match original
+        master_key.with_aes_key(|orig_aes| {
+            unlocked.with_aes_key(|unlocked_aes| {
+                assert_eq!(orig_aes, unlocked_aes, "AES keys should match after password change");
+            })
+        }).unwrap().unwrap();
+
+        master_key.with_mac_key(|orig_mac| {
+            unlocked.with_mac_key(|unlocked_mac| {
+                assert_eq!(orig_mac, unlocked_mac, "MAC keys should match after password change");
+            })
+        }).unwrap().unwrap();
+
+        // Verify old password no longer works
+        let result = new_masterkey_file.unlock(old_passphrase);
+        assert!(result.is_err(), "Old password should not work after change");
+    }
+
+    #[test]
+    fn test_change_password_wrong_old_password() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+
+        let master_key = MasterKey::random().unwrap();
+        let correct_passphrase = "correct-password";
+        let wrong_passphrase = "wrong-password";
+
+        // Create initial masterkey file
+        let json = create_masterkey_file(&master_key, correct_passphrase).unwrap();
+
+        // Write to temp file
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Try to change password with wrong old password
+        let result = change_password(temp_file.path(), wrong_passphrase, "new-password");
+        assert!(result.is_err(), "Should fail with wrong old password");
     }
 }

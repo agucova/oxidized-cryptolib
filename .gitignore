@@ -10,3 +10,5 @@ devenv.local.nix
 fuzz/target
 fuzz/corpus
 fuzz/artifacts
+
+node_modules

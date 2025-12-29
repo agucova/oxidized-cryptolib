@@ -102,12 +102,19 @@ in
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" "rust-src" "llvm-tools" ];
   };
 
+  # Bun for Tailwind CSS in oxidized-gui
+  languages.javascript.bun = {
+    enable = true;
+    install.enable = true;
+  };
+
   packages = with pkgs; [
     cargo-edit
     cargo-outdated
     cargo-audit
     cargo-fuzz
     cargo-nextest
+    dioxus-cli
   ]
   # Add pjdfstest and fsstress on Linux (requires FUSE which is native there)
   ++ lib.optionals stdenv.isLinux [

@@ -3,11 +3,17 @@
 //! Uses platform-specific tools:
 //! - macOS: `umount` or `diskutil unmount`
 //! - Linux: `fusermount -u` or `umount`
+//!
+//! For daemon mounts, attempts graceful shutdown via SIGTERM before
+//! falling back to platform unmount tools.
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
+
+use crate::state::{is_process_alive, MountStateManager};
 
 #[derive(ClapArgs, Clone)]
 pub struct Args {
@@ -24,7 +30,63 @@ pub fn execute(args: Args) -> Result<()> {
 
     // Check if mountpoint exists
     if !mountpoint.exists() {
+        // Maybe it's already unmounted but still in state file - try cleanup
+        if let Ok(manager) = MountStateManager::new()
+            && manager.remove_by_mountpoint(mountpoint)?
+        {
+            eprintln!("Removed stale mount entry for {}", mountpoint.display());
+            return Ok(());
+        }
         anyhow::bail!("Mountpoint does not exist: {}", mountpoint.display());
+    }
+
+    // Check state file for this mount
+    let mount_entry = MountStateManager::new()
+        .ok()
+        .and_then(|m| m.find_by_mountpoint(mountpoint).ok().flatten());
+
+    // If this is a daemon mount with a live process, try graceful shutdown first
+    if let Some(ref entry) = mount_entry
+        && entry.is_daemon
+        && is_process_alive(entry.pid)
+    {
+        eprintln!(
+            "Sending shutdown signal to daemon process (PID: {})...",
+            entry.pid
+        );
+
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+
+            // Send SIGTERM for graceful shutdown
+            if kill(Pid::from_raw(entry.pid as i32), Signal::SIGTERM).is_ok() {
+                // Wait up to 3 seconds for graceful shutdown
+                for _ in 0..30 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    if !is_process_alive(entry.pid) {
+                        eprintln!("Daemon process exited gracefully");
+                        // Clean up state file
+                        if let Ok(manager) = MountStateManager::new() {
+                            let _ = manager.remove_by_mountpoint(mountpoint);
+                        }
+                        // Check if mountpoint is still mounted
+                        if !is_still_mounted(mountpoint) {
+                            eprintln!("Unmounted successfully");
+                            return Ok(());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // On Windows, just proceed with net use /delete
+            eprintln!("Note: Windows daemon mounts will be stopped via net use");
+        }
     }
 
     eprintln!("Unmounting {}...", mountpoint.display());
@@ -49,8 +111,24 @@ pub fn execute(args: Args) -> Result<()> {
         anyhow::bail!("Unmount is not supported on this platform");
     }
 
+    // Remove from state file after successful unmount
+    if let Ok(manager) = MountStateManager::new() {
+        let _ = manager.remove_by_mountpoint(mountpoint);
+    }
+
     eprintln!("Unmounted successfully");
     Ok(())
+}
+
+/// Check if a path is still mounted (platform-specific).
+#[allow(dead_code)]
+fn is_still_mounted(mountpoint: &PathBuf) -> bool {
+    if let Ok(system_mounts) = crate::state::get_system_mounts() {
+        system_mounts.contains(mountpoint)
+    } else {
+        // If we can't check, assume it's still mounted
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]

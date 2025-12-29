@@ -2333,3 +2333,261 @@ async fn test_find_file_performance_vs_list() {
     println!("find_file: {:?}, list_files: {:?}", find_duration, list_duration);
     // Note: We don't assert strict timing as it can vary, but we log for visibility
 }
+
+// ==================== Password Change Integration Tests ====================
+
+#[tokio::test]
+async fn test_change_password_end_to_end() {
+    use oxidized_cryptolib::vault::change_password_async;
+    use oxidized_cryptolib::vault::config::extract_master_key;
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("secret.txt", b"Top secret content")
+        .add_file("docs/readme.md", b"# Documentation")
+        .add_directory("empty_dir")
+        .build();
+
+    let old_password = common::TEST_PASSPHRASE;
+    let new_password = "new-secure-password-2024";
+
+    // Verify we can read files with old password
+    let old_key = extract_master_key(&vault_path, old_password)
+        .expect("Should unlock with old password");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(old_key));
+    let content = ops.read_file(&DirId::root(), "secret.txt").await
+        .expect("Should read file before password change");
+    assert_eq!(content.content, b"Top secret content");
+
+    // Change the password
+    change_password_async(&vault_path, old_password, new_password).await
+        .expect("Password change should succeed");
+
+    // Verify old password no longer works
+    let old_result = extract_master_key(&vault_path, old_password);
+    assert!(old_result.is_err(), "Old password should no longer work");
+
+    // Verify new password works
+    let new_key = extract_master_key(&vault_path, new_password)
+        .expect("New password should work");
+
+    // Verify all files are still accessible
+    let new_ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
+
+    let secret = new_ops.read_file(&DirId::root(), "secret.txt").await
+        .expect("Should read secret.txt with new password");
+    assert_eq!(secret.content, b"Top secret content");
+
+    let (docs_id, _) = new_ops.resolve_path("docs").await
+        .expect("Should resolve docs directory");
+    let readme = new_ops.read_file(&docs_id, "readme.md").await
+        .expect("Should read docs/readme.md with new password");
+    assert_eq!(readme.content, b"# Documentation");
+
+    // Verify empty directory still exists
+    let dirs = new_ops.list_directories(&DirId::root()).await
+        .expect("Should list directories");
+    assert!(dirs.iter().any(|d| d.name == "empty_dir"));
+}
+
+#[tokio::test]
+async fn test_change_password_wrong_old_password() {
+    use oxidized_cryptolib::vault::change_password_async;
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("test.txt", b"content")
+        .build();
+
+    let wrong_password = "wrong-password";
+    let new_password = "new-password";
+
+    // Attempt to change password with wrong old password
+    let result = change_password_async(&vault_path, wrong_password, new_password).await;
+    assert!(result.is_err(), "Should fail with wrong old password");
+
+    // Verify original password still works
+    let original_key = oxidized_cryptolib::vault::config::extract_master_key(
+        &vault_path,
+        common::TEST_PASSPHRASE
+    ).expect("Original password should still work");
+
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(original_key));
+    let content = ops.read_file(&DirId::root(), "test.txt").await
+        .expect("Should still be able to read files");
+    assert_eq!(content.content, b"content");
+}
+
+#[tokio::test]
+async fn test_change_password_preserves_write_capability() {
+    use oxidized_cryptolib::vault::change_password_async;
+    use oxidized_cryptolib::vault::config::extract_master_key;
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("existing.txt", b"original content")
+        .build();
+
+    let old_password = common::TEST_PASSPHRASE;
+    let new_password = "changed-password-123";
+
+    // Change password
+    change_password_async(&vault_path, old_password, new_password).await
+        .expect("Password change should succeed");
+
+    // Create new ops with new password
+    let new_key = extract_master_key(&vault_path, new_password)
+        .expect("New password should work");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
+
+    // Verify we can still write new files
+    ops.write_file(&DirId::root(), "new_file.txt", b"new content").await
+        .expect("Should be able to write new files");
+
+    // Verify we can overwrite existing files
+    ops.write_file(&DirId::root(), "existing.txt", b"updated content").await
+        .expect("Should be able to overwrite files");
+
+    let content = ops.read_file(&DirId::root(), "existing.txt").await
+        .expect("Should read updated content");
+    assert_eq!(content.content, b"updated content");
+
+    // Verify we can create directories
+    ops.create_directory(&DirId::root(), "new_dir").await
+        .expect("Should be able to create directories");
+
+    let dirs = ops.list_directories(&DirId::root()).await.unwrap();
+    assert!(dirs.iter().any(|d| d.name == "new_dir"));
+}
+
+#[tokio::test]
+async fn test_change_password_multiple_times() {
+    use oxidized_cryptolib::vault::change_password_async;
+    use oxidized_cryptolib::vault::config::extract_master_key;
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("persistent.txt", b"This data must persist")
+        .build();
+
+    let passwords = [
+        common::TEST_PASSPHRASE,
+        "password-change-1",
+        "password-change-2",
+        "final-password-xyz",
+    ];
+
+    // Change password multiple times
+    for i in 0..passwords.len() - 1 {
+        change_password_async(&vault_path, passwords[i], passwords[i + 1]).await
+            .expect(&format!("Password change {} should succeed", i + 1));
+
+        // Verify old password no longer works
+        let old_result = extract_master_key(&vault_path, passwords[i]);
+        assert!(old_result.is_err(), "Password {} should no longer work", i);
+
+        // Verify new password works and data is intact
+        let new_key = extract_master_key(&vault_path, passwords[i + 1])
+            .expect(&format!("Password {} should work", i + 1));
+        let ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
+        let content = ops.read_file(&DirId::root(), "persistent.txt").await
+            .expect("Data should persist through password changes");
+        assert_eq!(content.content, b"This data must persist");
+    }
+}
+
+#[tokio::test]
+async fn test_change_password_with_large_file() {
+    use oxidized_cryptolib::vault::change_password_async;
+    use oxidized_cryptolib::vault::config::extract_master_key;
+
+    // Create large content (multi-chunk file)
+    let large_content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("large.bin", large_content.clone())
+        .build();
+
+    let old_password = common::TEST_PASSPHRASE;
+    let new_password = "large-file-password";
+
+    // Change password
+    change_password_async(&vault_path, old_password, new_password).await
+        .expect("Password change should succeed");
+
+    // Verify large file is still intact
+    let new_key = extract_master_key(&vault_path, new_password)
+        .expect("New password should work");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
+
+    let content = ops.read_file(&DirId::root(), "large.bin").await
+        .expect("Should read large file after password change");
+
+    assert_eq!(content.content.len(), large_content.len());
+    assert_eq!(content.content, large_content);
+}
+
+#[tokio::test]
+async fn test_change_password_with_unicode_filenames() {
+    use oxidized_cryptolib::vault::change_password_async;
+    use oxidized_cryptolib::vault::config::extract_master_key;
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("файл.txt", b"Russian")
+        .add_file("文件.txt", b"Chinese")
+        .add_file("αρχείο.txt", b"Greek")
+        .add_file("🔐secret🔐.txt", b"Emoji")
+        .build();
+
+    let old_password = common::TEST_PASSPHRASE;
+    let new_password = "unicode-test-пароль-密码";
+
+    // Change password
+    change_password_async(&vault_path, old_password, new_password).await
+        .expect("Password change should succeed");
+
+    // Verify all unicode files are accessible
+    let new_key = extract_master_key(&vault_path, new_password)
+        .expect("New password should work");
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
+
+    let test_cases = [
+        ("файл.txt", b"Russian".as_slice()),
+        ("文件.txt", b"Chinese".as_slice()),
+        ("αρχείο.txt", b"Greek".as_slice()),
+        ("🔐secret🔐.txt", b"Emoji".as_slice()),
+    ];
+
+    for (filename, expected) in test_cases {
+        let content = ops.read_file(&DirId::root(), filename).await
+            .expect(&format!("Should read {}", filename));
+        assert_eq!(content.content, expected);
+    }
+}
+
+#[tokio::test]
+async fn test_change_password_sync_function() {
+    use oxidized_cryptolib::vault::change_password;
+    use oxidized_cryptolib::vault::config::extract_master_key;
+
+    let (vault_path, _master_key) = VaultBuilder::new()
+        .add_file("sync_test.txt", b"sync content")
+        .build();
+
+    let masterkey_path = vault_path.join("masterkey").join("masterkey.cryptomator");
+    let old_password = common::TEST_PASSPHRASE;
+    let new_password = "sync-new-password";
+
+    // Use the sync change_password function
+    let new_content = change_password(&masterkey_path, old_password, new_password)
+        .expect("Sync password change should succeed");
+
+    // Write the new content (simulating what the async version does)
+    std::fs::write(&masterkey_path, new_content)
+        .expect("Should write new masterkey");
+
+    // Verify new password works
+    let new_key = extract_master_key(&vault_path, new_password)
+        .expect("New password should work after sync change");
+
+    let ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
+    let content = ops.read_file(&DirId::root(), "sync_test.txt").await
+        .expect("Should read file with new password");
+    assert_eq!(content.content, b"sync content");
+}

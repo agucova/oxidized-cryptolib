@@ -2,18 +2,18 @@
 
 use dioxus::prelude::*;
 
-use crate::backend::mount_manager;
+use crate::backend::{cleanup_and_exit, mount_manager};
 use crate::components::{EmptyState, Sidebar, VaultDetail};
 use crate::dialogs::{AddVaultDialog, CreateVaultDialog, SettingsDialog};
 use crate::state::{use_app_state, AppState, VaultConfig, VaultState};
 use crate::tray::menu::VaultAction;
-use crate::tray::TrayEvent;
+use crate::tray::{update_tray_menu, TrayEvent};
 
 #[cfg(all(target_os = "macos", feature = "fskit"))]
 use crate::dialogs::FSKitSetupDialog;
 
-/// Main CSS stylesheet asset
-const MAIN_CSS: Asset = asset!("/assets/main.css");
+/// Tailwind CSS stylesheet asset
+const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 /// Root application component
 #[component]
@@ -26,14 +26,17 @@ pub fn App() -> Element {
     let mut show_create_vault_dialog = use_signal(|| false);
     let mut show_settings_dialog = use_signal(|| false);
 
+    // Get theme class based on user preference
+    let theme_class = app_state.read().config.theme.css_class().unwrap_or("");
+    let root_class = format!("flex h-screen bg-white dark:bg-neutral-900 {}", theme_class);
+
     rsx! {
-        // Include the main stylesheet
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        // Include Tailwind CSS
+        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
 
         // Main two-panel layout
         div {
-            class: "app-container",
-            style: "display: flex; height: 100vh;",
+            class: "{root_class}",
 
             // Left sidebar with vault list
             Sidebar {
@@ -46,8 +49,7 @@ pub fn App() -> Element {
 
             // Right panel with vault details or empty state
             div {
-                class: "detail-panel",
-                style: "flex: 1; background: #f8f9fa; padding: 24px; overflow-y: auto;",
+                class: "flex-1 bg-gray-50 dark:bg-neutral-800 p-6 overflow-y-auto",
 
                 if let Some(vault_id) = selected_vault() {
                     VaultDetail {
@@ -102,6 +104,9 @@ pub fn App() -> Element {
             on_show_settings: move |_| show_settings_dialog.set(true),
             on_select_vault: move |id: String| selected_vault.set(Some(id)),
         }
+
+        // Tray menu updater - keeps tray menu in sync with vault state
+        TrayMenuUpdater {}
     }
 }
 
@@ -219,8 +224,7 @@ fn handle_tray_event(
             handle_vault_action(action, app_state, on_select_vault);
         }
         TrayEvent::Quit => {
-            // Exit the application
-            std::process::exit(0);
+            cleanup_and_exit();
         }
     }
 }
@@ -242,6 +246,7 @@ fn handle_vault_action(
         VaultAction::Lock(vault_id) => {
             // Unmount the vault
             let vault_id_clone = vault_id.clone();
+            let mut app_state = *app_state;
             spawn(async move {
                 let manager = mount_manager();
                 let result = tokio::task::spawn_blocking(move || manager.unmount(&vault_id)).await;
@@ -261,14 +266,34 @@ fn handle_vault_action(
             });
         }
         VaultAction::Reveal(vault_id) => {
-            // Open the vault's mount point in file manager
+            // Open the vault location in file manager
             if let Some(vault) = app_state.read().get_vault(&vault_id) {
-                if let VaultState::Mounted { mountpoint } = &vault.state {
-                    if let Err(e) = open::that(mountpoint) {
-                        tracing::error!("Failed to reveal vault: {}", e);
-                    }
+                let path_to_reveal = match &vault.state {
+                    VaultState::Mounted { mountpoint } => mountpoint.clone(),
+                    VaultState::Locked => vault.config.path.clone(),
+                };
+                if let Err(e) = open::that(&path_to_reveal) {
+                    tracing::error!("Failed to reveal vault at {}: {}", path_to_reveal.display(), e);
                 }
             }
         }
     }
+}
+
+/// Component that keeps the tray menu in sync with vault state
+///
+/// Watches the app state and updates the tray menu whenever vaults change.
+#[component]
+fn TrayMenuUpdater() -> Element {
+    let app_state = use_app_state();
+
+    // Update tray menu whenever vault state changes
+    use_effect(move || {
+        let vaults = app_state.read().vaults();
+        let window = dioxus::desktop::window();
+        let visible = window.is_visible();
+        update_tray_menu(&vaults, visible);
+    });
+
+    rsx! {}
 }

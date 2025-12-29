@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 
 use crate::backend::{generate_mountpoint, mount_manager, BackendType};
-use crate::dialogs::{BackendDialog, ConfirmDialog, ErrorDialog, UnlockDialog, UnlockState};
+use crate::dialogs::{BackendDialog, ChangePasswordDialog, ConfirmDialog, ErrorDialog, UnlockDialog, UnlockState};
 use crate::error::UserFacingError;
 use crate::state::{use_app_state, VaultState};
 
@@ -19,6 +19,7 @@ pub fn VaultDetail(
     let mut show_unlock_dialog = use_signal(|| false);
     let mut unlock_state = use_signal(|| UnlockState::Idle);
     let mut show_backend_dialog = use_signal(|| false);
+    let mut show_change_password = use_signal(|| false);
     let mut show_remove_confirm = use_signal(|| false);
     let mut error_state = use_signal(|| None::<UserFacingError>);
 
@@ -27,16 +28,16 @@ pub fn VaultDetail(
         None => {
             return rsx! {
                 div {
-                    style: "padding: 24px; text-align: center; color: #666;",
+                    class: "p-6 text-center text-gray-600 dark:text-gray-400",
                     "Vault not found"
                 }
             }
         }
     };
 
-    let status_icon = match &vault.state {
-        VaultState::Locked => "🔒",
-        VaultState::Mounted { .. } => "📂",
+    let (status_icon, status_icon_bg) = match &vault.state {
+        VaultState::Locked => ("🔒", "bg-gray-100 dark:bg-neutral-700"),
+        VaultState::Mounted { .. } => ("📂", "bg-green-100 dark:bg-green-900/30"),
     };
 
     // Clone values needed for callbacks
@@ -67,8 +68,9 @@ pub fn VaultDetail(
                 let vault_id_for_state = vault_id.clone();
 
                 // Run mount in blocking task using the vault's preferred backend
+                // Pass vault_name for display (volume name in Finder), not the UUID
                 let result = tokio::task::spawn_blocking(move || {
-                    manager.mount_with_backend(&vault_id, &vault_path, &password, &mountpoint, preferred_backend)
+                    manager.mount_with_backend(&vault_name, &vault_path, &password, &mountpoint, preferred_backend)
                 })
                 .await;
 
@@ -99,8 +101,9 @@ pub fn VaultDetail(
                             crate::backend::MountError::Mount(io_err) => {
                                 let err_str = io_err.to_string();
                                 let err_kind = io_err.kind();
+                                let err_str_lower = err_str.to_lowercase();
 
-                                // Permission denied
+                                // Permission denied - specific to security settings
                                 if err_kind == std::io::ErrorKind::PermissionDenied
                                     || err_str.contains("Permission denied")
                                     || err_str.contains("os error 13")
@@ -115,29 +118,37 @@ pub fn VaultDetail(
                                         _ => "Permission denied. Check filesystem permissions.".to_string()
                                     }
                                 }
-                                // Device/driver issues
-                                else if err_str.contains("Unspecified")
-                                    || err_str.contains("failed to open")
-                                    || err_str.contains("device")
+                                // macFUSE not installed or not loaded - look for specific indicators
+                                else if err_str_lower.contains("no such file or directory")
+                                    && (err_str_lower.contains("fuse") || err_str_lower.contains("osxfuse") || err_str_lower.contains("macfuse"))
                                 {
-                                    match preferred_backend {
-                                        crate::state::BackendType::Fuse => {
-                                            "FUSE mount failed. Is macFUSE installed and enabled? Check System Settings → Privacy & Security.".to_string()
-                                        }
-                                        crate::state::BackendType::FSKit => {
-                                            "FSKit mount failed. Make sure FSKitBridge is running.".to_string()
-                                        }
-                                        _ => format!("Mount failed: {}", io_err)
-                                    }
+                                    "FUSE mount failed. Is macFUSE installed? Download from https://osxfuse.github.io/".to_string()
+                                }
+                                // macFUSE needs kernel extension approval
+                                else if err_str_lower.contains("kext") || err_str_lower.contains("system extension")
+                                    || err_str_lower.contains("kernel extension")
+                                {
+                                    "macFUSE kernel extension needs approval. Check System Settings → Privacy & Security.".to_string()
+                                }
+                                // FSKit bridge connection issues
+                                else if preferred_backend == crate::state::BackendType::FSKit
+                                    && (err_str_lower.contains("connection refused") || err_str_lower.contains("connection reset"))
+                                {
+                                    "FSKit mount failed. Make sure FSKitBridge is running.".to_string()
                                 }
                                 // Timeout
                                 else if err_kind == std::io::ErrorKind::TimedOut || err_str.contains("timed out") {
                                     "Mount operation timed out. The filesystem may be slow to respond.".to_string()
                                 }
                                 // Resource busy
-                                else if err_str.contains("busy") || err_str.contains("EBUSY") {
+                                else if err_str_lower.contains("busy") || err_str_lower.contains("ebusy") {
                                     "Mount point is busy. Try unmounting any existing mounts first.".to_string()
                                 }
+                                // Mount point doesn't exist or invalid
+                                else if err_kind == std::io::ErrorKind::NotFound {
+                                    format!("Mount point not found or inaccessible: {}", io_err)
+                                }
+                                // Generic fallback - show the actual error
                                 else {
                                     format!("{} mount failed: {}", preferred_backend.display_name(), io_err)
                                 }
@@ -163,24 +174,26 @@ pub fn VaultDetail(
 
     rsx! {
         div {
-            class: "vault-detail",
-
             // Header
             div {
-                style: "display: flex; align-items: center; gap: 16px; margin-bottom: 24px;",
+                class: "flex items-center gap-4 mb-6",
 
-                span {
-                    style: "font-size: 48px;",
-                    "{status_icon}"
+                // Icon container
+                div {
+                    class: "w-16 h-16 flex items-center justify-center rounded-xl {status_icon_bg}",
+                    span {
+                        class: "text-3xl",
+                        "{status_icon}"
+                    }
                 }
 
                 div {
                     h2 {
-                        style: "margin: 0 0 4px 0; font-size: 24px; font-weight: 600; color: #1a1a1a;",
+                        class: "mb-1 text-2xl font-semibold text-gray-900 dark:text-gray-100",
                         "{vault.config.name}"
                     }
                     p {
-                        style: "margin: 0; font-size: 14px; color: #666;",
+                        class: "text-sm text-gray-500 dark:text-gray-500",
                         "{vault.config.path.display()}"
                     }
                 }
@@ -188,46 +201,48 @@ pub fn VaultDetail(
 
             // Status section
             div {
-                style: "background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);",
+                class: "card p-4 mb-4",
 
                 h3 {
-                    style: "margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px;",
+                    class: "mb-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide",
                     "Status"
                 }
 
                 div {
-                    style: "display: flex; align-items: center; gap: 8px;",
+                    class: "flex items-center gap-2",
 
+                    // Status badge
                     span {
-                        style: "font-size: 14px; color: #1a1a1a;",
+                        class: if vault.state.is_mounted() { "badge-success" } else { "text-xs px-2 py-0.5 rounded-full font-medium bg-gray-100 dark:bg-neutral-700 text-gray-700 dark:text-gray-300" },
                         "{vault.state.status_text()}"
                     }
 
                     if let VaultState::Mounted { mountpoint } = &vault.state {
                         span {
-                            style: "font-size: 12px; color: #666;",
+                            class: "text-sm text-gray-500",
                             "at {mountpoint.display()}"
                         }
                     }
                 }
 
                 div {
-                    style: "margin-top: 8px; font-size: 12px; color: #666;",
-                    "Backend: {vault.config.preferred_backend.display_name()}"
+                    class: "mt-3 text-sm text-gray-600 dark:text-gray-400 flex items-center gap-2",
+                    span { class: "text-gray-500", "Backend:" }
+                    span { "{vault.config.preferred_backend.display_name()}" }
                 }
             }
 
             // Actions section
             div {
-                style: "background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);",
+                class: "card p-4 mb-4",
 
                 h3 {
-                    style: "margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px;",
+                    class: "mb-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide",
                     "Actions"
                 }
 
                 div {
-                    style: "display: flex; flex-direction: column; gap: 8px;",
+                    class: "flex flex-col gap-2",
 
                     match &vault.state {
                         VaultState::Locked => {
@@ -307,20 +322,20 @@ pub fn VaultDetail(
 
             // Options section
             div {
-                style: "background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);",
+                class: "card p-4",
 
                 h3 {
-                    style: "margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px;",
+                    class: "mb-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide",
                     "Vault Options"
                 }
 
                 div {
-                    style: "display: flex; flex-direction: column; gap: 8px;",
+                    class: "flex flex-col gap-1",
 
                     OptionLink {
                         label: "Change Password",
                         onclick: move |_| {
-                            tracing::info!("TODO: Open change password dialog");
+                            show_change_password.set(true);
                         },
                     }
 
@@ -380,6 +395,28 @@ pub fn VaultDetail(
             }
         }
 
+        // Change password dialog
+        if show_change_password() {
+            {
+                let vault_path_for_change = vault_path.clone();
+                let vault_name_for_change = vault_name.clone();
+                rsx! {
+                    ChangePasswordDialog {
+                        vault_path: vault_path_for_change,
+                        vault_name: vault_name_for_change,
+                        on_complete: move |_| {
+                            show_change_password.set(false);
+                            // Show success message (optional)
+                            tracing::info!("Password changed successfully");
+                        },
+                        on_cancel: move |_| {
+                            show_change_password.set(false);
+                        },
+                    }
+                }
+            }
+        }
+
         // Remove vault confirmation dialog
         if show_remove_confirm() {
             {
@@ -426,25 +463,15 @@ pub fn VaultDetail(
 /// A primary or secondary action button
 #[component]
 fn ActionButton(label: &'static str, icon: &'static str, primary: bool, onclick: EventHandler<()>) -> Element {
-    let bg = if primary { "#2196f3" } else { "#f5f5f5" };
-    let color = if primary { "#fff" } else { "#333" };
+    let class = if primary {
+        "btn-primary w-full justify-start"
+    } else {
+        "btn-secondary w-full justify-start"
+    };
 
     rsx! {
         button {
-            style: "
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 12px 16px;
-                background: {bg};
-                color: {color};
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 500;
-                cursor: pointer;
-                transition: background 0.15s ease;
-            ",
+            class: "{class}",
             onclick: move |_| onclick.call(()),
 
             span { "{icon}" }
@@ -456,19 +483,15 @@ fn ActionButton(label: &'static str, icon: &'static str, primary: bool, onclick:
 /// A link-style option in the options section
 #[component]
 fn OptionLink(label: &'static str, #[props(default = false)] danger: bool, onclick: EventHandler<()>) -> Element {
-    let color = if danger { "#f44336" } else { "#2196f3" };
+    let class = if danger {
+        "text-left py-2 text-sm text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 bg-transparent border-none cursor-pointer transition-colors"
+    } else {
+        "text-left py-2 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 bg-transparent border-none cursor-pointer transition-colors"
+    };
 
     rsx! {
         button {
-            style: "
-                background: none;
-                border: none;
-                padding: 8px 0;
-                color: {color};
-                font-size: 14px;
-                cursor: pointer;
-                text-align: left;
-            ",
+            class: "{class}",
             onclick: move |_| onclick.call(()),
             "{label}"
         }

@@ -43,6 +43,14 @@ The `oxidized-fskit` crate provides setup utilities via `oxidized_fskit::setup`:
 - `find_installation()` - Find FSKitBridge.app path
 - With `setup` feature: `download_latest()`, `install_to()` - Download from GitHub
 
+**GUI development** (uses `dx` CLI from dioxus-cli):
+```bash
+dx serve -p oxidized-gui              # Hot-reload dev server
+dx serve -p oxidized-gui --features fuse  # With FUSE backend
+dx build -p oxidized-gui --release    # Production build
+dx bundle -p oxidized-gui --release   # Bundle for distribution
+```
+
 **Benchmarking**: `cargo bench -p oxidized-cryptolib` or use `oxbench --help` for cross-implementation comparisons.
 
 **Debugging tools**: Code coverage (`cargo-llvm-cov`), timing leak detection (`dudect`), async introspection (`tokio-console`). See `docs/DEBUGGING.md` for details.

@@ -32,74 +32,50 @@ pub struct ConfirmDialogProps {
 /// A reusable confirmation dialog component
 #[component]
 pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
-    let confirm_bg = if props.danger { "#dc2626" } else { "#2196f3" };
+    let confirm_class = if props.danger { "btn-danger" } else { "btn-primary" };
 
     rsx! {
         // Backdrop
         div {
-            style: "
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |_| props.on_cancel.call(()),
 
             // Dialog
             div {
-                style: "
-                    background: white;
-                    border-radius: 12px;
-                    width: 400px;
-                    max-width: 90vw;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-                    overflow: hidden;
-                ",
+                class: "dialog w-[400px]",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header
                 div {
-                    style: "padding: 20px 24px 0 24px;",
+                    class: "pt-5 px-6",
 
                     h2 {
-                        style: "margin: 0; font-size: 18px; font-weight: 600; color: #1a1a1a;",
+                        class: "text-lg font-semibold text-gray-900 dark:text-gray-100",
                         "{props.title}"
                     }
                 }
 
                 // Content
                 div {
-                    style: "padding: 16px 24px;",
+                    class: "p-4 px-6",
 
                     p {
-                        style: "margin: 0; font-size: 14px; color: #555; line-height: 1.5;",
+                        class: "text-sm text-gray-600 dark:text-gray-400 leading-relaxed",
                         "{props.message}"
                     }
 
                     // Warning box (if provided)
                     if let Some(warning) = &props.warning {
                         div {
-                            style: "
-                                margin-top: 16px;
-                                padding: 12px 16px;
-                                background: #fef3c7;
-                                border: 1px solid #f59e0b;
-                                border-radius: 8px;
-                                display: flex;
-                                gap: 10px;
-                                align-items: flex-start;
-                            ",
+                            class: "alert-warning mt-4",
 
                             span {
-                                style: "font-size: 16px; flex-shrink: 0;",
+                                class: "text-base shrink-0",
                                 "⚠️"
                             }
 
                             p {
-                                style: "margin: 0; font-size: 13px; color: #92400e; line-height: 1.4;",
+                                class: "text-sm leading-normal",
                                 "{warning}"
                             }
                         }
@@ -108,42 +84,18 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
 
                 // Footer with buttons
                 div {
-                    style: "
-                        padding: 16px 24px;
-                        background: #f9fafb;
-                        display: flex;
-                        justify-content: flex-end;
-                        gap: 12px;
-                    ",
+                    class: "dialog-footer",
 
                     // Cancel button
                     button {
-                        style: "
-                            padding: 10px 20px;
-                            background: white;
-                            color: #374151;
-                            border: 1px solid #d1d5db;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            font-weight: 500;
-                            cursor: pointer;
-                        ",
+                        class: "btn-secondary",
                         onclick: move |_| props.on_cancel.call(()),
                         "{props.cancel_label}"
                     }
 
                     // Confirm button
                     button {
-                        style: "
-                            padding: 10px 20px;
-                            background: {confirm_bg};
-                            color: white;
-                            border: none;
-                            border-radius: 6px;
-                            font-size: 14px;
-                            font-weight: 500;
-                            cursor: pointer;
-                        ",
+                        class: "{confirm_class}",
                         onclick: move |_| props.on_confirm.call(()),
                         "{props.confirm_label}"
                     }

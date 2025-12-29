@@ -11,6 +11,7 @@ mod components;
 mod dialogs;
 mod error;
 mod state;
+mod theme;
 mod tray;
 
 use crossbeam_channel::Receiver;
@@ -35,6 +36,11 @@ fn main() {
         .init();
 
     tracing::info!("Starting Oxidized Vault");
+
+    // Set up signal handler for graceful shutdown (Cmd+Q, Dock quit, etc.)
+    if let Err(e) = ctrlc::set_handler(|| backend::cleanup_and_exit()) {
+        tracing::warn!("Failed to set signal handler: {}", e);
+    }
 
     // Initialize the system tray
     let _tray_manager = match TrayManager::new() {
@@ -64,4 +70,7 @@ fn main() {
                 .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
         )
         .launch(app::App);
+
+    // Fallback cleanup if launch() returns normally (shouldn't happen with WindowHides)
+    backend::cleanup_and_exit();
 }

@@ -124,266 +124,160 @@ pub fn AddVaultDialog(props: AddVaultDialogProps) -> Element {
     rsx! {
         // Backdrop
         div {
-            style: "
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.5);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1000;
-            ",
+            class: "dialog-backdrop",
             onclick: move |_| props.on_cancel.call(()),
 
             // Dialog
             div {
-                style: "
-                    background: white;
-                    border-radius: 12px;
-                    padding: 24px;
-                    width: 480px;
-                    max-width: 90vw;
-                    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
-                ",
+                class: "dialog w-[480px]",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header
-                h2 {
-                    style: "margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;",
-                    "Add Existing Vault"
+                div {
+                    class: "dialog-body",
+
+                    h2 {
+                        class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
+                        "Add Existing Vault"
+                    }
+
+                    match state() {
+                        AddVaultState::SelectFolder => {
+                            rsx! {
+                                p {
+                                    class: "mb-5 text-sm text-gray-600 dark:text-gray-400",
+                                    "Select a folder containing a Cryptomator vault."
+                                }
+
+                                // Select folder button (centered)
+                                div {
+                                    class: "dropzone",
+
+                                    span {
+                                        class: "text-5xl mb-4",
+                                        "📁"
+                                    }
+
+                                    button {
+                                        class: "btn-primary",
+                                        onclick: handle_select_folder,
+                                        "Choose Vault Folder"
+                                    }
+                                }
+                            }
+                        },
+
+                        AddVaultState::EditName { ref path, ref name } => {
+                            rsx! {
+                                p {
+                                    class: "mb-5 text-sm text-gray-600 dark:text-gray-400",
+                                    "Enter a name for this vault."
+                                }
+
+                                // Path display
+                                div {
+                                    class: "mb-4 p-3 bg-gray-100 dark:bg-neutral-700 rounded-md text-sm text-gray-600 dark:text-gray-400 break-all",
+                                    "{path.display()}"
+                                }
+
+                                // Name input
+                                div {
+                                    class: "mb-5",
+
+                                    label {
+                                        class: "label",
+                                        "Vault Name"
+                                    }
+
+                                    input {
+                                        r#type: "text",
+                                        class: "input",
+                                        value: "{name}",
+                                        oninput: handle_name_change,
+                                        autofocus: true,
+                                    }
+                                }
+                            }
+                        },
+
+                        AddVaultState::Adding => {
+                            rsx! {
+                                div {
+                                    class: "flex flex-col items-center p-8",
+
+                                    span {
+                                        class: "spinner mb-4",
+                                    }
+
+                                    span {
+                                        class: "text-sm text-gray-600 dark:text-gray-400",
+                                        "Adding vault..."
+                                    }
+                                }
+                            }
+                        },
+
+                        AddVaultState::Error(ref error) => {
+                            rsx! {
+                                // Error message
+                                div {
+                                    class: "alert-danger mb-5",
+                                    "{error}"
+                                }
+                            }
+                        },
+                    }
                 }
 
-                match state() {
-                    AddVaultState::SelectFolder => {
-                        rsx! {
-                            p {
-                                style: "margin: 0 0 20px 0; font-size: 14px; color: #666;",
-                                "Select a folder containing a Cryptomator vault."
-                            }
+                // Footer with buttons
+                div {
+                    class: "dialog-footer",
 
-                            // Select folder button (centered)
-                            div {
-                                style: "
-                                    display: flex;
-                                    flex-direction: column;
-                                    align-items: center;
-                                    padding: 32px;
-                                    border: 2px dashed #ddd;
-                                    border-radius: 8px;
-                                    margin-bottom: 20px;
-                                ",
-
-                                span {
-                                    style: "font-size: 48px; margin-bottom: 16px;",
-                                    "📁"
-                                }
-
+                    match state() {
+                        AddVaultState::SelectFolder => {
+                            rsx! {
                                 button {
-                                    style: "
-                                        padding: 12px 24px;
-                                        background: #2196f3;
-                                        color: white;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        font-weight: 500;
-                                        cursor: pointer;
-                                    ",
-                                    onclick: handle_select_folder,
-                                    "Choose Vault Folder"
-                                }
-                            }
-
-                            // Cancel button
-                            div {
-                                style: "display: flex; justify-content: flex-end;",
-
-                                button {
-                                    style: "
-                                        padding: 10px 20px;
-                                        background: #f5f5f5;
-                                        color: #333;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        cursor: pointer;
-                                    ",
+                                    class: "btn-secondary",
                                     onclick: move |_| props.on_cancel.call(()),
                                     "Cancel"
                                 }
                             }
-                        }
-                    },
-
-                    AddVaultState::EditName { ref path, ref name } => {
-                        rsx! {
-                            p {
-                                style: "margin: 0 0 20px 0; font-size: 14px; color: #666;",
-                                "Enter a name for this vault."
-                            }
-
-                            // Path display
-                            div {
-                                style: "
-                                    margin-bottom: 16px;
-                                    padding: 12px;
-                                    background: #f5f5f5;
-                                    border-radius: 6px;
-                                    font-size: 13px;
-                                    color: #666;
-                                    word-break: break-all;
-                                ",
-                                "{path.display()}"
-                            }
-
-                            // Name input
-                            div {
-                                style: "margin-bottom: 20px;",
-
-                                label {
-                                    style: "display: block; font-size: 13px; color: #666; margin-bottom: 6px;",
-                                    "Vault Name"
-                                }
-
-                                input {
-                                    r#type: "text",
-                                    style: "
-                                        width: 100%;
-                                        padding: 12px;
-                                        border: 1px solid #ddd;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        box-sizing: border-box;
-                                        outline: none;
-                                    ",
-                                    value: "{name}",
-                                    oninput: handle_name_change,
-                                    autofocus: true,
-                                }
-                            }
-
-                            // Buttons
-                            div {
-                                style: "display: flex; gap: 12px; justify-content: flex-end;",
-
+                        },
+                        AddVaultState::EditName { ref name, .. } => {
+                            rsx! {
                                 button {
-                                    style: "
-                                        padding: 10px 20px;
-                                        background: #f5f5f5;
-                                        color: #333;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        cursor: pointer;
-                                    ",
+                                    class: "btn-secondary",
                                     onclick: handle_back,
                                     "Back"
                                 }
 
                                 button {
-                                    style: "
-                                        padding: 10px 20px;
-                                        background: #2196f3;
-                                        color: white;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        cursor: pointer;
-                                    ",
+                                    class: "btn-primary",
                                     disabled: name.trim().is_empty(),
                                     onclick: handle_add,
                                     "Add Vault"
                                 }
                             }
-                        }
-                    },
-
-                    AddVaultState::Adding => {
-                        rsx! {
-                            div {
-                                style: "
-                                    display: flex;
-                                    flex-direction: column;
-                                    align-items: center;
-                                    padding: 32px;
-                                ",
-
-                                div {
-                                    style: "
-                                        width: 40px;
-                                        height: 40px;
-                                        border: 3px solid #e0e0e0;
-                                        border-top-color: #2196f3;
-                                        border-radius: 50%;
-                                        animation: spin 0.8s linear infinite;
-                                        margin-bottom: 16px;
-                                    ",
-                                }
-
-                                span {
-                                    style: "font-size: 14px; color: #666;",
-                                    "Adding vault..."
-                                }
-                            }
-
-                            style { "
-                                @keyframes spin {{
-                                    to {{ transform: rotate(360deg); }}
-                                }}
-                            " }
-                        }
-                    },
-
-                    AddVaultState::Error(ref error) => {
-                        rsx! {
-                            // Error message
-                            div {
-                                style: "
-                                    margin-bottom: 20px;
-                                    padding: 12px;
-                                    background: #fef2f2;
-                                    border: 1px solid #fecaca;
-                                    border-radius: 6px;
-                                    color: #dc2626;
-                                    font-size: 13px;
-                                ",
-                                "{error}"
-                            }
-
-                            // Buttons
-                            div {
-                                style: "display: flex; gap: 12px; justify-content: flex-end;",
-
+                        },
+                        AddVaultState::Adding => {
+                            rsx! {}
+                        },
+                        AddVaultState::Error(_) => {
+                            rsx! {
                                 button {
-                                    style: "
-                                        padding: 10px 20px;
-                                        background: #f5f5f5;
-                                        color: #333;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        cursor: pointer;
-                                    ",
+                                    class: "btn-secondary",
                                     onclick: move |_| props.on_cancel.call(()),
                                     "Cancel"
                                 }
 
                                 button {
-                                    style: "
-                                        padding: 10px 20px;
-                                        background: #2196f3;
-                                        color: white;
-                                        border: none;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        cursor: pointer;
-                                    ",
+                                    class: "btn-primary",
                                     onclick: move |_| state.set(AddVaultState::SelectFolder),
                                     "Try Again"
                                 }
                             }
-                        }
-                    },
+                        },
+                    }
                 }
             }
         }

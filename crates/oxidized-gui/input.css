@@ -1,0 +1,320 @@
+@import "tailwindcss";
+@source "./src/**/*.{rs,html,css}";
+
+/* Theme switching support
+   - .theme-dark: Force dark mode regardless of system preference
+   - .theme-light: Force light mode regardless of system preference
+   - No class: Follow system preference (default behavior)
+
+   The dark: variant in Tailwind uses media queries by default.
+   For forced themes, we use CSS custom properties from main.css.
+   The .theme-dark and .theme-light classes override CSS variables,
+   and we add these extra rules for Tailwind utility compatibility.
+*/
+
+/* Custom base styles */
+@layer base {
+  body {
+    @apply bg-white text-gray-900 antialiased;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      @apply bg-neutral-900 text-gray-100;
+    }
+  }
+
+  /* Force light mode - override system dark preference */
+  .theme-light,
+  .theme-light body {
+    @apply bg-white text-gray-900;
+    color-scheme: light;
+  }
+
+  /* Force dark mode - apply regardless of system preference */
+  .theme-dark,
+  .theme-dark body {
+    @apply bg-neutral-900 text-gray-100;
+    color-scheme: dark;
+  }
+}
+
+/* Custom component classes for common patterns */
+@layer components {
+  /* Dialog patterns */
+  .dialog-backdrop {
+    @apply fixed inset-0 bg-black/50 flex items-center justify-center z-50;
+  }
+
+  .dialog {
+    @apply bg-white rounded-xl shadow-2xl max-w-[90vw] overflow-hidden;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .dialog {
+      @apply bg-neutral-800;
+    }
+  }
+  .theme-dark .dialog { @apply bg-neutral-800; }
+  .theme-light .dialog { @apply bg-white; }
+
+  .dialog-body {
+    @apply p-6;
+  }
+
+  .dialog-footer {
+    @apply px-6 py-4 bg-gray-50 flex justify-end gap-3;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .dialog-footer {
+      @apply bg-neutral-900;
+    }
+  }
+  .theme-dark .dialog-footer { @apply bg-neutral-900; }
+  .theme-light .dialog-footer { @apply bg-gray-50; }
+
+  /* Card styles */
+  .card {
+    @apply bg-white rounded-lg border border-gray-200;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .card {
+      @apply bg-neutral-800 border-neutral-700;
+    }
+  }
+  .theme-dark .card { @apply bg-neutral-800 border-neutral-700; }
+  .theme-light .card { @apply bg-white border-gray-200; }
+
+  .card-elevated {
+    @apply bg-white rounded-lg border border-gray-200 shadow-md hover:shadow-lg transition-shadow;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .card-elevated {
+      @apply bg-neutral-800 border-neutral-700;
+    }
+  }
+  .theme-dark .card-elevated { @apply bg-neutral-800 border-neutral-700; }
+  .theme-light .card-elevated { @apply bg-white border-gray-200; }
+
+  /* Alert styles */
+  .alert {
+    @apply p-3 rounded-lg text-sm flex items-start gap-2;
+  }
+
+  .alert-info {
+    @apply p-3 rounded-lg text-sm flex items-start gap-2 bg-blue-50 text-blue-800 border border-blue-200;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .alert-info {
+      @apply bg-blue-900/30 text-blue-200 border-blue-800;
+    }
+  }
+  .theme-dark .alert-info { @apply bg-blue-900/30 text-blue-200 border-blue-800; }
+  .theme-light .alert-info { @apply bg-blue-50 text-blue-800 border-blue-200; }
+
+  .alert-warning {
+    @apply p-3 rounded-lg text-sm flex items-start gap-2 bg-amber-50 text-amber-800 border border-amber-200;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .alert-warning {
+      @apply bg-amber-900/30 text-amber-200 border-amber-800;
+    }
+  }
+  .theme-dark .alert-warning { @apply bg-amber-900/30 text-amber-200 border-amber-800; }
+  .theme-light .alert-warning { @apply bg-amber-50 text-amber-800 border-amber-200; }
+
+  .alert-danger {
+    @apply p-3 rounded-lg text-sm flex items-start gap-2 bg-red-50 text-red-800 border border-red-200;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .alert-danger {
+      @apply bg-red-900/30 text-red-200 border-red-800;
+    }
+  }
+  .theme-dark .alert-danger { @apply bg-red-900/30 text-red-200 border-red-800; }
+  .theme-light .alert-danger { @apply bg-red-50 text-red-800 border-red-200; }
+
+  .alert-success {
+    @apply p-3 rounded-lg text-sm flex items-start gap-2 bg-green-50 text-green-800 border border-green-200;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .alert-success {
+      @apply bg-green-900/30 text-green-200 border-green-800;
+    }
+  }
+  .theme-dark .alert-success { @apply bg-green-900/30 text-green-200 border-green-800; }
+  .theme-light .alert-success { @apply bg-green-50 text-green-800 border-green-200; }
+
+  /* Badge styles */
+  .badge {
+    @apply text-xs px-2 py-0.5 rounded-full font-medium;
+  }
+
+  .badge-success {
+    @apply text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .badge-success {
+      @apply bg-green-900/50 text-green-300;
+    }
+  }
+  .theme-dark .badge-success { @apply bg-green-900/50 text-green-300; }
+  .theme-light .badge-success { @apply bg-green-100 text-green-700; }
+
+  .badge-warning {
+    @apply text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .badge-warning {
+      @apply bg-amber-900/50 text-amber-300;
+    }
+  }
+  .theme-dark .badge-warning { @apply bg-amber-900/50 text-amber-300; }
+  .theme-light .badge-warning { @apply bg-amber-100 text-amber-700; }
+
+  .badge-danger {
+    @apply text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .badge-danger {
+      @apply bg-red-900/50 text-red-300;
+    }
+  }
+  .theme-dark .badge-danger { @apply bg-red-900/50 text-red-300; }
+  .theme-light .badge-danger { @apply bg-red-100 text-red-700; }
+
+  /* Dropzone for file selection */
+  .dropzone {
+    @apply flex flex-col items-center p-8 border-2 border-dashed border-gray-300 rounded-lg mb-5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .dropzone {
+      @apply border-neutral-600;
+    }
+  }
+  .theme-dark .dropzone { @apply border-neutral-600; }
+  .theme-light .dropzone { @apply border-gray-300; }
+
+  /* Spinner animation */
+  .spinner {
+    @apply w-10 h-10 border-[3px] border-gray-200 border-t-blue-500 rounded-full animate-spin;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .spinner {
+      @apply border-neutral-600;
+    }
+  }
+  .theme-dark .spinner { @apply border-neutral-600; }
+  .theme-light .spinner { @apply border-gray-200; }
+
+  .spinner-sm {
+    @apply w-4 h-4 border-2 border-gray-200 border-t-blue-500 rounded-full animate-spin;
+  }
+
+  /* Tab styles */
+  .tabs {
+    @apply flex gap-0;
+  }
+
+  .tab {
+    @apply flex items-center gap-1.5 px-4 py-2.5 border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors cursor-pointer bg-transparent text-sm -mb-px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .tab {
+      @apply text-gray-400 hover:text-gray-200;
+    }
+  }
+  .theme-dark .tab { @apply text-gray-400 hover:text-gray-200; }
+  .theme-light .tab { @apply text-gray-500 hover:text-gray-700; }
+
+  .tab.active {
+    @apply text-blue-500 border-blue-500 font-medium;
+  }
+
+  /* Form input styles */
+  .input {
+    @apply w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .input {
+      @apply bg-neutral-800 border-neutral-600 text-gray-100 focus:border-blue-400 focus:ring-blue-400;
+    }
+  }
+
+  .input-error {
+    @apply border-red-500 focus:border-red-500 focus:ring-red-500;
+  }
+
+  .input-group {
+    @apply relative;
+  }
+
+  .input-icon {
+    @apply absolute right-2 top-1/2 -translate-y-1/2;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-600 mb-1.5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .label {
+      @apply text-gray-300;
+    }
+  }
+
+  /* Button styles */
+  .btn {
+    @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 bg-blue-500 text-white hover:bg-blue-600;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .btn-secondary {
+      @apply bg-neutral-700 text-gray-200 hover:bg-neutral-600 border-neutral-600;
+    }
+  }
+
+  .btn-danger {
+    @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 bg-red-500 text-white hover:bg-red-600;
+  }
+
+  .btn-success {
+    @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 bg-green-500 text-white hover:bg-green-600;
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 bg-transparent text-gray-600 hover:bg-gray-100;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .btn-ghost {
+      @apply text-gray-300 hover:bg-neutral-700;
+    }
+  }
+
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+}

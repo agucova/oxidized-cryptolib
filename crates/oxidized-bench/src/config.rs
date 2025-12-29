@@ -10,6 +10,10 @@ pub enum Implementation {
     OxidizedFuse,
     /// Our FSKit implementation (oxidized-fskit, macOS 15.4+ only)
     OxidizedFsKit,
+    /// Our WebDAV implementation (oxidized-webdav)
+    OxidizedWebDav,
+    /// Our NFS implementation (oxidized-nfs)
+    OxidizedNfs,
     /// Official Cryptomator application (user-mounted)
     OfficialCryptomator,
 }
@@ -20,6 +24,8 @@ impl Implementation {
         match self {
             Self::OxidizedFuse => "FUSE",
             Self::OxidizedFsKit => "FSKit",
+            Self::OxidizedWebDav => "WebDAV",
+            Self::OxidizedNfs => "NFS",
             Self::OfficialCryptomator => "Cryptomator",
         }
     }
@@ -29,6 +35,8 @@ impl Implementation {
         match self {
             Self::OxidizedFuse => "FUSE",
             Self::OxidizedFsKit => "FSKit",
+            Self::OxidizedWebDav => "WebDAV",
+            Self::OxidizedNfs => "NFS",
             Self::OfficialCryptomator => "Official",
         }
     }
@@ -40,6 +48,15 @@ impl Implementation {
         #[cfg(target_os = "macos")]
         {
             impls.push(Self::OxidizedFsKit);
+        }
+
+        // WebDAV is always available (no kernel extensions)
+        impls.push(Self::OxidizedWebDav);
+
+        // NFS is available on macOS and Linux
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            impls.push(Self::OxidizedNfs);
         }
 
         impls.push(Self::OfficialCryptomator);
@@ -248,6 +265,8 @@ impl BenchmarkConfig {
             }
             Implementation::OxidizedFuse => self.mount_prefix.join("fuse"),
             Implementation::OxidizedFsKit => self.mount_prefix.join("fskit"),
+            Implementation::OxidizedWebDav => self.mount_prefix.join("webdav"),
+            Implementation::OxidizedNfs => self.mount_prefix.join("nfs"),
         }
     }
 
