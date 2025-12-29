@@ -6,6 +6,7 @@ mod metadata;
 mod lifecycle;
 mod runner;
 mod suite;
+pub mod workloads;
 
 pub use read::{SequentialReadBenchmark, RandomReadBenchmark};
 pub use write::{SequentialWriteBenchmark, RandomWriteBenchmark};
@@ -13,11 +14,12 @@ pub use metadata::{DirectoryListingBenchmark, MetadataBenchmark};
 pub use lifecycle::{FileCreationBenchmark, FileDeletionBenchmark};
 pub use runner::BenchmarkRunner;
 pub use suite::create_suite;
+pub use workloads::create_workloads;
 
 use crate::config::{FileSize, Implementation, OperationType};
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Trait for filesystem benchmarks.
@@ -61,6 +63,8 @@ pub struct BenchmarkResult {
     pub samples: Vec<Duration>,
     /// Total bytes processed (for throughput).
     pub bytes_processed: u64,
+    /// Path to flamegraph SVG (if profiling was enabled).
+    pub flamegraph_path: Option<PathBuf>,
 }
 
 impl BenchmarkResult {
@@ -78,6 +82,7 @@ impl BenchmarkResult {
             file_size,
             samples: Vec::new(),
             bytes_processed: 0,
+            flamegraph_path: None,
         }
     }
 

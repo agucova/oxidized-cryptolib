@@ -37,9 +37,9 @@ targets:
         embed: true
         codeSign: true
 
-  # FSKit Extension
+  # FSKit Extension (ExtensionKit-based)
   OxVaultFSExtension:
-    type: app-extension
+    type: extensionkit-extension
     platform: macOS
     sources:
       - path: Sources

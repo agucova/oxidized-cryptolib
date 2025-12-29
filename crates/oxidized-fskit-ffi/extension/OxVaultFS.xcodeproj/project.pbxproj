@@ -8,10 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		0B76FC9C793A37CEB557B9FB /* OxVaultFilesystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4682C5709F08160DCBEB3608 /* OxVaultFilesystem.swift */; };
-		24B73F5D0E9E7BB856F69B00 /* OxVaultFSExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		29008D147A1B1C3006049AB6 /* OxVaultFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704FA4BE3BCA729418B8DBA0 /* OxVaultFSApp.swift */; };
 		5BBA7C29912E00BE94166AC1 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABF3C5C9BD070EF19A14A0C1 /* KeychainHelper.swift */; };
 		75B42DC37C68154B52C2110A /* oxidized-fskit-ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 601C4F0CD89BB18C6D4D84D7 /* oxidized-fskit-ffi.swift */; };
+		9303C5D872691F2545EC6D97 /* OxVaultFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B83DBB049F08D1C25810C37F /* OxVaultVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59B86CB9D3D10B9343D62DD2 /* OxVaultVolume.swift */; };
 		D3D61FD500214B5B9F28CD92 /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10F3B430D129A552FB1B521 /* SwiftBridgeCore.swift */; };
 /* End PBXBuildFile section */
@@ -27,15 +27,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		C8CEEE4AE6D75CB20F24BF1A /* Embed Foundation Extensions */ = {
+		6D087B9A3D0EF793082BF340 /* Embed ExtensionKit Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
 			files = (
-				24B73F5D0E9E7BB856F69B00 /* OxVaultFSExtension.appex in Embed Foundation Extensions */,
+				9303C5D872691F2545EC6D97 /* OxVaultFSExtension.appex in Embed ExtensionKit Extensions */,
 			);
-			name = "Embed Foundation Extensions";
+			name = "Embed ExtensionKit Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -48,7 +48,7 @@
 		9A49A712E8F2E4715CD6B0FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A641242F9E0B8088DFB92E75 /* OxVaultFS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OxVaultFS.entitlements; sourceTree = "<group>"; };
 		ABF3C5C9BD070EF19A14A0C1 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
-		AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OxVaultFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = OxVaultFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD2FCCE476C33C4CDDE9862D /* OxVaultFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OxVaultFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F10F3B430D129A552FB1B521 /* SwiftBridgeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftBridgeCore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -145,14 +145,14 @@
 			);
 			productName = OxVaultFSExtension;
 			productReference = AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */;
-			productType = "com.apple.product-type.app-extension";
+			productType = "com.apple.product-type.extensionkit-extension";
 		};
 		A13C060ACBE59FDEFB367C22 /* OxVaultFS */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 710E49D51BCDD73EE10CB397 /* Build configuration list for PBXNativeTarget "OxVaultFS" */;
 			buildPhases = (
 				46222CC216913EF47770237D /* Sources */,
-				C8CEEE4AE6D75CB20F24BF1A /* Embed Foundation Extensions */,
+				6D087B9A3D0EF793082BF340 /* Embed ExtensionKit Extensions */,
 			);
 			buildRules = (
 			);

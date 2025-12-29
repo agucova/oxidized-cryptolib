@@ -26,27 +26,41 @@
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
 
-    <!-- FSKit Extension Configuration -->
-    <key>NSExtension</key>
+    <!-- FSKit Extension Configuration (ExtensionKit format) -->
+    <key>EXAppExtensionAttributes</key>
     <dict>
-        <key>NSExtensionPointIdentifier</key>
-        <string>com.apple.fskit.fs</string>
+        <key>EXExtensionPointIdentifier</key>
+        <string>com.apple.fskit.fsmodule</string>
 
-        <key>NSExtensionPrincipalClass</key>
-        <string>$(PRODUCT_MODULE_NAME).OxVaultExtension</string>
+        <key>FSShortName</key>
+        <string>cryptomator</string>
 
-        <key>FSKitExtensionKind</key>
-        <string>Unary</string>
-
-        <key>FSKitFilesystemKinds</key>
-        <array>
+        <key>FSPersonalities</key>
+        <dict>
+            <key>CryptomatorVault</key>
             <dict>
-                <key>FSKitFilesystemKind</key>
-                <string>com.agucova.oxidized.cryptomator</string>
-
-                <key>FSKitFilesystemKindDescription</key>
+                <key>FSName</key>
                 <string>Cryptomator Vault</string>
+                <key>FSfileObjectsAreCaseSensitive</key>
+                <true/>
             </dict>
+        </dict>
+
+        <key>FSMediaTypes</key>
+        <dict/>
+
+        <!-- Support generic URL resources with custom scheme -->
+        <key>FSSupportsPathURLs</key>
+        <false/>
+        <key>FSSupportsBlockResources</key>
+        <false/>
+        <key>FSSupportsGenericURLResources</key>
+        <true/>
+        <key>FSSupportsServerURLs</key>
+        <false/>
+        <key>FSSupportedSchemes</key>
+        <array>
+            <string>cryptomator</string>
         </array>
     </dict>
 </dict>

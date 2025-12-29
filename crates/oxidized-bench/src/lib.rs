@@ -26,6 +26,7 @@
 //!   -h, --help                   Print help
 //! ```
 
+pub mod assets;
 pub mod bench;
 pub mod cli;
 pub mod config;

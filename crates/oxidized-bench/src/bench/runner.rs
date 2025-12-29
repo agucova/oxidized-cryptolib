@@ -5,9 +5,13 @@ use crate::config::{BenchmarkConfig, FileSize, Implementation};
 use crate::mount::{ensure_mount_point, mount_implementation};
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use pprof::ProfilerGuardBuilder;
 
 /// Maximum time allowed for a single benchmark run iteration.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per iteration
@@ -127,6 +131,9 @@ impl BenchmarkRunner {
     pub fn run(&self, benchmarks: &[Box<dyn Benchmark>]) -> Result<Vec<BenchmarkResult>> {
         let mut results = Vec::new();
 
+        // Ensure flamegraph output directory exists
+        self.ensure_flamegraph_dir()?;
+
         // Calculate total operations for progress bar
         let total_ops = benchmarks.len() * self.config.implementations.len();
         let progress = ProgressBar::new(total_ops as u64);
@@ -142,6 +149,14 @@ impl BenchmarkRunner {
             benchmarks.len(),
             self.config.implementations.len()
         );
+
+        if self.config.flamegraph_enabled {
+            tracing::info!(
+                "Flamegraph profiling enabled ({}Hz), output: {}",
+                self.config.profile_frequency,
+                self.config.flamegraph_dir.display()
+            );
+        }
 
         // Run benchmarks for each implementation sequentially
         for (impl_idx, &impl_type) in self.config.implementations.iter().enumerate() {
@@ -184,6 +199,31 @@ impl BenchmarkRunner {
             )
             .with_context(|| format!("Failed to mount {}", impl_type))?;
 
+            // Start aggregate profiler for this implementation (profiles all benchmarks)
+            #[cfg(unix)]
+            let aggregate_profiler = if self.config.flamegraph_enabled {
+                match ProfilerGuardBuilder::default()
+                    .frequency(self.config.profile_frequency)
+                    .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                    .build()
+                {
+                    Ok(guard) => {
+                        tracing::debug!("Started aggregate profiler for {}", impl_type);
+                        Some(guard)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to start aggregate profiler for {}: {}",
+                            impl_type,
+                            e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             // Run all benchmarks for this implementation
             for benchmark in benchmarks {
                 if self.should_stop() {
@@ -204,6 +244,28 @@ impl BenchmarkRunner {
                 progress.inc(1);
             }
 
+            // Stop aggregate profiler and generate per-implementation flamegraph
+            #[cfg(unix)]
+            if let Some(guard) = aggregate_profiler {
+                let aggregate_path = self.aggregate_flamegraph_path(impl_type);
+                match self.write_flamegraph(guard, &aggregate_path) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Wrote aggregate flamegraph for {}: {}",
+                            impl_type,
+                            aggregate_path.display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to write aggregate flamegraph for {}: {}",
+                            impl_type,
+                            e
+                        );
+                    }
+                }
+            }
+
             // Unmount before moving to next implementation
             tracing::info!("Unmounting {}...", impl_type);
             drop(mount);
@@ -215,6 +277,59 @@ impl BenchmarkRunner {
         progress.finish_with_message("Complete");
 
         Ok(results)
+    }
+
+    /// Generate path for a per-benchmark flamegraph.
+    fn flamegraph_path(&self, benchmark_name: &str, impl_type: Implementation) -> PathBuf {
+        let sanitized_name = benchmark_name
+            .replace(['/', ' ', ':', '(', ')'], "_")
+            .replace("__", "_");
+        self.config
+            .flamegraph_dir
+            .join(format!("{}_{}.svg", impl_type.short_name().to_lowercase(), sanitized_name))
+    }
+
+    /// Generate path for an aggregate per-implementation flamegraph.
+    fn aggregate_flamegraph_path(&self, impl_type: Implementation) -> PathBuf {
+        self.config
+            .flamegraph_dir
+            .join(format!("{}_all.svg", impl_type.short_name().to_lowercase()))
+    }
+
+    /// Ensure the flamegraph output directory exists.
+    fn ensure_flamegraph_dir(&self) -> Result<()> {
+        if self.config.flamegraph_enabled && !self.config.flamegraph_dir.exists() {
+            std::fs::create_dir_all(&self.config.flamegraph_dir).with_context(|| {
+                format!(
+                    "Failed to create flamegraph directory: {}",
+                    self.config.flamegraph_dir.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Generate a flamegraph SVG from a pprof report.
+    #[cfg(unix)]
+    fn write_flamegraph(
+        &self,
+        guard: pprof::ProfilerGuard<'_>,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let report = guard
+            .report()
+            .build()
+            .context("Failed to build profiler report")?;
+
+        let file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create flamegraph file: {}", path.display()))?;
+
+        report
+            .flamegraph(file)
+            .context("Failed to write flamegraph SVG")?;
+
+        tracing::debug!("Wrote flamegraph to {}", path.display());
+        Ok(())
     }
 
     /// Clear OS caches between implementations.
@@ -377,6 +492,27 @@ impl BenchmarkRunner {
             std::thread::sleep(Duration::from_millis(100));
         }
 
+        // Start per-benchmark profiler (after warmup, so we only measure actual runs)
+        #[cfg(unix)]
+        let profiler_guard = if self.config.flamegraph_enabled {
+            match ProfilerGuardBuilder::default()
+                .frequency(self.config.profile_frequency)
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()
+            {
+                Ok(guard) => {
+                    tracing::debug!("Started profiler for {}", benchmark.name());
+                    Some(guard)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to start profiler for {}: {}", benchmark.name(), e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Actual measurements with timeout enforcement
         let iterations = self.config.effective_iterations();
         let mut timeout_count = 0;
@@ -422,6 +558,25 @@ impl BenchmarkRunner {
                     tracing::warn!(
                         "Iteration {} of {} failed: {}",
                         i + 1,
+                        benchmark.name(),
+                        e
+                    );
+                }
+            }
+        }
+
+        // Stop profiler and generate per-benchmark flamegraph
+        #[cfg(unix)]
+        if let Some(guard) = profiler_guard {
+            let flamegraph_path = self.flamegraph_path(benchmark.name(), implementation);
+            match self.write_flamegraph(guard, &flamegraph_path) {
+                Ok(()) => {
+                    tracing::info!("Wrote flamegraph: {}", flamegraph_path.display());
+                    result.flamegraph_path = Some(flamegraph_path);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to write flamegraph for {}: {}",
                         benchmark.name(),
                         e
                     );

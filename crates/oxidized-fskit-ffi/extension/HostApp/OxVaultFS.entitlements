@@ -2,18 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- App sandbox -->
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
-
-    <!-- Read/write access to user-selected files -->
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-
-    <!-- Keychain access for vault passwords -->
-    <key>keychain-access-groups</key>
-    <array>
-        <string>$(AppIdentifierPrefix)com.agucova.oxidized</string>
-    </array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.agucova.oxidized</string>
+	</array>
 </dict>
 </plist>

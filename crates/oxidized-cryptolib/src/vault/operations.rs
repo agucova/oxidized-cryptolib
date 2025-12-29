@@ -288,6 +288,26 @@ pub enum VaultWriteError {
         source: Box<crate::fs::streaming::StreamingError>,
         context: VaultOpContext,
     },
+
+    /// Cannot swap entries of different types (e.g., file and directory)
+    #[error("Cannot swap {src_type} with {dest_type}: {context}")]
+    TypeMismatch {
+        src_type: &'static str,
+        dest_type: &'static str,
+        context: VaultOpContext,
+    },
+
+    /// Cross-directory swap not supported for directories
+    /// (would require recursive re-encryption of all descendants)
+    #[error("Cross-directory swap not supported for directories: {context}")]
+    CrossDirectoryDirSwap { context: VaultOpContext },
+
+    /// Swap rollback failed (critical error - vault may be in inconsistent state)
+    #[error("Swap rollback failed: {reason} at {context}")]
+    SwapRollbackFailed {
+        reason: String,
+        context: VaultOpContext,
+    },
 }
 
 impl From<SymlinkError> for VaultWriteError {

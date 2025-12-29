@@ -90,9 +90,15 @@ pub enum BenchmarkSuite {
     Read,
     /// Write operations only
     Write,
-    /// Complete benchmark suite
+    /// Complete synthetic benchmark suite
     #[default]
     Full,
+    /// Large file benchmarks (100MB - 1GB)
+    LargeFile,
+    /// Realistic application workloads only
+    Workload,
+    /// Full synthetic + realistic workloads
+    Complete,
 }
 
 impl std::str::FromStr for BenchmarkSuite {
@@ -104,7 +110,12 @@ impl std::str::FromStr for BenchmarkSuite {
             "read" => Ok(Self::Read),
             "write" => Ok(Self::Write),
             "full" => Ok(Self::Full),
-            _ => Err(format!("Unknown suite: {s}. Valid options: quick, read, write, full")),
+            "large" | "largefile" | "large-file" => Ok(Self::LargeFile),
+            "workload" | "workloads" => Ok(Self::Workload),
+            "complete" | "all" => Ok(Self::Complete),
+            _ => Err(format!(
+                "Unknown suite: {s}. Valid options: quick, read, write, full, large, workload, complete"
+            )),
         }
     }
 }
@@ -116,6 +127,9 @@ impl std::fmt::Display for BenchmarkSuite {
             Self::Read => write!(f, "read"),
             Self::Write => write!(f, "write"),
             Self::Full => write!(f, "full"),
+            Self::LargeFile => write!(f, "large"),
+            Self::Workload => write!(f, "workload"),
+            Self::Complete => write!(f, "complete"),
         }
     }
 }
@@ -133,6 +147,12 @@ pub enum FileSize {
     Large,
     /// 10 MB
     XLarge,
+    /// 100 MB
+    XXLarge,
+    /// 500 MB
+    Huge,
+    /// 1 GB
+    Gigabyte,
 }
 
 impl FileSize {
@@ -144,6 +164,9 @@ impl FileSize {
             Self::Medium => 100 * 1024,
             Self::Large => 1024 * 1024,
             Self::XLarge => 10 * 1024 * 1024,
+            Self::XXLarge => 100 * 1024 * 1024,
+            Self::Huge => 500 * 1024 * 1024,
+            Self::Gigabyte => 1024 * 1024 * 1024,
         }
     }
 
@@ -155,10 +178,13 @@ impl FileSize {
             Self::Medium => "100KB",
             Self::Large => "1MB",
             Self::XLarge => "10MB",
+            Self::XXLarge => "100MB",
+            Self::Huge => "500MB",
+            Self::Gigabyte => "1GB",
         }
     }
 
-    /// Get all standard file sizes.
+    /// Get all standard file sizes (up to 10MB for normal suite).
     pub fn all() -> Vec<Self> {
         vec![Self::Tiny, Self::OneChunk, Self::Medium, Self::Large, Self::XLarge]
     }
@@ -166,6 +192,25 @@ impl FileSize {
     /// Get file sizes for the quick suite.
     pub fn quick() -> Vec<Self> {
         vec![Self::Large]
+    }
+
+    /// Get large file sizes (100MB - 1GB) for stress testing.
+    pub fn large() -> Vec<Self> {
+        vec![Self::XXLarge, Self::Huge, Self::Gigabyte]
+    }
+
+    /// Get all file sizes including large files.
+    pub fn complete() -> Vec<Self> {
+        vec![
+            Self::Tiny,
+            Self::OneChunk,
+            Self::Medium,
+            Self::Large,
+            Self::XLarge,
+            Self::XXLarge,
+            Self::Huge,
+            Self::Gigabyte,
+        ]
     }
 }
 
@@ -194,6 +239,29 @@ pub enum OperationType {
     FileCreation,
     /// File deletion
     FileDeletion,
+    // Realistic workload operations
+    /// IDE-like project navigation and editing
+    IdeWorkload,
+    /// Zipf-distributed file access (80/20 rule)
+    WorkingSetWorkload,
+    /// Git-like version control operations
+    GitWorkload,
+    /// Deep directory tree traversal
+    DirectoryTreeWorkload,
+    /// Multi-threaded concurrent access
+    ConcurrentWorkload,
+    /// SQLite-like database page access
+    DatabaseWorkload,
+    /// Media file streaming with seeks
+    MediaStreamingWorkload,
+    /// Photo library (import, thumbnails, EXIF reads)
+    PhotoLibraryWorkload,
+    /// Archive extraction (tar/zip unpack and repack)
+    ArchiveExtractionWorkload,
+    /// Backup/sync (delta detection, incremental copies)
+    BackupSyncWorkload,
+    /// Cold start (mount latency, first access)
+    ColdStartWorkload,
 }
 
 impl OperationType {
@@ -208,6 +276,17 @@ impl OperationType {
             Self::Metadata => "Metadata",
             Self::FileCreation => "File Creation",
             Self::FileDeletion => "File Deletion",
+            Self::IdeWorkload => "IDE Workload",
+            Self::WorkingSetWorkload => "Working Set",
+            Self::GitWorkload => "Git Workload",
+            Self::DirectoryTreeWorkload => "Directory Tree",
+            Self::ConcurrentWorkload => "Concurrent Access",
+            Self::DatabaseWorkload => "Database Workload",
+            Self::MediaStreamingWorkload => "Media Streaming",
+            Self::PhotoLibraryWorkload => "Photo Library",
+            Self::ArchiveExtractionWorkload => "Archive Extraction",
+            Self::BackupSyncWorkload => "Backup/Sync",
+            Self::ColdStartWorkload => "Cold Start",
         }
     }
 
@@ -215,7 +294,35 @@ impl OperationType {
     pub fn is_write(&self) -> bool {
         matches!(
             self,
-            Self::SequentialWrite | Self::RandomWrite | Self::FileCreation | Self::FileDeletion
+            Self::SequentialWrite
+                | Self::RandomWrite
+                | Self::FileCreation
+                | Self::FileDeletion
+                | Self::IdeWorkload
+                | Self::GitWorkload
+                | Self::ConcurrentWorkload
+                | Self::DatabaseWorkload
+                | Self::PhotoLibraryWorkload
+                | Self::ArchiveExtractionWorkload
+                | Self::BackupSyncWorkload
+        )
+    }
+
+    /// Whether this is a realistic workload benchmark.
+    pub fn is_workload(&self) -> bool {
+        matches!(
+            self,
+            Self::IdeWorkload
+                | Self::WorkingSetWorkload
+                | Self::GitWorkload
+                | Self::DirectoryTreeWorkload
+                | Self::ConcurrentWorkload
+                | Self::DatabaseWorkload
+                | Self::MediaStreamingWorkload
+                | Self::PhotoLibraryWorkload
+                | Self::ArchiveExtractionWorkload
+                | Self::BackupSyncWorkload
+                | Self::ColdStartWorkload
         )
     }
 }
@@ -249,6 +356,14 @@ pub struct BenchmarkConfig {
     pub color: bool,
     /// Verbose output.
     pub verbose: bool,
+    /// Enable flamegraph profiling.
+    pub flamegraph_enabled: bool,
+    /// Directory for flamegraph output.
+    pub flamegraph_dir: PathBuf,
+    /// Profiler sampling frequency in Hz.
+    pub profile_frequency: i32,
+    /// Use real downloaded assets instead of synthetic data.
+    pub real_assets: bool,
 }
 
 impl BenchmarkConfig {
@@ -265,6 +380,10 @@ impl BenchmarkConfig {
             warmup_iterations: 10,
             color: true,
             verbose: false,
+            flamegraph_enabled: false,
+            flamegraph_dir: PathBuf::from("./profiles"),
+            profile_frequency: 997,
+            real_assets: true,
         }
     }
 
@@ -285,6 +404,7 @@ impl BenchmarkConfig {
     pub fn file_sizes(&self) -> Vec<FileSize> {
         match self.suite {
             BenchmarkSuite::Quick => FileSize::quick(),
+            BenchmarkSuite::LargeFile => FileSize::large(),
             _ => FileSize::all(),
         }
     }
@@ -307,12 +427,43 @@ impl BenchmarkConfig {
 
     /// Check if we should run read benchmarks.
     pub fn run_reads(&self) -> bool {
-        matches!(self.suite, BenchmarkSuite::Quick | BenchmarkSuite::Read | BenchmarkSuite::Full)
+        matches!(
+            self.suite,
+            BenchmarkSuite::Quick
+                | BenchmarkSuite::Read
+                | BenchmarkSuite::Full
+                | BenchmarkSuite::LargeFile
+                | BenchmarkSuite::Complete
+        )
     }
 
     /// Check if we should run write benchmarks.
     pub fn run_writes(&self) -> bool {
-        matches!(self.suite, BenchmarkSuite::Write | BenchmarkSuite::Full)
+        matches!(
+            self.suite,
+            BenchmarkSuite::Write
+                | BenchmarkSuite::Full
+                | BenchmarkSuite::LargeFile
+                | BenchmarkSuite::Complete
+        )
+    }
+
+    /// Check if we should run synthetic benchmarks.
+    pub fn run_synthetic(&self) -> bool {
+        matches!(
+            self.suite,
+            BenchmarkSuite::Quick
+                | BenchmarkSuite::Read
+                | BenchmarkSuite::Write
+                | BenchmarkSuite::Full
+                | BenchmarkSuite::LargeFile
+                | BenchmarkSuite::Complete
+        )
+    }
+
+    /// Check if we should run workload benchmarks.
+    pub fn run_workloads(&self) -> bool {
+        matches!(self.suite, BenchmarkSuite::Workload | BenchmarkSuite::Complete)
     }
 }
 

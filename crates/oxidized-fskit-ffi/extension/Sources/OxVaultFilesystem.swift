@@ -132,11 +132,25 @@ final class OxVaultExtension: FSUnaryFileSystem, FSUnaryFileSystemOperations {
     }
 
     /// Extract URL from an FSResource.
+    /// For generic URL resources with cryptomator:// scheme, convert to file:// URL
     private func extractURL(from resource: FSResource) -> URL? {
-        if let pathResource = resource as? FSPathURLResource {
+        if let genericResource = resource as? FSGenericURLResource {
+            let url = genericResource.url
+            Self.logger.info("Generic URL resource: \(url)")
+
+            // Convert cryptomator:// to file:// URL
+            // cryptomator:///path/to/vault -> file:///path/to/vault
+            if url.scheme == "cryptomator" {
+                var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                components?.scheme = "file"
+                if let fileURL = components?.url {
+                    Self.logger.info("Converted to file URL: \(fileURL)")
+                    return fileURL
+                }
+            }
+            return url
+        } else if let pathResource = resource as? FSPathURLResource {
             return pathResource.url
-        } else if let genericResource = resource as? FSGenericURLResource {
-            return genericResource.url
         }
         return nil
     }

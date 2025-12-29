@@ -100,6 +100,12 @@ pub struct ReportMetadata {
     pub iterations: usize,
     pub warmup_iterations: usize,
     pub implementations: Vec<String>,
+    /// Whether flamegraph profiling was enabled
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub flamegraph_enabled: bool,
+    /// Directory containing flamegraph SVGs (if profiling was enabled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flamegraph_dir: Option<String>,
 }
 
 /// JSON-serializable benchmark stats
@@ -120,10 +126,18 @@ pub struct BenchmarkStatsJson {
     pub latency_p95_ns: u64,
     pub latency_p99_ns: u64,
     pub raw_samples_ns: Vec<u64>,
+    /// Path to flamegraph SVG (if profiling was enabled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flamegraph: Option<String>,
 }
 
-impl From<(&BenchmarkStats, &[std::time::Duration])> for BenchmarkStatsJson {
-    fn from((stats, samples): (&BenchmarkStats, &[std::time::Duration])) -> Self {
+impl BenchmarkStatsJson {
+    /// Create from stats, samples, and optional flamegraph path
+    pub fn from_result(
+        stats: &BenchmarkStats,
+        samples: &[std::time::Duration],
+        flamegraph_path: Option<&std::path::Path>,
+    ) -> Self {
         Self {
             name: stats.name.clone(),
             operation: stats.operation.to_string(),
@@ -140,6 +154,7 @@ impl From<(&BenchmarkStats, &[std::time::Duration])> for BenchmarkStatsJson {
             latency_p95_ns: stats.latency.p95.as_nanos() as u64,
             latency_p99_ns: stats.latency.p99.as_nanos() as u64,
             raw_samples_ns: samples.iter().map(|d| d.as_nanos() as u64).collect(),
+            flamegraph: flamegraph_path.map(|p| p.display().to_string()),
         }
     }
 }
@@ -194,7 +209,13 @@ pub fn export_json(
     let stats_json: Vec<BenchmarkStatsJson> = results
         .iter()
         .zip(stats.iter())
-        .map(|(result, stat)| BenchmarkStatsJson::from((stat, result.samples.as_slice())))
+        .map(|(result, stat)| {
+            BenchmarkStatsJson::from_result(
+                stat,
+                result.samples.as_slice(),
+                result.flamegraph_path.as_deref(),
+            )
+        })
         .collect();
 
     let report = BenchmarkReport {
@@ -206,6 +227,12 @@ pub fn export_json(
             iterations: config.effective_iterations(),
             warmup_iterations: config.warmup_iterations,
             implementations: config.implementations.iter().map(|i| i.name().to_string()).collect(),
+            flamegraph_enabled: config.flamegraph_enabled,
+            flamegraph_dir: if config.flamegraph_enabled {
+                Some(config.flamegraph_dir.display().to_string())
+            } else {
+                None
+            },
         },
         results: stats_json,
         comparisons,

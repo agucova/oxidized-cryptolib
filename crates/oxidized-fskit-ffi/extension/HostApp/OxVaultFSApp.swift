@@ -64,14 +64,13 @@ struct ContentView: View {
             .background(Color.secondary.opacity(0.1))
             .cornerRadius(12)
 
-            Spacer()
-
             Button("Open System Settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!)
             }
             .buttonStyle(.borderedProminent)
+            .padding(.top, 20)
         }
         .padding(40)
-        .frame(minWidth: 500, minHeight: 400)
+        .frame(width: 520, height: 520)
     }
 }
