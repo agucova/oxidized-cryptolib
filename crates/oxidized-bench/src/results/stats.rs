@@ -103,7 +103,7 @@ pub fn compute_stats(result: &BenchmarkResult) -> BenchmarkStats {
     let p95 = percentile(&sorted, 95);
     let p99 = percentile(&sorted, 99);
 
-    // Calculate throughput
+    // Calculate throughput (only for I/O benchmarks that track bytes)
     let throughput = if result.bytes_processed > 0 {
         let total_time_secs = sum as f64 / 1_000_000_000.0;
         Some(Throughput {
@@ -111,15 +111,9 @@ pub fn compute_stats(result: &BenchmarkResult) -> BenchmarkStats {
             ops_per_sec: samples.len() as f64 / total_time_secs,
         })
     } else {
-        let total_time_secs = sum as f64 / 1_000_000_000.0;
-        if total_time_secs > 0.0 {
-            Some(Throughput {
-                bytes_per_sec: 0.0,
-                ops_per_sec: samples.len() as f64 / total_time_secs,
-            })
-        } else {
-            None
-        }
+        // For operation-focused benchmarks (file creation, deletion, metadata, etc.)
+        // don't report throughput since they don't process bytes
+        None
     };
 
     BenchmarkStats {

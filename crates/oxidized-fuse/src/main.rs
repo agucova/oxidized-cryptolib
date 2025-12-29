@@ -62,6 +62,7 @@ fn main() -> Result<()> {
     #[cfg(feature = "tokio-console")]
     {
         use tracing_subscriber::Layer;
+        use std::net::SocketAddr;
 
         // Build the multi-threaded runtime FIRST, before setting up tracing
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -69,19 +70,41 @@ fn main() -> Result<()> {
             .build()
             .context("Failed to create tokio runtime")?;
 
-        // Now set up tracing with console subscriber
-        let console_layer = console_subscriber::spawn();
+        // CLI tools use port 6669 by default (GUI uses 6670)
+        let console_port: u16 = std::env::var("TOKIO_CONSOLE_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(6669);
+
+        let console_addr: SocketAddr = ([127, 0, 0, 1], console_port).into();
+        let port_available = std::net::TcpListener::bind(console_addr).is_ok();
+
         let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter));
-        tracing_subscriber::registry()
-            .with(console_layer)
-            .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
-            .init();
 
-        info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
+        if port_available {
+            let console_layer = console_subscriber::ConsoleLayer::builder()
+                .server_addr(console_addr)
+                .spawn();
+            tracing_subscriber::registry()
+                .with(console_layer)
+                .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
+                .init();
+            info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:{}", console_port);
+        } else {
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
+                .init();
+            warn!(
+                "tokio-console port {} already in use, running without console instrumentation. \
+                 Set TOKIO_CONSOLE_PORT to use a different port.",
+                console_port
+            );
+        }
 
         // Run the mount logic, passing the runtime handle
-        run_mount(cli, Handle::current(), &runtime)
+        let handle = runtime.handle().clone();
+        run_mount(cli, handle, &runtime)
     }
 
     #[cfg(not(feature = "tokio-console"))]

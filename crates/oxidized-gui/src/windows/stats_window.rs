@@ -1,29 +1,314 @@
 //! Standalone Statistics Window
 //!
 //! This is a separate window component that runs in its own VirtualDom.
-//! It displays real-time vault activity statistics.
+//! It displays real-time vault activity statistics with throughput plots.
 
 use dioxus::prelude::*;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::backend::{mount_manager, ActivityStatus, VaultStats};
+use crate::state::ThemePreference;
 
-/// State for calculating throughput rates.
-#[derive(Clone, Copy)]
-struct PrevStats {
-    bytes_read: u64,
-    bytes_written: u64,
-    timestamp: Option<Instant>,
+/// Number of samples to keep in history (120 samples * 500ms = 60 seconds)
+const HISTORY_SAMPLES: usize = 120;
+
+/// Sample interval in milliseconds
+const SAMPLE_INTERVAL_MS: u64 = 500;
+
+/// EMA smoothing factor (0.25 = ~2 second time constant, responsive but smooth)
+const EMA_ALPHA: f64 = 0.25;
+
+/// A single throughput sample with timestamp
+#[derive(Clone, Copy, Debug)]
+struct ThroughputSample {
+    read_rate: f64,  // smoothed bytes per second
+    write_rate: f64, // smoothed bytes per second
+    timestamp: Instant,
 }
 
-impl Default for PrevStats {
+/// Ring buffer for throughput history with EMA smoothing
+#[derive(Clone, Debug)]
+struct ThroughputHistory {
+    samples: VecDeque<ThroughputSample>,
+    prev_bytes_read: u64,
+    prev_bytes_written: u64,
+    prev_timestamp: Option<Instant>,
+    /// Exponential moving average for read rate
+    smoothed_read: f64,
+    /// Exponential moving average for write rate
+    smoothed_write: f64,
+}
+
+impl Default for ThroughputHistory {
     fn default() -> Self {
         Self {
-            bytes_read: 0,
-            bytes_written: 0,
-            timestamp: None,
+            samples: VecDeque::with_capacity(HISTORY_SAMPLES),
+            prev_bytes_read: 0,
+            prev_bytes_written: 0,
+            prev_timestamp: None,
+            smoothed_read: 0.0,
+            smoothed_write: 0.0,
         }
+    }
+}
+
+impl ThroughputHistory {
+    /// Record a new sample and return the smoothed rates
+    fn record(&mut self, bytes_read: u64, bytes_written: u64) -> (f64, f64) {
+        let now = Instant::now();
+
+        // Calculate instantaneous rates
+        let (instant_read, instant_write) = if let Some(prev_time) = self.prev_timestamp {
+            let elapsed = prev_time.elapsed().as_secs_f64().max(0.001);
+            let read_delta = bytes_read.saturating_sub(self.prev_bytes_read);
+            let write_delta = bytes_written.saturating_sub(self.prev_bytes_written);
+            (read_delta as f64 / elapsed, write_delta as f64 / elapsed)
+        } else {
+            (0.0, 0.0)
+        };
+
+        // Update previous values
+        self.prev_bytes_read = bytes_read;
+        self.prev_bytes_written = bytes_written;
+        self.prev_timestamp = Some(now);
+
+        // Apply exponential moving average smoothing
+        // EMA formula: smoothed = alpha * current + (1 - alpha) * previous
+        if self.samples.is_empty() {
+            // First sample - initialize EMA directly
+            self.smoothed_read = instant_read;
+            self.smoothed_write = instant_write;
+        } else {
+            self.smoothed_read = EMA_ALPHA * instant_read + (1.0 - EMA_ALPHA) * self.smoothed_read;
+            self.smoothed_write = EMA_ALPHA * instant_write + (1.0 - EMA_ALPHA) * self.smoothed_write;
+        }
+
+        // Add smoothed sample to history
+        let sample = ThroughputSample {
+            read_rate: self.smoothed_read,
+            write_rate: self.smoothed_write,
+            timestamp: now,
+        };
+
+        if self.samples.len() >= HISTORY_SAMPLES {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+
+        (self.smoothed_read, self.smoothed_write)
+    }
+
+    /// Get the maximum rate in the history for scaling
+    fn max_rate(&self) -> f64 {
+        self.samples
+            .iter()
+            .flat_map(|s| [s.read_rate, s.write_rate])
+            .fold(0.0_f64, f64::max)
+            .max(1024.0) // Minimum 1 KB/s scale
+    }
+}
+
+/// Chart color scheme for light/dark themes
+struct ChartColors {
+    background: &'static str,
+    grid: &'static str,
+    text: &'static str,
+    read_line: &'static str,
+    read_fill: &'static str,
+    write_line: &'static str,
+    write_fill: &'static str,
+}
+
+impl ChartColors {
+    fn light() -> Self {
+        Self {
+            background: "#f3f4f6",  // gray-100
+            grid: "#e5e7eb",        // gray-200
+            text: "#6b7280",        // gray-500
+            read_line: "#3b82f6",   // blue-500
+            read_fill: "#3b82f620", // blue-500 with alpha
+            write_line: "#f59e0b",  // amber-500
+            write_fill: "#f59e0b20", // amber-500 with alpha
+        }
+    }
+
+    fn dark() -> Self {
+        Self {
+            background: "#1f2937",  // gray-800
+            grid: "#374151",        // gray-700
+            text: "#d1d5db",        // gray-300 (lighter for better contrast)
+            read_line: "#60a5fa",   // blue-400
+            read_fill: "#60a5fa30", // blue-400 with alpha
+            write_line: "#fbbf24",  // amber-400
+            write_fill: "#fbbf2430", // amber-400 with alpha
+        }
+    }
+}
+
+/// Parse a hex color string to RGB tuple
+fn parse_hex_color(hex: &str) -> (u8, u8, u8) {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    (r, g, b)
+}
+
+/// Parse a hex color with alpha to RGBA tuple
+fn parse_hex_color_alpha(hex: &str) -> (u8, u8, u8, f64) {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    let a = if hex.len() >= 8 {
+        u8::from_str_radix(&hex[6..8], 16).unwrap_or(255) as f64 / 255.0
+    } else {
+        1.0
+    };
+    (r, g, b, a)
+}
+
+/// Render throughput chart as SVG string
+fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u32, height: u32) -> String {
+    use plotters::prelude::*;
+
+    let colors = if is_dark {
+        ChartColors::dark()
+    } else {
+        ChartColors::light()
+    };
+
+    let mut svg_buffer = String::new();
+    {
+        let root = SVGBackend::with_string(&mut svg_buffer, (width, height)).into_drawing_area();
+
+        let bg = parse_hex_color(colors.background);
+        root.fill(&RGBColor(bg.0, bg.1, bg.2)).ok();
+
+        let max_rate = history.max_rate();
+        let samples = &history.samples;
+
+        // Time range: last 60 seconds (or less if not enough samples)
+        let x_range = 0.0..60.0_f64;
+        let y_range = 0.0..max_rate;
+
+        let text_color = parse_hex_color(colors.text);
+        let grid_color = parse_hex_color(colors.grid);
+
+        let mut chart = ChartBuilder::on(&root)
+            .margin(8)
+            .x_label_area_size(22)
+            .y_label_area_size(45)
+            .build_cartesian_2d(x_range, y_range)
+            .unwrap();
+
+        chart
+            .configure_mesh()
+            .disable_mesh() // No grid lines - cleaner look
+            .x_labels(5)
+            .y_labels(4)
+            .y_desc("")
+            .axis_style(RGBColor(text_color.0, text_color.1, text_color.2))
+            .label_style(("sans-serif", 12, &RGBColor(text_color.0, text_color.1, text_color.2)))
+            .x_label_formatter(&|x| {
+                // x=0 is 60s ago, x=60 is now
+                let secs_ago = (60.0 - x).round() as i32;
+                if secs_ago == 0 {
+                    "now".to_string()
+                } else {
+                    format!("{}s", secs_ago)
+                }
+            })
+            .y_label_formatter(&|y| format_rate_short(*y))
+            .draw()
+            .ok();
+
+        // Convert samples to chart data points
+        // x-axis: seconds ago (60 = oldest, 0 = newest)
+        let now = Instant::now();
+
+        if !samples.is_empty() {
+            // Read throughput (area + line)
+            let read_data: Vec<(f64, f64)> = samples
+                .iter()
+                .map(|s| {
+                    let secs_ago = now.duration_since(s.timestamp).as_secs_f64();
+                    (60.0 - secs_ago.min(60.0), s.read_rate)
+                })
+                .collect();
+
+            let read_fill = parse_hex_color_alpha(colors.read_fill);
+            let read_line_color = parse_hex_color(colors.read_line);
+
+            // Draw filled area for reads
+            chart
+                .draw_series(AreaSeries::new(
+                    read_data.iter().cloned(),
+                    0.0,
+                    RGBAColor(read_fill.0, read_fill.1, read_fill.2, read_fill.3),
+                ))
+                .ok();
+
+            // Draw line for reads
+            chart
+                .draw_series(LineSeries::new(
+                    read_data.iter().cloned(),
+                    ShapeStyle::from(&RGBColor(read_line_color.0, read_line_color.1, read_line_color.2))
+                        .stroke_width(2),
+                ))
+                .ok();
+
+            // Write throughput (area + line)
+            let write_data: Vec<(f64, f64)> = samples
+                .iter()
+                .map(|s| {
+                    let secs_ago = now.duration_since(s.timestamp).as_secs_f64();
+                    (60.0 - secs_ago.min(60.0), s.write_rate)
+                })
+                .collect();
+
+            let write_fill = parse_hex_color_alpha(colors.write_fill);
+            let write_line_color = parse_hex_color(colors.write_line);
+
+            // Draw filled area for writes
+            chart
+                .draw_series(AreaSeries::new(
+                    write_data.iter().cloned(),
+                    0.0,
+                    RGBAColor(write_fill.0, write_fill.1, write_fill.2, write_fill.3),
+                ))
+                .ok();
+
+            // Draw line for writes
+            chart
+                .draw_series(LineSeries::new(
+                    write_data.iter().cloned(),
+                    ShapeStyle::from(&RGBColor(write_line_color.0, write_line_color.1, write_line_color.2))
+                        .stroke_width(2),
+                ))
+                .ok();
+        }
+
+        root.present().ok();
+    }
+
+    svg_buffer
+}
+
+/// Format rate for Y-axis labels (compact)
+fn format_rate_short(bytes_per_sec: f64) -> String {
+    if bytes_per_sec < 1.0 {
+        "0".to_string()
+    } else if bytes_per_sec < 1024.0 {
+        format!("{:.0}B", bytes_per_sec)
+    } else if bytes_per_sec < 1024.0 * 1024.0 {
+        format!("{:.0}K", bytes_per_sec / 1024.0)
+    } else if bytes_per_sec < 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1}M", bytes_per_sec / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1}G", bytes_per_sec / (1024.0 * 1024.0 * 1024.0))
     }
 }
 
@@ -37,20 +322,24 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
     let config = use_signal(crate::state::AppConfig::load);
 
     // Get theme class for styling
-    let theme_class = config.read().theme.css_class().unwrap_or("");
+    let theme = config.read().theme;
+    let theme_class = theme.css_class().unwrap_or("");
     let platform_class = crate::current_platform().css_class();
+
+    // Determine if we're in dark mode
+    let is_dark = matches!(theme, ThemePreference::Dark | ThemePreference::System);
 
     // Get stats from mount manager
     let stats = mount_manager().get_stats(&vault_id);
 
-    // State for calculating throughput rates
-    let mut prev_stats = use_signal(PrevStats::default);
+    // Throughput history for chart
+    let mut history = use_signal(ThroughputHistory::default);
 
     // Auto-refresh stats every 500ms
     let mut refresh_counter = use_signal(|| 0u32);
     use_future(move || async move {
         loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS)).await;
             refresh_counter.with_mut(|c| *c = c.wrapping_add(1));
         }
     });
@@ -93,7 +382,7 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
                 style: "max-height: calc(100vh - 80px);",
 
                 if let Some(stats) = &stats {
-                    {StatsContent(stats, &mut prev_stats)}
+                    {StatsContent(stats, &mut history, is_dark)}
                 } else {
                     div {
                         class: "text-center py-8 text-gray-600 dark:text-gray-300",
@@ -105,10 +394,9 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
     }
 }
 
-/// Stats content - extracts data from Arc<VaultStats> and calculates throughput
-/// Note: Not a #[component] because Arc<VaultStats> doesn't implement PartialEq
+/// Stats content - extracts data from Arc<VaultStats> and renders UI
 #[allow(non_snake_case)]
-fn StatsContent(stats: &Arc<VaultStats>, prev_stats: &mut Signal<PrevStats>) -> Element {
+fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>, is_dark: bool) -> Element {
     // Extract current values
     let activity = stats.activity_status(Duration::from_millis(500));
     let session_duration = stats.session_duration();
@@ -125,25 +413,11 @@ fn StatsContent(stats: &Arc<VaultStats>, prev_stats: &mut Signal<PrevStats>) -> 
     let hits = cache.hit_count();
     let misses = cache.miss_count();
 
-    // Calculate throughput rates
-    let prev = *prev_stats.read();
-    let now = Instant::now();
+    // Record sample and get current rates
+    let (read_rate, write_rate) = history.write().record(bytes_read, bytes_written);
 
-    let (read_rate, write_rate) = if let Some(prev_time) = prev.timestamp {
-        let elapsed = prev_time.elapsed().as_secs_f64().max(0.001); // Avoid div by zero
-        let read_delta = bytes_read.saturating_sub(prev.bytes_read);
-        let write_delta = bytes_written.saturating_sub(prev.bytes_written);
-        (read_delta as f64 / elapsed, write_delta as f64 / elapsed)
-    } else {
-        (0.0, 0.0)
-    };
-
-    // Update previous stats for next calculation
-    prev_stats.set(PrevStats {
-        bytes_read,
-        bytes_written,
-        timestamp: Some(now),
-    });
+    // Render chart SVG (width matches container, ~460px with padding)
+    let chart_svg = render_throughput_chart(&history.read(), is_dark, 460, 180);
 
     rsx! {
         // Activity Status Badge
@@ -174,6 +448,47 @@ fn StatsContent(stats: &Arc<VaultStats>, prev_stats: &mut Signal<PrevStats>) -> 
                 rate: write_rate,
                 latency_ms: write_latency_ms,
                 icon: "✏️",
+            }
+        }
+
+        // Throughput Chart
+        div {
+            class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-3 mt-4",
+
+            div {
+                class: "flex items-center justify-between mb-2",
+
+                span {
+                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                    "Throughput (last 60s)"
+                }
+
+                // Legend
+                div {
+                    class: "flex items-center gap-4 text-xs",
+
+                    div {
+                        class: "flex items-center",
+                        span {
+                            style: "width: 10px; height: 10px; border-radius: 50%; background-color: #60a5fa; display: inline-block; margin-right: 6px;",
+                        }
+                        span { class: "text-gray-500 dark:text-gray-400", "Read" }
+                    }
+
+                    div {
+                        class: "flex items-center",
+                        span {
+                            style: "width: 10px; height: 10px; border-radius: 50%; background-color: #fbbf24; display: inline-block; margin-right: 6px;",
+                        }
+                        span { class: "text-gray-500 dark:text-gray-400", "Write" }
+                    }
+                }
+            }
+
+            // Chart SVG
+            div {
+                class: "w-full overflow-hidden rounded",
+                dangerous_inner_html: "{chart_svg}"
             }
         }
 

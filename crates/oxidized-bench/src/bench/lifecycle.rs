@@ -181,6 +181,19 @@ impl Benchmark for FileDeletionBenchmark {
     fn run(&self, mount_point: &Path) -> Result<Duration> {
         let dir_path = self.test_dir_path(mount_point);
 
+        // Recreate files before each iteration (not timed)
+        // This ensures each iteration has a fresh set of files to delete
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let mut content = vec![0u8; self.file_size];
+        rng.fill_bytes(&mut content);
+
+        for i in 0..self.num_files {
+            let file_path = dir_path.join(format!("to_delete_{:05}.txt", i));
+            let mut file = File::create(&file_path)?;
+            file.write_all(&content)?;
+        }
+
+        // Now measure only the deletion time
         let start = Instant::now();
 
         for i in 0..self.num_files {

@@ -56,14 +56,21 @@ cargo build -p oxidized-gui --features fuse,tokio-console
 # or
 ./target/debug/oxvault
 
-# Terminal 2: Connect console (default port 6669)
-tokio-console
+# Terminal 2: Connect console
+tokio-console http://127.0.0.1:6669  # CLI tools (oxmount, oxcrypt, etc.)
+tokio-console http://127.0.0.1:6670  # GUI (oxvault)
 ```
+
+**Port Configuration**:
+- CLI tools use port **6669** by default
+- GUI uses port **6670** by default (to avoid conflicts)
+- Override with `TOKIO_CONSOLE_PORT=<port>` environment variable
+- If port is in use, the app will log a warning and continue without console instrumentation
 
 **Requirements** (already configured in this repo):
 - `tokio_unstable` cfg flag: Set via `.cargo/config.toml`
 - `tokio/tracing` feature: Enabled by the `tokio-console` feature flag
-- Per-layer filtering: `console_subscriber::spawn()` returns a layer with its own built-in filter; don't apply a global `EnvFilter` that might block tokio instrumentation events
+- Per-layer filtering: The console layer has its own built-in filter; don't apply a global `EnvFilter` that might block tokio instrumentation events
 
 **What you can observe**:
 - Active async tasks and their states

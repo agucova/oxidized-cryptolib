@@ -51,6 +51,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror.workspace = true
 ctrlc = "3.5.1"
 image = { version = "0.25.9", features = ["png", "tiff"] }
+plotters = { version = "0.3.7", features = ["svg_backend"] }
 
 [features]
 # No default backend - platform-specific features should be enabled at build time

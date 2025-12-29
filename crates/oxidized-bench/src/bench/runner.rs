@@ -158,7 +158,12 @@ impl BenchmarkRunner {
 
             // Mount this implementation
             let mount_point = self.config.mount_point(impl_type);
-            ensure_mount_point(&mount_point)?;
+
+            // Only ensure mount point for internal mounts - external mounts (Cryptomator)
+            // are already mounted by the user and we shouldn't try to clean them up
+            if impl_type != Implementation::OfficialCryptomator {
+                ensure_mount_point(&mount_point)?;
+            }
 
             progress.set_message(format!("Mounting {}...", impl_type));
 
@@ -185,13 +190,6 @@ impl BenchmarkRunner {
                     drop(mount); // Ensure unmount on interrupt
                     progress.finish_with_message("Interrupted");
                     anyhow::bail!("Interrupted");
-                }
-
-                // Skip benchmarks that exceed this backend's limits
-                if let Some(skip_reason) = self.should_skip_benchmark(benchmark.as_ref(), impl_type) {
-                    tracing::info!("Skipping {} for {}: {}", benchmark.name(), impl_type, skip_reason);
-                    progress.inc(1);
-                    continue;
                 }
 
                 progress.set_message(format!("{} - {}", impl_type, benchmark.name()));

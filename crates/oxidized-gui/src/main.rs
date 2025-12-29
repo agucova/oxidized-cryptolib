@@ -49,15 +49,44 @@ fn main() {
         // console_subscriber::spawn() returns a layer with its own built-in filter
         // for tokio instrumentation. We use per-layer filtering so the fmt layer
         // gets our custom filter while console uses its own.
+        //
+        // Use port 6670 for GUI to avoid conflicts with CLI tools using default 6669.
         use tracing_subscriber::Layer;
-        let console_layer = console_subscriber::spawn();
+        use std::net::SocketAddr;
+
+        let console_port: u16 = std::env::var("TOKIO_CONSOLE_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(6670); // GUI uses 6670 by default, CLI uses 6669
+
+        let console_addr: SocketAddr = ([127, 0, 0, 1], console_port).into();
+
+        // Check if port is available before starting console subscriber
+        let port_available = std::net::TcpListener::bind(console_addr).is_ok();
+
         let fmt_filter = EnvFilter::from_default_env()
             .add_directive("oxidized_gui=info".parse().unwrap());
-        tracing_subscriber::registry()
-            .with(console_layer)
-            .with(fmt::layer().with_filter(fmt_filter))
-            .init();
-        tracing::info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
+
+        if port_available {
+            let console_layer = console_subscriber::ConsoleLayer::builder()
+                .server_addr(console_addr)
+                .spawn();
+            tracing_subscriber::registry()
+                .with(console_layer)
+                .with(fmt::layer().with_filter(fmt_filter))
+                .init();
+            tracing::info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:{}", console_port);
+        } else {
+            // Port in use - start without console subscriber
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_filter(fmt_filter))
+                .init();
+            tracing::warn!(
+                "tokio-console port {} already in use, running without console instrumentation. \
+                 Set TOKIO_CONSOLE_PORT to use a different port.",
+                console_port
+            );
+        }
     }
 
     #[cfg(not(feature = "tokio-console"))]

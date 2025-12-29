@@ -108,17 +108,42 @@ fn main() -> Result<()> {
 
     #[cfg(feature = "tokio-console")]
     {
-        // console_subscriber::spawn() returns a layer with its own built-in filter
-        // for tokio instrumentation. We use per-layer filtering so the fmt layer
-        // gets our custom filter while console uses its own.
+        // console_subscriber returns a layer with its own built-in filter for tokio
+        // instrumentation. We use per-layer filtering so the fmt layer gets our
+        // custom filter while console uses its own.
         use tracing_subscriber::Layer;
-        let console_layer = console_subscriber::spawn();
+        use std::net::SocketAddr;
+
+        // CLI uses port 6669 by default (GUI uses 6670)
+        let console_port: u16 = std::env::var("TOKIO_CONSOLE_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(6669);
+
+        let console_addr: SocketAddr = ([127, 0, 0, 1], console_port).into();
+        let port_available = std::net::TcpListener::bind(console_addr).is_ok();
+
         let fmt_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into());
-        tracing_subscriber::registry()
-            .with(console_layer)
-            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
-            .init();
-        tracing::info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
+
+        if port_available {
+            let console_layer = console_subscriber::ConsoleLayer::builder()
+                .server_addr(console_addr)
+                .spawn();
+            tracing_subscriber::registry()
+                .with(console_layer)
+                .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
+                .init();
+            tracing::info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:{}", console_port);
+        } else {
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
+                .init();
+            tracing::warn!(
+                "tokio-console port {} already in use, running without console instrumentation. \
+                 Set TOKIO_CONSOLE_PORT to use a different port.",
+                console_port
+            );
+        }
     }
 
     #[cfg(not(feature = "tokio-console"))]
