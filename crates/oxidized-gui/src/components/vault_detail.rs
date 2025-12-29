@@ -374,10 +374,13 @@ pub fn VaultDetail(
         if show_backend_dialog() {
             {
                 let vault_id_for_backend = vault_id.clone();
+                let vault_id_for_unmount = vault_id.clone();
                 let current_backend = vault.config.preferred_backend;
+                let is_mounted = matches!(vault.state, VaultState::Mounted { .. });
                 rsx! {
                     BackendDialog {
                         current_backend: current_backend,
+                        is_mounted: is_mounted,
                         on_select: move |backend: BackendType| {
                             // Update the vault's preferred backend
                             app_state.write().set_vault_backend(&vault_id_for_backend, backend);
@@ -386,6 +389,47 @@ pub fn VaultDetail(
                                 tracing::error!("Failed to save config: {}", e);
                             }
                             show_backend_dialog.set(false);
+                        },
+                        on_unmount_and_apply: move |backend: BackendType| {
+                            let vault_id = vault_id_for_unmount.clone();
+                            let vault_id_for_log = vault_id.clone();
+                            let vault_id_for_state = vault_id.clone();
+                            let vault_id_for_backend_update = vault_id.clone();
+                            show_backend_dialog.set(false);
+                            spawn(async move {
+                                // First update the backend config
+                                app_state.write().set_vault_backend(&vault_id_for_backend_update, backend);
+                                if let Err(e) = app_state.read().save() {
+                                    tracing::error!("Failed to save config: {}", e);
+                                }
+
+                                // Then unmount
+                                let manager = mount_manager();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    manager.unmount(&vault_id)
+                                }).await;
+
+                                match result {
+                                    Ok(Ok(())) => {
+                                        tracing::info!("Vault {} unmounted after backend change", vault_id_for_log);
+                                        app_state.write().set_vault_state(&vault_id_for_state, VaultState::Locked);
+                                    }
+                                    Ok(Err(e)) => {
+                                        tracing::error!("Failed to unmount vault: {}", e);
+                                        error_state.set(Some(
+                                            UserFacingError::new("Couldn't Unmount Vault", e.to_string())
+                                                .with_suggestion("The backend was changed but the vault couldn't be unmounted. Try locking it manually.")
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Unmount task panicked: {}", e);
+                                        error_state.set(Some(
+                                            UserFacingError::new("Internal Error", "An unexpected error occurred while unmounting the vault.")
+                                                .with_technical(e.to_string())
+                                        ));
+                                    }
+                                }
+                            });
                         },
                         on_cancel: move |_| {
                             show_backend_dialog.set(false);

@@ -197,6 +197,8 @@ fn implementation_color(impl_type: &crate::config::Implementation) -> Color {
     match impl_type {
         Implementation::OxidizedFuse => Color::Cyan,
         Implementation::OxidizedFsKit => Color::Magenta,
+        Implementation::OxidizedWebDav => Color::Blue,
+        Implementation::OxidizedNfs => Color::Green,
         Implementation::OfficialCryptomator => Color::Yellow,
     }
 }

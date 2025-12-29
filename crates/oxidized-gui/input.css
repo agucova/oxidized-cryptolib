@@ -39,6 +39,104 @@
   }
 }
 
+/* ============================================
+   Theme Override Utilities
+
+   These rules override Tailwind's media query-based dark: variants when
+   .theme-light or .theme-dark is applied to a parent element.
+   This allows manual theme switching regardless of system preference.
+
+   Note: We use !important to override the media query specificity.
+   ============================================ */
+
+/* Light mode overrides - force light colors even when system prefers dark */
+.theme-light .dark\:bg-neutral-900 { background-color: rgb(255 255 255) !important; }
+.theme-light .dark\:bg-neutral-800 { background-color: rgb(249 250 251) !important; }
+.theme-light .dark\:bg-neutral-700 { background-color: rgb(243 244 246) !important; }
+.theme-light .dark\:bg-neutral-600 { background-color: rgb(229 231 235) !important; }
+.theme-light .dark\:bg-green-900\/30 { background-color: rgb(220 252 231) !important; }
+.theme-light .dark\:bg-blue-900\/30 { background-color: rgb(239 246 255) !important; }
+.theme-light .dark\:bg-blue-900\/20 { background-color: rgb(239 246 255) !important; }
+
+.theme-light .dark\:text-gray-100 { color: rgb(17 24 39) !important; }
+.theme-light .dark\:text-gray-200 { color: rgb(55 65 81) !important; }
+.theme-light .dark\:text-gray-300 { color: rgb(75 85 99) !important; }
+.theme-light .dark\:text-gray-400 { color: rgb(107 114 128) !important; }
+.theme-light .dark\:text-gray-500 { color: rgb(107 114 128) !important; }
+.theme-light .dark\:text-blue-300 { color: rgb(29 78 216) !important; }
+.theme-light .dark\:text-blue-400 { color: rgb(37 99 235) !important; }
+.theme-light .dark\:text-red-400 { color: rgb(220 38 38) !important; }
+.theme-light .dark\:text-red-300 { color: rgb(185 28 28) !important; }
+.theme-light .dark\:text-green-300 { color: rgb(21 128 61) !important; }
+.theme-light .dark\:text-green-400 { color: rgb(22 163 74) !important; }
+.theme-light .dark\:text-amber-300 { color: rgb(180 83 9) !important; }
+.theme-light .dark\:text-amber-400 { color: rgb(217 119 6) !important; }
+
+.theme-light .dark\:border-neutral-700 { border-color: rgb(229 231 235) !important; }
+.theme-light .dark\:border-neutral-800 { border-color: rgb(243 244 246) !important; }
+.theme-light .dark\:border-neutral-600 { border-color: rgb(209 213 219) !important; }
+.theme-light .dark\:border-neutral-500 { border-color: rgb(156 163 175) !important; }
+.theme-light .dark\:border-blue-400 { border-color: rgb(59 130 246) !important; }
+.theme-light .dark\:border-blue-800 { border-color: rgb(191 219 254) !important; }
+
+.theme-light .dark\:bg-red-900\/30 { background-color: rgb(254 242 242) !important; }
+
+.theme-light .dark\:hover\:bg-neutral-700:hover { background-color: rgb(243 244 246) !important; }
+.theme-light .dark\:hover\:bg-neutral-600:hover { background-color: rgb(229 231 235) !important; }
+.theme-light .dark\:hover\:bg-blue-900\/20:hover { background-color: rgb(239 246 255) !important; }
+.theme-light .dark\:hover\:text-gray-200:hover { color: rgb(55 65 81) !important; }
+.theme-light .dark\:hover\:text-gray-300:hover { color: rgb(75 85 99) !important; }
+.theme-light .dark\:hover\:text-red-300:hover { color: rgb(185 28 28) !important; }
+.theme-light .dark\:hover\:text-blue-300:hover { color: rgb(29 78 216) !important; }
+
+/* Dark mode overrides - force dark colors even when system prefers light */
+.theme-dark .bg-white { background-color: rgb(23 23 23) !important; }
+.theme-dark .bg-gray-50 { background-color: rgb(38 38 38) !important; }
+.theme-dark .bg-gray-100 { background-color: rgb(64 64 64) !important; }
+.theme-dark .bg-gray-200 { background-color: rgb(82 82 82) !important; }
+.theme-dark .bg-green-100 { background-color: rgba(34 197 94 / 0.3) !important; }
+.theme-dark .bg-blue-50 { background-color: rgba(59 130 246 / 0.3) !important; }
+
+.theme-dark .text-gray-900 { color: rgb(250 250 250) !important; }
+.theme-dark .text-gray-800 { color: rgb(229 229 229) !important; }
+.theme-dark .text-gray-700 { color: rgb(212 212 212) !important; }
+.theme-dark .text-gray-600 { color: rgb(163 163 163) !important; }
+.theme-dark .text-blue-700 { color: rgb(147 197 253) !important; }
+.theme-dark .text-blue-600 { color: rgb(96 165 250) !important; }
+.theme-dark .text-blue-800 { color: rgb(191 219 254) !important; }
+.theme-dark .text-red-600 { color: rgb(248 113 113) !important; }
+.theme-dark .text-red-700 { color: rgb(252 165 165) !important; }
+.theme-dark .text-green-700 { color: rgb(134 239 172) !important; }
+.theme-dark .text-green-800 { color: rgb(187 247 208) !important; }
+.theme-dark .text-amber-700 { color: rgb(252 211 77) !important; }
+.theme-dark .text-amber-800 { color: rgb(253 230 138) !important; }
+
+.theme-dark .border-gray-200 { border-color: rgb(64 64 64) !important; }
+.theme-dark .border-gray-100 { border-color: rgb(38 38 38) !important; }
+.theme-dark .border-gray-300 { border-color: rgb(82 82 82) !important; }
+.theme-dark .border-blue-500 { border-color: rgb(96 165 250) !important; }
+.theme-dark .border-blue-200 { border-color: rgb(30 64 175) !important; }
+
+.theme-dark .bg-green-100 { background-color: rgba(34 197 94 / 0.3) !important; }
+.theme-dark .bg-red-100 { background-color: rgba(239 68 68 / 0.3) !important; }
+
+.theme-dark .text-green-600 { color: rgb(74 222 128) !important; }
+.theme-dark .text-green-700 { color: rgb(134 239 172) !important; }
+.theme-dark .text-amber-600 { color: rgb(251 191 36) !important; }
+.theme-dark .text-amber-700 { color: rgb(252 211 77) !important; }
+
+.theme-dark .hover\:bg-gray-50:hover { background-color: rgb(38 38 38) !important; }
+.theme-dark .hover\:bg-gray-100:hover { background-color: rgb(64 64 64) !important; }
+.theme-dark .hover\:bg-gray-200:hover { background-color: rgb(82 82 82) !important; }
+.theme-dark .hover\:bg-blue-50:hover { background-color: rgba(59 130 246 / 0.2) !important; }
+.theme-dark .hover\:text-gray-700:hover { color: rgb(229 229 229) !important; }
+.theme-dark .hover\:text-gray-800:hover { color: rgb(250 250 250) !important; }
+.theme-dark .hover\:text-red-700:hover { color: rgb(252 165 165) !important; }
+.theme-dark .hover\:text-blue-700:hover { color: rgb(147 197 253) !important; }
+.theme-dark .hover\:text-blue-600:hover { color: rgb(96 165 250) !important; }
+.theme-dark .hover\:bg-red-600:hover { background-color: rgb(220 38 38) !important; }
+.theme-dark .hover\:bg-green-600:hover { background-color: rgb(22 163 74) !important; }
+
 /* Custom component classes for common patterns */
 @layer components {
   /* Dialog patterns */
@@ -254,6 +352,8 @@
       @apply bg-neutral-800 border-neutral-600 text-gray-100 focus:border-blue-400 focus:ring-blue-400;
     }
   }
+  .theme-dark .input { @apply bg-neutral-800 border-neutral-600 text-gray-100 focus:border-blue-400 focus:ring-blue-400; }
+  .theme-light .input { @apply bg-white border-gray-300 text-gray-900 focus:border-blue-500 focus:ring-blue-500; }
 
   .input-error {
     @apply border-red-500 focus:border-red-500 focus:ring-red-500;
@@ -276,6 +376,8 @@
       @apply text-gray-300;
     }
   }
+  .theme-dark .label { @apply text-gray-300; }
+  .theme-light .label { @apply text-gray-600; }
 
   /* Button styles */
   .btn {
@@ -295,6 +397,8 @@
       @apply bg-neutral-700 text-gray-200 hover:bg-neutral-600 border-neutral-600;
     }
   }
+  .theme-dark .btn-secondary { @apply bg-neutral-700 text-gray-200 hover:bg-neutral-600 border-neutral-600; }
+  .theme-light .btn-secondary { @apply bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-300; }
 
   .btn-danger {
     @apply px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 bg-red-500 text-white hover:bg-red-600;
@@ -313,6 +417,8 @@
       @apply text-gray-300 hover:bg-neutral-700;
     }
   }
+  .theme-dark .btn-ghost { @apply text-gray-300 hover:bg-neutral-700; }
+  .theme-light .btn-ghost { @apply text-gray-600 hover:bg-gray-100; }
 
   .btn-sm {
     @apply px-3 py-1.5 text-xs;

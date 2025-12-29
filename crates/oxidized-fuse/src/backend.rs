@@ -16,6 +16,46 @@ pub struct FuseMountHandle {
     mountpoint: PathBuf,
 }
 
+impl FuseMountHandle {
+    /// Force unmount the filesystem using system tools.
+    /// This is a fallback when the normal unmount is blocked.
+    fn force_unmount(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            // Try diskutil unmount force first (more reliable on macOS)
+            let result = std::process::Command::new("diskutil")
+                .args(["unmount", "force"])
+                .arg(&self.mountpoint)
+                .output();
+
+            match result {
+                Ok(output) if output.status.success() => {
+                    tracing::debug!("Force unmount via diskutil succeeded");
+                    return;
+                }
+                _ => {
+                    tracing::debug!("diskutil unmount failed, trying umount");
+                }
+            }
+
+            // Fallback to umount
+            let _ = std::process::Command::new("umount")
+                .arg("-f")
+                .arg(&self.mountpoint)
+                .output();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // Try lazy unmount on Linux
+            let _ = std::process::Command::new("fusermount")
+                .args(["-uz"])
+                .arg(&self.mountpoint)
+                .output();
+        }
+    }
+}
+
 impl MountHandle for FuseMountHandle {
     fn mountpoint(&self) -> &Path {
         &self.mountpoint
@@ -23,7 +63,13 @@ impl MountHandle for FuseMountHandle {
 
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
         if let Some(session) = self.session.take() {
-            // Join the session to ensure clean unmount
+            // First, try force unmount to release any busy handles
+            self.force_unmount();
+
+            // Brief pause to let the force unmount take effect
+            std::thread::sleep(Duration::from_millis(100));
+
+            // Now join the session (should complete quickly after force unmount)
             session.join();
         }
         Ok(())
@@ -35,6 +81,11 @@ impl Drop for FuseMountHandle {
         // Ensure session is dropped even if unmount() wasn't called
         if let Some(session) = self.session.take() {
             tracing::debug!("Unmounting FUSE filesystem at {}", self.mountpoint.display());
+
+            // Force unmount first to avoid blocking
+            self.force_unmount();
+            std::thread::sleep(Duration::from_millis(100));
+
             session.join();
         }
     }

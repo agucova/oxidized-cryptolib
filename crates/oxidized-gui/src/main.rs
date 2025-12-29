@@ -11,7 +11,6 @@ mod components;
 mod dialogs;
 mod error;
 mod state;
-mod theme;
 mod tray;
 
 use crossbeam_channel::Receiver;

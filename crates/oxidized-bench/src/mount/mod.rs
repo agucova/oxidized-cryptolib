@@ -78,6 +78,8 @@ pub fn backend_unavailable_reason(implementation: Implementation) -> Option<Stri
         Implementation::OxidizedFsKit => fskit_backend().unavailable_reason(),
         #[cfg(not(target_os = "macos"))]
         Implementation::OxidizedFsKit => Some("FSKit is only available on macOS 15.4+".to_string()),
+        Implementation::OxidizedWebDav => webdav_backend().unavailable_reason(),
+        Implementation::OxidizedNfs => nfs_backend().unavailable_reason(),
         Implementation::OfficialCryptomator => None,
     }
 }
@@ -157,6 +159,28 @@ pub fn mount_implementation(
         #[cfg(not(target_os = "macos"))]
         Implementation::OxidizedFsKit => {
             anyhow::bail!("FSKit is only available on macOS 15.4+");
+        }
+        Implementation::OxidizedWebDav => {
+            let backend = webdav_backend();
+            let handle = backend
+                .mount("bench", vault_path, password, mount_point)
+                .with_context(|| format!("Failed to mount WebDAV at {}", mount_point.display()))?;
+            Ok(BenchMount {
+                handle: Some(handle),
+                external_mount_point: None,
+                implementation,
+            })
+        }
+        Implementation::OxidizedNfs => {
+            let backend = nfs_backend();
+            let handle = backend
+                .mount("bench", vault_path, password, mount_point)
+                .with_context(|| format!("Failed to mount NFS at {}", mount_point.display()))?;
+            Ok(BenchMount {
+                handle: Some(handle),
+                external_mount_point: None,
+                implementation,
+            })
         }
         Implementation::OfficialCryptomator => {
             // External mount - just validate it exists

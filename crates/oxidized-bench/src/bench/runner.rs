@@ -306,10 +306,21 @@ impl BenchmarkRunner {
             file_size,
         );
 
+        // Clean up any leftover files from previous runs before setup
+        if let Err(e) = benchmark.cleanup(mount_point) {
+            tracing::debug!("Pre-setup cleanup (expected if first run): {}", e);
+        }
+
+        // Brief pause to let filesystem settle after cleanup
+        std::thread::sleep(Duration::from_millis(100));
+
         // Setup
         benchmark
             .setup(mount_point)
             .with_context(|| format!("Setup failed for {}", benchmark.name()))?;
+
+        // Brief pause to let filesystem sync after setup
+        std::thread::sleep(Duration::from_millis(100));
 
         // Warmup iterations
         for _ in 0..self.config.warmup_iterations {

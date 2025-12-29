@@ -127,22 +127,6 @@ fn GeneralTab() -> Element {
     let mut app_state = use_app_state();
     let config = app_state.read().config.clone();
 
-    // Handle backend change
-    let handle_backend_change = move |e: Event<FormData>| {
-        let value = e.value();
-        let backend = match value.as_str() {
-            "Fuse" => BackendType::Fuse,
-            "FSKit" => BackendType::FSKit,
-            "WebDav" => BackendType::WebDav,
-            "Nfs" => BackendType::Nfs,
-            _ => return,
-        };
-        app_state.write().config.default_backend = backend;
-        if let Err(e) = app_state.read().save() {
-            tracing::error!("Failed to save config: {}", e);
-        }
-    };
-
     // Handle mount prefix browse
     let handle_browse_mount_prefix = move |_| {
         spawn(async move {
@@ -244,32 +228,14 @@ fn GeneralTab() -> Element {
         }
 
         // Default Backend Section
-        div {
-            class: "mb-6",
-
-            h3 {
-                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
-                "Default Mount Backend"
-            }
-            p {
-                class: "mb-3 text-sm text-gray-600 dark:text-gray-400",
-                "Choose the filesystem backend used when mounting new vaults."
-            }
-
-            select {
-                class: "w-full px-3 py-2.5 border border-gray-300 dark:border-neutral-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-neutral-800 cursor-pointer outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500",
-                style: "appearance: auto; -webkit-appearance: menulist;",
-                value: "{config.default_backend:?}",
-                onchange: handle_backend_change,
-
-                for backend in BackendType::all() {
-                    option {
-                        value: "{backend:?}",
-                        selected: config.default_backend == *backend,
-                        "{backend.display_name()} - {backend.description()}"
-                    }
+        BackendSelector {
+            current_backend: config.default_backend,
+            on_change: move |backend| {
+                app_state.write().config.default_backend = backend;
+                if let Err(e) = app_state.read().save() {
+                    tracing::error!("Failed to save config: {}", e);
                 }
-            }
+            },
         }
 
         // Default Mount Location Section
@@ -436,6 +402,102 @@ fn LinkButton(props: LinkButtonProps) -> Element {
                 let _ = open::that(url);
             },
             "{props.label}"
+        }
+    }
+}
+
+// ============================================================================
+// Backend Selector Component
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct BackendSelectorProps {
+    current_backend: BackendType,
+    on_change: EventHandler<BackendType>,
+}
+
+/// Custom styled dropdown for selecting mount backend
+#[component]
+fn BackendSelector(props: BackendSelectorProps) -> Element {
+    let mut is_open = use_signal(|| false);
+
+    rsx! {
+        div {
+            class: "mb-6",
+
+            h3 {
+                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
+                "Default Mount Backend"
+            }
+            p {
+                class: "mb-3 text-sm text-gray-600 dark:text-gray-400",
+                "Choose the filesystem backend used when mounting new vaults."
+            }
+
+            // Custom dropdown
+            div {
+                class: "relative",
+
+                // Dropdown button
+                button {
+                    class: "w-full px-3 py-2.5 border border-gray-300 dark:border-neutral-600 rounded-lg text-sm text-left text-gray-900 dark:text-gray-100 bg-white dark:bg-neutral-800 cursor-pointer outline-none hover:border-gray-400 dark:hover:border-neutral-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors flex items-center justify-between",
+                    onclick: move |_| is_open.set(!is_open()),
+
+                    span {
+                        class: "flex-1",
+                        "{props.current_backend.display_name()}"
+                    }
+                    span {
+                        class: "text-gray-400 dark:text-gray-500 ml-2 transition-transform",
+                        style: if is_open() { "transform: rotate(180deg)" } else { "" },
+                        "▼"
+                    }
+                }
+
+                // Dropdown menu
+                if is_open() {
+                    // Click-away overlay
+                    div {
+                        class: "fixed inset-0 z-40",
+                        onclick: move |_| is_open.set(false),
+                    }
+
+                    // Options list
+                    div {
+                        class: "absolute z-50 mt-1 w-full bg-white dark:bg-neutral-800 border border-gray-200 dark:border-neutral-600 rounded-lg shadow-lg overflow-hidden",
+
+                        for backend in BackendType::all() {
+                            {
+                                let is_selected = props.current_backend == *backend;
+                                let item_class = if is_selected {
+                                    "w-full px-3 py-2.5 text-left text-sm cursor-pointer bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-none"
+                                } else {
+                                    "w-full px-3 py-2.5 text-left text-sm cursor-pointer bg-transparent text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-neutral-700 border-none"
+                                };
+                                rsx! {
+                                    button {
+                                        key: "{backend:?}",
+                                        class: "{item_class}",
+                                        onclick: move |_| {
+                                            props.on_change.call(*backend);
+                                            is_open.set(false);
+                                        },
+
+                                        div {
+                                            class: "font-medium",
+                                            "{backend.display_name()}"
+                                        }
+                                        div {
+                                            class: "text-xs text-gray-500 dark:text-gray-400 mt-0.5",
+                                            "{backend.description()}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

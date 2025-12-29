@@ -124,6 +124,8 @@ fn implementation_ansi_color(impl_type: &crate::config::Implementation) -> &'sta
     match impl_type {
         Implementation::OxidizedFuse => "\x1b[36m",     // Cyan
         Implementation::OxidizedFsKit => "\x1b[35m",    // Magenta
+        Implementation::OxidizedWebDav => "\x1b[34m",   // Blue
+        Implementation::OxidizedNfs => "\x1b[32m",      // Green
         Implementation::OfficialCryptomator => "\x1b[33m", // Yellow
     }
 }

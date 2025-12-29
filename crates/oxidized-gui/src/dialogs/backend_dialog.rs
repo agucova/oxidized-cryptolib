@@ -101,6 +101,14 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
                 div {
                     class: "dialog-footer",
 
+                    if is_mounted {
+                        button {
+                            class: "btn-secondary",
+                            onclick: handle_unmount_and_apply,
+                            "Unmount & Apply"
+                        }
+                    }
+
                     button {
                         class: "btn-secondary",
                         onclick: move |_| props.on_cancel.call(()),

@@ -99,7 +99,20 @@ impl Benchmark for DirectoryListingBenchmark {
     fn cleanup(&self, mount_point: &Path) -> Result<()> {
         let dir_path = self.test_dir_path(mount_point);
         if dir_path.exists() {
-            fs::remove_dir_all(&dir_path)?;
+            // Remove all files first (including hidden files like .DS_Store)
+            if let Ok(entries) = fs::read_dir(&dir_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+            // Now remove the directory
+            fs::remove_dir_all(&dir_path).or_else(|_| {
+                // If remove_dir_all fails, try removing just the directory
+                fs::remove_dir(&dir_path)
+            })?;
         }
         Ok(())
     }
@@ -186,7 +199,19 @@ impl Benchmark for MetadataBenchmark {
     fn cleanup(&self, mount_point: &Path) -> Result<()> {
         let dir_path = self.test_dir_path(mount_point);
         if dir_path.exists() {
-            fs::remove_dir_all(&dir_path)?;
+            // Remove all files first (including hidden files like .DS_Store)
+            if let Ok(entries) = fs::read_dir(&dir_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+            // Now remove the directory
+            fs::remove_dir_all(&dir_path).or_else(|_| {
+                fs::remove_dir(&dir_path)
+            })?;
         }
         Ok(())
     }

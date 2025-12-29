@@ -83,6 +83,7 @@ impl TrayManager {
             .with_icon(icon)
             .with_tooltip("Oxidized Vault")
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(true) // Show menu on click, not open window
             .build()?;
 
         // Store in thread-local for dynamic updates
@@ -101,181 +102,126 @@ impl TrayManager {
 
 /// Create a default tray icon
 ///
-/// Creates a 22x22 template-style icon (monochrome black) suitable for macOS menu bar.
-/// On macOS, this will be used as a template icon that adapts to light/dark mode.
+/// Creates a 22x22 icon suitable for macOS menu bar.
+/// Uses SDF (signed distance field) rendering for smooth anti-aliased edges.
 fn create_default_icon() -> Result<Icon, TrayError> {
     // 22x22 is the standard macOS menu bar icon size
-    const SIZE: usize = 22;
+    // We render at 2x (44x44) for better quality, then the system scales
+    const SIZE: usize = 44;
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
 
-    // Helper to set pixel with alpha (for antialiasing)
-    // White color for dark menu bars (most common on macOS)
-    let set_pixel = |rgba: &mut [u8], x: usize, y: usize, alpha: u8| {
-        if x < SIZE && y < SIZE {
-            let idx = (y * SIZE + x) * 4;
-            rgba[idx] = 255;     // R
-            rgba[idx + 1] = 255; // G
-            rgba[idx + 2] = 255; // B
-            rgba[idx + 3] = alpha; // A
-        }
+    // SDF helper: returns smooth alpha based on signed distance
+    // Negative distance = inside shape, positive = outside
+    let sdf_alpha = |dist: f32| -> u8 {
+        // Smooth transition over ~1.5 pixels for anti-aliasing
+        let edge = 0.0;
+        let smoothness = 1.2;
+        let t = ((edge - dist) / smoothness + 0.5).clamp(0.0, 1.0);
+        (t * 255.0) as u8
     };
 
-    // Helper to blend pixel (for antialiasing)
-    let blend_pixel = |rgba: &mut [u8], x: usize, y: usize, alpha: u8| {
-        if x < SIZE && y < SIZE {
-            let idx = (y * SIZE + x) * 4;
-            let existing = rgba[idx + 3] as u16;
-            let new_alpha = ((existing + alpha as u16).min(255)) as u8;
-            rgba[idx] = 255;
-            rgba[idx + 1] = 255;
-            rgba[idx + 2] = 255;
-            rgba[idx + 3] = new_alpha;
-        }
+    // SDF for rounded rectangle
+    let sdf_rounded_rect =
+        |px: f32, py: f32, cx: f32, cy: f32, half_w: f32, half_h: f32, radius: f32| -> f32 {
+            let dx = (px - cx).abs() - half_w + radius;
+            let dy = (py - cy).abs() - half_h + radius;
+            let outside_dist = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+            let inside_dist = dx.max(dy).min(0.0);
+            outside_dist + inside_dist - radius
+        };
+
+    // SDF for circle
+    let sdf_circle = |px: f32, py: f32, cx: f32, cy: f32, radius: f32| -> f32 {
+        let dx = px - cx;
+        let dy = py - cy;
+        (dx * dx + dy * dy).sqrt() - radius
     };
 
-    // Draw lock body (rounded rectangle) - bottom portion
-    // Body: x=5..17, y=10..19 with rounded corners
-    let body_left = 5;
-    let body_right = 16;
-    let body_top = 10;
-    let body_bottom = 18;
-    let corner_radius = 2.0f32;
+    // SDF for the shackle (rounded U-shape, hollow)
+    let sdf_shackle =
+        |px: f32, py: f32, cx: f32, cy: f32, outer_r: f32, thickness: f32| -> f32 {
+            let dx = px - cx;
+            let dy = py - cy;
+            let dist_from_center = (dx * dx + dy * dy).sqrt();
 
-    for y in body_top..=body_bottom {
-        for x in body_left..=body_right {
-            let fx = x as f32;
-            let fy = y as f32;
+            // Annulus (ring) distance
+            let ring_dist = (dist_from_center - (outer_r - thickness / 2.0)).abs() - thickness / 2.0;
 
-            // Check if we're in a corner region
-            let in_corner = |cx: f32, cy: f32| -> f32 {
-                let dx = fx - cx;
-                let dy = fy - cy;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist <= corner_radius {
-                    255.0
-                } else if dist <= corner_radius + 1.0 {
-                    255.0 * (corner_radius + 1.0 - dist)
-                } else {
-                    0.0
-                }
-            };
-
-            let alpha = if y == body_top && x == body_left {
-                in_corner(body_left as f32 + corner_radius, body_top as f32 + corner_radius)
-            } else if y == body_top && x == body_right {
-                in_corner(body_right as f32 - corner_radius, body_top as f32 + corner_radius)
-            } else if y == body_bottom && x == body_left {
-                in_corner(body_left as f32 + corner_radius, body_bottom as f32 - corner_radius)
-            } else if y == body_bottom && x == body_right {
-                in_corner(body_right as f32 - corner_radius, body_bottom as f32 - corner_radius)
+            // Only keep top half (y <= cy) and the legs
+            if py <= cy {
+                ring_dist
             } else {
-                255.0
-            };
+                // Vertical legs
+                let leg_left_x = cx - outer_r + thickness / 2.0;
+                let leg_right_x = cx + outer_r - thickness / 2.0;
 
-            set_pixel(&mut rgba, x, y, alpha as u8);
-        }
-    }
+                let left_dist = ((px - leg_left_x).abs() - thickness / 2.0).max(0.0);
+                let right_dist = ((px - leg_right_x).abs() - thickness / 2.0).max(0.0);
 
-    // Draw shackle (rounded U-shape at top)
-    // Outer arc from x=6 to x=15, inner arc creates the U shape
-    let shackle_outer_radius = 5.0f32;
-    let shackle_inner_radius = 2.5f32;
-    let shackle_center_x = 10.5f32;
-    let shackle_center_y = 9.0f32;
-    let stroke_width = 2.0f32;
-
-    for y in 2..=11 {
-        for x in 4..=17 {
-            let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
-
-            let dx = fx - shackle_center_x;
-            let dy = fy - shackle_center_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            // Only draw the top half of the arc (y < center) plus the vertical legs
-            if fy <= shackle_center_y {
-                // Arc portion
-                let outer_edge = shackle_outer_radius;
-                let inner_edge = shackle_outer_radius - stroke_width;
-
-                if dist >= inner_edge && dist <= outer_edge {
-                    let alpha = if dist < inner_edge + 0.5 {
-                        ((dist - inner_edge) * 2.0 * 255.0) as u8
-                    } else if dist > outer_edge - 0.5 {
-                        ((outer_edge - dist) * 2.0 * 255.0) as u8
-                    } else {
-                        255
-                    };
-                    blend_pixel(&mut rgba, x, y, alpha);
-                }
-            } else if fy <= body_top as f32 + 1.0 {
-                // Vertical legs connecting arc to body
-                let left_leg_center = shackle_center_x - shackle_outer_radius + stroke_width / 2.0;
-                let right_leg_center = shackle_center_x + shackle_outer_radius - stroke_width / 2.0;
-
-                let left_dist = (fx - left_leg_center).abs();
-                let right_dist = (fx - right_leg_center).abs();
-
-                if left_dist <= stroke_width / 2.0 + 0.5 {
-                    let alpha = if left_dist > stroke_width / 2.0 {
-                        ((stroke_width / 2.0 + 0.5 - left_dist) * 2.0 * 255.0) as u8
-                    } else {
-                        255
-                    };
-                    blend_pixel(&mut rgba, x, y, alpha);
-                } else if right_dist <= stroke_width / 2.0 + 0.5 {
-                    let alpha = if right_dist > stroke_width / 2.0 {
-                        ((stroke_width / 2.0 + 0.5 - right_dist) * 2.0 * 255.0) as u8
-                    } else {
-                        255
-                    };
-                    blend_pixel(&mut rgba, x, y, alpha);
-                }
+                left_dist.min(right_dist)
             }
-        }
-    }
+        };
 
-    // Draw keyhole in center of body (small circle + triangle pointing down)
-    let keyhole_x = 10.5f32;
-    let keyhole_y = 13.5f32;
-    let keyhole_radius = 1.5f32;
+    // Icon geometry (at 2x scale)
+    let center_x = SIZE as f32 / 2.0;
 
-    for y in 12..=17 {
-        for x in 8..=13 {
-            let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
+    // Lock body: rounded rectangle
+    let body_cx = center_x;
+    let body_cy = 28.0;
+    let body_half_w = 11.0;
+    let body_half_h = 9.0;
+    let body_radius = 3.0;
 
-            let dx = fx - keyhole_x;
-            let dy = fy - keyhole_y;
-            let dist = (dx * dx + dy * dy).sqrt();
+    // Shackle: semi-circle with legs
+    let shackle_cx = center_x;
+    let shackle_cy = 18.0;
+    let shackle_outer_r = 9.0;
+    let shackle_thickness = 4.0;
 
-            // Circle part of keyhole
-            if dist <= keyhole_radius + 0.5 {
-                let alpha = if dist > keyhole_radius {
-                    ((keyhole_radius + 0.5 - dist) * 2.0 * 255.0) as u8
-                } else {
-                    255
-                };
-                // Subtract from existing (cut out the keyhole)
+    // Keyhole
+    let keyhole_cx = center_x;
+    let keyhole_cy = 26.0;
+    let keyhole_radius = 3.0;
+    let keyhole_slot_width = 2.5;
+    let keyhole_slot_height = 6.0;
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+
+            // Calculate SDFs for each shape
+            let body_dist = sdf_rounded_rect(px, py, body_cx, body_cy, body_half_w, body_half_h, body_radius);
+            let shackle_dist = sdf_shackle(px, py, shackle_cx, shackle_cy, shackle_outer_r, shackle_thickness);
+
+            // Combine body and shackle (union = min)
+            let lock_dist = body_dist.min(shackle_dist);
+
+            // Keyhole cutout (circle + rectangle slot)
+            let keyhole_circle_dist = sdf_circle(px, py, keyhole_cx, keyhole_cy, keyhole_radius);
+            let keyhole_slot_dist = sdf_rounded_rect(
+                px,
+                py,
+                keyhole_cx,
+                keyhole_cy + keyhole_slot_height / 2.0,
+                keyhole_slot_width / 2.0,
+                keyhole_slot_height / 2.0,
+                1.0,
+            );
+            let keyhole_dist = keyhole_circle_dist.min(keyhole_slot_dist);
+
+            // Subtract keyhole from lock (lock AND NOT keyhole)
+            // For SDF subtraction: max(a, -b)
+            let final_dist = lock_dist.max(-keyhole_dist);
+
+            let alpha = sdf_alpha(-final_dist);
+
+            if alpha > 0 {
                 let idx = (y * SIZE + x) * 4;
-                let existing = rgba[idx + 3];
-                rgba[idx + 3] = existing.saturating_sub(alpha);
-            }
-
-            // Triangle/slot part below circle
-            if fy > keyhole_y && fy <= 17.0 {
-                let slot_half_width = 1.0 - (fy - keyhole_y - 1.0) * 0.15;
-                if slot_half_width > 0.0 && dx.abs() <= slot_half_width + 0.3 {
-                    let alpha = if dx.abs() > slot_half_width {
-                        ((slot_half_width + 0.3 - dx.abs()) * 3.0 * 255.0) as u8
-                    } else {
-                        255
-                    };
-                    let idx = (y * SIZE + x) * 4;
-                    let existing = rgba[idx + 3];
-                    rgba[idx + 3] = existing.saturating_sub(alpha);
-                }
+                rgba[idx] = 255;     // R (white)
+                rgba[idx + 1] = 255; // G
+                rgba[idx + 2] = 255; // B
+                rgba[idx + 3] = alpha;
             }
         }
     }
