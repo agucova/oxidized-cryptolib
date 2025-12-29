@@ -16,9 +16,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use oxidized_cryptolib::vault::config::{extract_master_key, validate_vault_claims};
 use oxidized_cryptolib::vault::operations::VaultOperations;
+use oxidized_mount_common::{
+    cleanup_stale_mounts, CleanupAction, CleanupOptions, TrackedMountInfo,
+};
 
 use crate::auth::prompt_passphrase;
 use crate::commands::{cat, cp, info, init, ls, mkdir, mounts, mv, rm, touch, tree, write};
+use crate::state::MountStateManager;
 
 #[cfg(any(feature = "fuse", feature = "fskit", feature = "webdav"))]
 use crate::commands::{backends, mount, unmount};
@@ -152,6 +156,17 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Proactive cleanup of stale mounts (non-fatal)
+    // Skip if OXCRYPT_NO_STARTUP_CLEANUP=1 (used by tests)
+    let skip_cleanup = std::env::var("OXCRYPT_NO_STARTUP_CLEANUP")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    if !skip_cleanup {
+        if let Err(e) = proactive_cleanup() {
+            tracing::warn!("Stale mount cleanup failed: {}", e);
+        }
+    }
+
     // Handle commands that don't require an unlocked vault
     match &cli.command {
         Commands::Init(args) => return init::execute(args.clone()),
@@ -224,4 +239,93 @@ fn main() -> Result<()> {
         Commands::Mv(args) => mv::execute(&vault_ops, args),
         Commands::Info(args) => info::execute(&vault_path, &claims, args),
     }
+}
+
+/// Proactively clean up stale mounts from previous sessions.
+///
+/// This runs at CLI startup to detect and clean up mounts that were left behind
+/// from crashed processes or killed daemons. It's non-fatal - errors are logged
+/// but don't prevent CLI operation.
+///
+/// # Safety
+///
+/// This function NEVER unmounts:
+/// - Active mounts (process still alive)
+/// - Foreign mounts (not created by oxidized-cryptolib)
+/// - Orphaned mounts (ours but not tracked) - only warns about these
+fn proactive_cleanup() -> Result<()> {
+    let state_manager = MountStateManager::new()?;
+    let state = state_manager.load()?;
+
+    if state.mounts.is_empty() {
+        return Ok(());
+    }
+
+    // Convert state entries to TrackedMountInfo for cleanup
+    let tracked_mounts: Vec<TrackedMountInfo> = state
+        .mounts
+        .iter()
+        .map(|e| TrackedMountInfo {
+            mountpoint: e.mountpoint.clone(),
+            pid: e.pid,
+        })
+        .collect();
+
+    let options = CleanupOptions::default();
+    let results = cleanup_stale_mounts(&tracked_mounts, &options)?;
+
+    let mut removed_mountpoints = Vec::new();
+
+    for result in &results {
+        match &result.action {
+            CleanupAction::Unmounted if result.success => {
+                tracing::info!("Cleaned stale mount: {}", result.mountpoint.display());
+                removed_mountpoints.push(result.mountpoint.clone());
+            }
+            CleanupAction::Unmounted => {
+                tracing::warn!(
+                    "Failed to clean stale mount {}: {}",
+                    result.mountpoint.display(),
+                    result.error.as_deref().unwrap_or("unknown error")
+                );
+                // Still remove from state - the mount is likely already gone
+                removed_mountpoints.push(result.mountpoint.clone());
+            }
+            CleanupAction::RemovedFromState => {
+                tracing::debug!(
+                    "Removed stale state entry for {}",
+                    result.mountpoint.display()
+                );
+                removed_mountpoints.push(result.mountpoint.clone());
+            }
+            CleanupAction::Warning => {
+                // Orphaned mount - warn but don't remove
+                eprintln!(
+                    "Warning: orphaned mount at {} (use 'diskutil unmount force {}' to remove)",
+                    result.mountpoint.display(),
+                    result.mountpoint.display()
+                );
+            }
+            CleanupAction::Skipped { reason } => {
+                tracing::debug!(
+                    "Skipped {}: {}",
+                    result.mountpoint.display(),
+                    reason
+                );
+            }
+        }
+    }
+
+    // Remove cleaned mounts from state (thread-safe)
+    for mountpoint in removed_mountpoints {
+        if let Err(e) = state_manager.remove_by_mountpoint(&mountpoint) {
+            tracing::warn!(
+                "Failed to remove {} from state: {}",
+                mountpoint.display(),
+                e
+            );
+        }
+    }
+
+    Ok(())
 }

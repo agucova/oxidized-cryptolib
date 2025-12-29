@@ -1,0 +1,31 @@
+[package]
+name = "oxidized-fskit-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Swift FFI bindings for Cryptomator vault FSKit integration"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+name = "oxidized_fskit_ffi"
+
+[dependencies]
+oxidized-cryptolib = { workspace = true, features = ["async"] }
+oxidized-mount-common = { path = "../oxidized-mount-common" }
+swift-bridge = "0.1.58"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+dashmap = "6"
+tracing = { workspace = true }
+libc = "0.2.178"
+
+[build-dependencies]
+swift-bridge-build = "0.1.58"
+
+[dev-dependencies]
+# Test runners
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = []

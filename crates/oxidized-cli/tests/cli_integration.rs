@@ -11,11 +11,16 @@ const TEST_PASSWORD: &str = "test-password-123";
 fn oxcrypt() -> Command {
     let mut cmd = Command::cargo_bin("oxcrypt").unwrap();
     cmd.env("OXCRYPT_PASSWORD", TEST_PASSWORD);
+    // Skip proactive cleanup to prevent interference with mock state files
+    cmd.env("OXCRYPT_NO_STARTUP_CLEANUP", "1");
     cmd
 }
 
 fn oxcrypt_no_password() -> Command {
-    Command::cargo_bin("oxcrypt").unwrap()
+    let mut cmd = Command::cargo_bin("oxcrypt").unwrap();
+    // Skip proactive cleanup to prevent interference with mock state files
+    cmd.env("OXCRYPT_NO_STARTUP_CLEANUP", "1");
+    cmd
 }
 
 /// Create a temporary vault and return the TempDir (keeps it alive)

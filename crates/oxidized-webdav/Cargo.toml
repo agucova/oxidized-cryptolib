@@ -21,7 +21,6 @@ dav-server = "0.8"
 # HTTP server
 hyper = { version = "1.5", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
-http-body-util = "0.1"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "signal", "macros", "process"] }
@@ -29,8 +28,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "signal",
 # Utilities
 bytes = "1"
 futures = "0.3"
-dashmap = "6"
-pin-project-lite = "0.2"
 oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
 
 # Optional: tokio-console for async debugging
@@ -40,7 +37,7 @@ console-subscriber = { workspace = true, optional = true }
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 sha2 = "0.10"
-rand = "0.8"
+rand = "0.9"
 tokio-test = "0.4"
 
 [features]

@@ -7,7 +7,7 @@ Guidance for Claude Code when working with this repository.
 - `oxidized-cryptolib` - Core Cryptomator encryption library (AES-GCM, AES-SIV, scrypt)
 - `oxidized-cli` - CLI tool (`oxcrypt`) - ls, cat, tree, mkdir, rm, cp, mv, info
 - `oxidized-fuse` - FUSE filesystem mount (`oxmount`) for Linux/macOS
-- `oxidized-fskit` - FSKit filesystem mount (`oxmount-fskit`) for macOS 15.4+
+- `oxidized-fskit-legacy` - FSKit filesystem mount (`oxmount-fskit`) for macOS 15.4+
 - `oxidized-gui` - Desktop app (`oxvault`) using Dioxus
 - `oxidized-bench` - Benchmark harness (`oxbench`) for comparing implementations
 
@@ -38,7 +38,7 @@ cargo nextest run -p oxidized-fuse --features fuse-tests  # FUSE integration tes
 2. FSKitBridge.app (auto-installed to ~/Applications by devenv on first shell entry)
 3. Enable in System Settings → General → Login Items & Extensions → File System Extensions
 
-The `oxidized-fskit` crate provides setup utilities via `oxidized_fskit::setup`:
+The `oxidized-fskit-legacy` crate provides setup utilities via `oxidized_fskit::setup`:
 - `get_status()` / `get_status_sync()` - Check FSKitBridge availability
 - `find_installation()` - Find FSKitBridge.app path
 - With `setup` feature: `download_latest()`, `install_to()` - Download from GitHub
@@ -71,7 +71,7 @@ CryptomatorFS (implements fuser::Filesystem)
                 └── Crypto (AES-GCM, AES-SIV)
 ```
 
-### FSKit Mount (oxidized-fskit, macOS 15.4+)
+### FSKit Mount (oxidized-fskit-legacy, macOS 15.4+)
 ```
 VFS (Kernel) → XPC → FSKitBridge.app → TCP+Protobuf → CryptomatorFSKit
         │

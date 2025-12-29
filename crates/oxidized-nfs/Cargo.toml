@@ -37,9 +37,6 @@ dashmap = "6"
 # POSIX types
 libc = "0.2"
 
-# Security
-zeroize = "1"
-
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "fs", "mount"] }
 

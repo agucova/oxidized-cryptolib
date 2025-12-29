@@ -1,5 +1,32 @@
 # Configuration for cargo-nextest
 # https://nexte.st/book/configuration.html
+#
+# =============================================================================
+# QUICK REFERENCE
+# =============================================================================
+#
+# Available profiles:
+#   --profile default     All tests with standard settings
+#   --profile unit        Fast unit tests (cryptolib only)
+#   --profile integration Mount backends + CLI integration tests
+#   --profile mounts      Just mount backend tests (FUSE, FSKit, WebDAV, NFS)
+#   --profile stress      Slow stress/concurrency tests
+#   --profile ci          CI with production KDF and verbose output
+#   --profile quick       Development iteration (no retries)
+#
+# Common commands:
+#   cargo nextest run --profile unit
+#   cargo nextest run --profile mounts -F fuse-tests
+#   cargo nextest run --profile mounts -F fuse-tests -F fskit-tests  # macOS
+#   cargo nextest run --profile integration -F fuse-tests -F fskit-tests
+#   cargo nextest run --profile stress -F fuse-tests
+#
+# Feature flags required for integration tests:
+#   -F fuse-tests   oxidized-fuse (Linux/macOS with libfuse)
+#   -F fskit-tests  oxidized-fskit-legacy (macOS 15.4+ only)
+#   -F nfs-tests    oxidized-nfs
+#
+# =============================================================================
 
 # Enable experimental features
 experimental = ["setup-scripts"]
@@ -8,11 +35,31 @@ experimental = ["setup-scripts"]
 # Store test results for analysis
 dir = "target/nextest"
 
+# =============================================================================
+# TEST GROUPS
+# =============================================================================
+# Groups limit concurrency for specific test subsets. Mount tests need serial
+# execution to avoid port/mount conflicts.
+
+[test-groups]
+# Mount tests need serial execution - they bind ports and create mount points
+mount-tests = { max-threads = 1 }
+# Stress/concurrency tests are resource-intensive
+stress-tests = { max-threads = 2 }
+
+# =============================================================================
+# SETUP SCRIPTS
+# =============================================================================
+
 # Setup script to configure KDF parameters based on profile:
-# - default/quick: fast KDF (N=1024, ~32x faster vault creation)
+# - default/quick/unit/mounts/stress: fast KDF (N=1024, ~32x faster vault creation)
 # - ci: production KDF (N=32768, real security parameters)
 [scripts.setup.kdf-setup]
 command = 'scripts/kdf-setup.sh'
+
+# =============================================================================
+# DEFAULT PROFILE
+# =============================================================================
 
 [profile.default]
 # Default test threads = number of CPUs
@@ -36,26 +83,168 @@ final-status-level = "flaky"
 filter = 'all()'
 setup = 'kdf-setup'
 
+# Mount backend tests run serially to avoid conflicts
+[[profile.default.overrides]]
+filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+test-group = 'mount-tests'
+
+# Stress/concurrency tests get longer timeouts and limited concurrency
+[[profile.default.overrides]]
+filter = 'test(/stress/) | test(/concurrency/) | test(/pjdfstest/) | test(/fsx/) | test(/fsstress/)'
+test-group = 'stress-tests'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
 [profile.default.junit]
 # JUnit XML output for CI integration
 path = "target/nextest/default/junit.xml"
 
+# =============================================================================
+# UNIT PROFILE - Fast unit tests only
+# =============================================================================
+# Usage: cargo nextest run --profile unit
+#
+# Runs only oxidized-cryptolib tests (no mount backends, no CLI integration).
+# Best for quick iteration on core crypto/vault logic.
+
+[profile.unit]
+default-filter = 'package(oxidized-cryptolib)'
+retries = 0
+fail-fast = true
+slow-timeout = { period = "30s", terminate-after = 2 }
+status-level = "pass"
+
+[[profile.unit.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
+
+[profile.unit.junit]
+path = "target/nextest/unit/junit.xml"
+
+# =============================================================================
+# INTEGRATION PROFILE - All integration tests
+# =============================================================================
+# Usage: cargo nextest run --profile integration -F fuse-tests -F fskit-tests
+#
+# Runs mount backends + CLI integration tests. Requires feature flags for the
+# backends you want to test.
+
+[profile.integration]
+default-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs) | package(oxidized-cli)'
+retries = 1
+fail-fast = true
+slow-timeout = { period = "120s", terminate-after = 2 }
+status-level = "pass"
+final-status-level = "flaky"
+
+[[profile.integration.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
+
+[[profile.integration.overrides]]
+filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+test-group = 'mount-tests'
+
+[profile.integration.junit]
+path = "target/nextest/integration/junit.xml"
+
+# =============================================================================
+# MOUNTS PROFILE - Just mount backends
+# =============================================================================
+# Usage: cargo nextest run --profile mounts -F fuse-tests
+# Usage: cargo nextest run --profile mounts -F fuse-tests -F fskit-tests  # macOS
+#
+# Focused testing of filesystem mount backends without CLI tests.
+
+[profile.mounts]
+default-filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+retries = 1
+fail-fast = true
+slow-timeout = { period = "120s", terminate-after = 2 }
+status-level = "pass"
+
+[[profile.mounts.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
+
+[[profile.mounts.overrides]]
+filter = 'all()'
+test-group = 'mount-tests'
+
+[profile.mounts.junit]
+path = "target/nextest/mounts/junit.xml"
+
+# =============================================================================
+# STRESS PROFILE - Slow stress/concurrency tests
+# =============================================================================
+# Usage: cargo nextest run --profile stress -F fuse-tests
+#
+# Runs only stress tests, concurrency tests, and external tool tests (pjdfstest,
+# fsx, fsstress). These are slow and resource-intensive.
+
+[profile.stress]
+default-filter = 'test(/stress/) | test(/concurrency/) | test(/pjdfstest/) | test(/fsx/) | test(/fsstress/)'
+retries = 0
+fail-fast = false
+slow-timeout = { period = "300s", terminate-after = 2 }
+status-level = "all"
+
+[[profile.stress.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
+
+[[profile.stress.overrides]]
+filter = 'all()'
+test-group = 'stress-tests'
+
+[profile.stress.junit]
+path = "target/nextest/stress/junit.xml"
+
+# =============================================================================
+# CI PROFILE - Full test suite with production settings
+# =============================================================================
+# Usage: cargo nextest run --profile ci -F fuse-tests -F fskit-tests
+#
+# Uses production KDF (slower but thorough), more retries, verbose output.
+
 [profile.ci]
-# CI-specific settings
 retries = 2
 fail-fast = true
-
-# More verbose output in CI
+slow-timeout = { period = "180s", terminate-after = 2 }
 status-level = "all"
 
 # KDF setup script automatically detects CI profile and uses production scrypt
-# (inherited from default profile via [[profile.default.scripts]])
+
+[[profile.ci.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
+
+[[profile.ci.overrides]]
+filter = 'package(oxidized-fuse) | package(oxidized-fskit-legacy) | package(oxidized-webdav) | package(oxidized-nfs)'
+test-group = 'mount-tests'
+
+[[profile.ci.overrides]]
+filter = 'test(/stress/) | test(/concurrency/) | test(/pjdfstest/) | test(/fsx/) | test(/fsstress/)'
+test-group = 'stress-tests'
 
 [profile.ci.junit]
 path = "target/nextest/ci/junit.xml"
 
+# =============================================================================
+# QUICK PROFILE - Development iteration
+# =============================================================================
+# Usage: cargo nextest run --profile quick
+#
+# No retries, fail fast. Best for rapid iteration during development.
+
 [profile.quick]
-# Quick iteration during development
-# Skip slow tests (those marked #[ignore])
 retries = 0
 fail-fast = true
+slow-timeout = { period = "60s", terminate-after = 2 }
+status-level = "pass"
+
+[[profile.quick.scripts]]
+filter = 'all()'
+setup = 'kdf-setup'
+
+[profile.quick.junit]
+path = "target/nextest/quick/junit.xml"

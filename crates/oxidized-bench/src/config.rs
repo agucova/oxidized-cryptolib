@@ -300,10 +300,27 @@ impl BenchmarkConfig {
     }
 
     /// Get directory sizes for benchmarks.
+    ///
+    /// Directory sizes are capped based on the slowest backend in the benchmark.
+    /// Network backends (WebDAV, NFS) use smaller sizes to keep benchmarks reasonable.
     pub fn directory_sizes(&self) -> Vec<usize> {
         match self.suite {
             BenchmarkSuite::Quick => vec![10],
-            _ => vec![10, 100, 1000],
+            _ => {
+                // Find the minimum max_directory_size across all implementations
+                let max_size = self
+                    .implementations
+                    .iter()
+                    .map(|impl_type| impl_type.max_directory_size())
+                    .min()
+                    .unwrap_or(1000);
+
+                // Filter standard sizes by the cap
+                vec![10, 100, 1000]
+                    .into_iter()
+                    .filter(|&size| size <= max_size)
+                    .collect()
+            }
         }
     }
 

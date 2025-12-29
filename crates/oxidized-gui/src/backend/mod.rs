@@ -29,8 +29,8 @@ pub use webdav::WebDavBackend;
 
 // Re-export traits and types from mount-common
 pub use oxidized_mount_common::{
-    ActivityStatus, BackendInfo, BackendType, MountBackend, MountError, MountHandle, VaultStats,
-    first_available_backend, format_bytes, list_backend_info, select_backend,
+    ActivityStatus, BackendInfo, BackendType, MountBackend, MountError, MountHandle, MountOptions,
+    VaultStats, first_available_backend, format_bytes, list_backend_info, select_backend,
 };
 
 use std::collections::HashMap;
@@ -131,6 +131,41 @@ impl MountManager {
             vault_id,
             mp.display(),
             backend.name()
+        );
+
+        Ok(mp)
+    }
+
+    /// Mount a vault using the specified backend type with mount options
+    ///
+    /// This allows passing additional configuration like local mode (shorter cache TTLs)
+    /// for vaults on local/fast filesystems.
+    pub fn mount_with_backend_and_options(
+        &self,
+        vault_id: &str,
+        vault_path: &std::path::Path,
+        password: &str,
+        mountpoint: &std::path::Path,
+        backend_type: BackendType,
+        options: &MountOptions,
+    ) -> Result<PathBuf, MountError> {
+        // Use shared selection logic
+        let backend = self.get_backend(backend_type)?;
+
+        // Mount using the selected backend with options
+        let handle = backend.mount_with_options(vault_id, vault_path, password, mountpoint, options)?;
+        let mp = handle.mountpoint().to_path_buf();
+
+        // Store the handle
+        let mut mounts = self.mounts.lock().unwrap();
+        mounts.insert(vault_id.to_string(), handle);
+
+        tracing::info!(
+            "Mounted vault {} at {} using {} (local_mode={})",
+            vault_id,
+            mp.display(),
+            backend.name(),
+            options.local_mode
         );
 
         Ok(mp)

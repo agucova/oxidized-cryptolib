@@ -29,7 +29,7 @@ let
 
   # FSKitBridge - Bridge between macOS FSKit and Rust filesystem implementations
   # https://github.com/debox-network/FSKitBridge
-  # Required for oxidized-fskit (FSKit-based vault mounting on macOS 15.4+)
+  # Required for oxidized-fskit-legacy (FSKit-based vault mounting on macOS 15.4+)
   fskitbridge = pkgs.stdenv.mkDerivation rec {
     pname = "FSKitBridge";
     version = "0.1.0";
@@ -94,6 +94,9 @@ let
       platforms = platforms.linux;  # Linux-specific syscalls
     };
   };
+  # Paths for FSKit Swift builds (requires Xcode toolchain for FSKit.framework)
+  xcodeSwift = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift";
+  xcodeSdk = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
 in
 {
   languages.rust = {
@@ -152,4 +155,101 @@ in
       fi
     fi
   '';
+
+  # FSKit Swift extension build scripts (macOS only)
+  # These use Xcode's Swift toolchain because FSKit.framework requires the macOS SDK
+  scripts = lib.optionalAttrs pkgs.stdenv.isDarwin {
+    # Build just the Rust FFI static library
+    fskit-build-rust.exec = ''
+      echo "Building Rust FFI static library..."
+      PKG_CONFIG_PATH=/usr/local/lib/pkgconfig cargo build -p oxidized-fskit-legacy-ffi --release
+      echo "Static library built: target/release/liboxidized_fskit_ffi.a"
+    '';
+
+    # Sync generated Swift/C bindings to the Swift package
+    fskit-sync-bindings.exec = ''
+      set -e
+      FFI_CRATE="crates/oxidized-fskit-legacy-ffi"
+      GENERATED_DIR="$FFI_CRATE/generated"
+      SWIFT_FFI="$FFI_CRATE/swift"
+      SOURCES_DIR="$SWIFT_FFI/Sources/OxVaultFFI"
+      INCLUDE_DIR="$SWIFT_FFI/include"
+
+      if [[ ! -d "$GENERATED_DIR" ]]; then
+        echo "Error: Generated directory not found. Run 'fskit-build-rust' first."
+        exit 1
+      fi
+
+      mkdir -p "$SOURCES_DIR" "$INCLUDE_DIR"
+
+      echo "Copying Swift sources..."
+      # Add imports if not present
+      if ! grep -q "import COxVaultFFI" "$GENERATED_DIR/SwiftBridgeCore.swift"; then
+        echo -e "import Foundation\nimport COxVaultFFI\n$(tail -n +2 $GENERATED_DIR/SwiftBridgeCore.swift)" > "$SOURCES_DIR/SwiftBridgeCore.swift"
+      else
+        cp "$GENERATED_DIR/SwiftBridgeCore.swift" "$SOURCES_DIR/"
+      fi
+
+      if ! grep -q "import COxVaultFFI" "$GENERATED_DIR/oxidized-fskit-legacy-ffi/oxidized-fskit-legacy-ffi.swift"; then
+        echo -e "import Foundation\nimport COxVaultFFI\n\n$(cat $GENERATED_DIR/oxidized-fskit-legacy-ffi/oxidized-fskit-legacy-ffi.swift)" > "$SOURCES_DIR/oxidized-fskit-legacy-ffi.swift"
+      else
+        cp "$GENERATED_DIR/oxidized-fskit-legacy-ffi/oxidized-fskit-legacy-ffi.swift" "$SOURCES_DIR/"
+      fi
+
+      echo "Copying C headers..."
+      cp "$GENERATED_DIR/SwiftBridgeCore.h" "$INCLUDE_DIR/"
+      cp "$GENERATED_DIR/oxidized-fskit-legacy-ffi/oxidized-fskit-legacy-ffi.h" "$INCLUDE_DIR/"
+
+      cat > "$INCLUDE_DIR/module.modulemap" << 'EOF'
+module COxVaultFFI {
+    header "SwiftBridgeCore.h"
+    header "oxidized-fskit-legacy-ffi.h"
+    export *
+}
+EOF
+      echo "Bindings synced to $SWIFT_FFI"
+    '';
+
+    # Build Swift packages (requires Xcode)
+    fskit-build-swift.exec = ''
+      set -e
+      if [[ ! -x "${xcodeSwift}" ]]; then
+        echo "Error: Xcode Swift not found at ${xcodeSwift}"
+        echo "FSKit requires Xcode's Swift toolchain for FSKit.framework"
+        exit 1
+      fi
+
+      # Ensure we use Xcode's toolchain
+      unset SDKROOT DEVELOPER_DIR
+      export SDKROOT="${xcodeSdk}"
+
+      echo "Building OxVaultFFI..."
+      cd crates/oxidized-fskit-legacy-ffi/swift
+      ${xcodeSwift} build
+
+      echo "Building OxVaultFSExtension..."
+      cd ../../../swift/OxVaultFSExtension
+      ${xcodeSwift} build
+
+      echo "Swift packages built successfully!"
+    '';
+
+    # Full FSKit build (Rust + sync + Swift)
+    fskit-build.exec = ''
+      set -e
+      echo "=== Building FSKit Swift Extension ==="
+      fskit-build-rust
+      fskit-sync-bindings
+      fskit-build-swift
+      echo "=== FSKit build complete ==="
+    '';
+
+    # Clean Swift build artifacts
+    fskit-clean.exec = ''
+      echo "Cleaning Swift build artifacts..."
+      rm -rf crates/oxidized-fskit-legacy-ffi/swift/.build
+      rm -rf swift/OxVaultFSExtension/.build
+      echo "Clean complete"
+    '';
+  };
 }

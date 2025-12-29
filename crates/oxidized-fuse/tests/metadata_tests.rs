@@ -180,6 +180,8 @@ fn test_listing_updates_after_rename() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.write("old_name.txt", b"content").expect("write failed");
+    assert!(mount.list("/").unwrap().contains(&"old_name.txt".to_string()));
+
     mount.rename("old_name.txt", "new_name.txt").expect("rename failed");
 
     let entries = mount.list("/").expect("list failed");

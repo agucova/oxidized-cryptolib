@@ -20,8 +20,8 @@ default = []
 # FUSE backend support (macOS with macFUSE, Linux with libfuse)
 # Not available on Windows
 fuse = ["dep:oxidized-fuse"]
-# FSKit backend support (macOS 15.4+ only)
-fskit = ["dep:oxidized-fskit"]
+# FSKit backend support (macOS 15.4+ only) - deprecated, use oxidized-fskit-ffi
+fskit = ["dep:oxidized-fskit-legacy"]
 # WebDAV backend support (cross-platform, no kernel extensions required)
 webdav = ["dep:oxidized-webdav"]
 # NFS backend support (macOS, Linux - no kernel extensions required)
@@ -43,7 +43,7 @@ tokio-console = [
     "dep:tokio",
     "tokio/tracing",
     "oxidized-fuse?/tokio-console",
-    "oxidized-fskit?/tokio-console",
+    "oxidized-fskit-legacy?/tokio-console",
     "oxidized-webdav?/tokio-console",
     "oxidized-nfs?/tokio-console",
 ]
@@ -63,7 +63,7 @@ ctrlc = { version = "3", features = ["termination"] }
 
 # Mount backends (optional)
 oxidized-fuse = { path = "../oxidized-fuse", optional = true }
-oxidized-fskit = { path = "../oxidized-fskit", optional = true }
+oxidized-fskit-legacy = { path = "../oxidized-fskit-legacy", optional = true }
 oxidized-webdav = { path = "../oxidized-webdav", optional = true }
 oxidized-nfs = { path = "../oxidized-nfs", optional = true }
 
@@ -75,6 +75,8 @@ directories = "6.0.0"
 chrono = { version = "0.4.42", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["v4"] }
 nix = { version = "0.30.1", features = ["signal", "process"] }
+fs2 = "0.4.3"
+oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
 
 # Platform-specific dependencies for process management
 [target.'cfg(unix)'.dependencies]

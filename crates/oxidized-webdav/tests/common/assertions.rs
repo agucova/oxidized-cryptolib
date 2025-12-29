@@ -132,7 +132,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// Extract href values from a PROPFIND XML response.
 ///
 /// This is a simple parser - doesn't handle all XML edge cases but works for testing.
-fn extract_hrefs_from_propfind(xml: &str, base_path: &str) -> Vec<String> {
+fn extract_hrefs_from_propfind(xml: &str, _base_path: &str) -> Vec<String> {
     let mut hrefs = Vec::new();
 
     // Simple regex-free parsing: look for <D:href> or <href> tags

@@ -11,7 +11,8 @@ use bytes::Bytes;
 use dav_server::fs::{DavFile, DavMetaData, FsError, FsFuture};
 use oxidized_cryptolib::fs::streaming::VaultFileReader;
 use oxidized_cryptolib::vault::VaultOperationsAsync;
-use oxidized_mount_common::{TtlCache, VaultStats, WriteBuffer};
+use oxidized_mount_common::moka_cache::SyncTtlCache;
+use oxidized_mount_common::{VaultStats, WriteBuffer};
 use std::io::SeekFrom;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +20,7 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 /// Type alias for the metadata cache.
-type MetadataCache = TtlCache<String, CryptomatorMetaData>;
+type MetadataCache = SyncTtlCache<String, CryptomatorMetaData>;
 
 /// A file handle for WebDAV operations.
 ///

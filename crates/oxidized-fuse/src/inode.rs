@@ -2,41 +2,28 @@
 //!
 //! This module provides the mapping between FUSE inodes and vault paths,
 //! enabling efficient lookup and management of filesystem entries.
+//!
+//! The implementation uses [`PathTable`] from `oxidized-mount-common` for the
+//! core path-to-ID mapping, with FUSE-specific `nlookup` tracking added on top.
 
-use dashmap::DashMap;
+use dashmap::mapref::one::{Ref, RefMut};
 use oxidized_cryptolib::vault::path::{DirId, VaultPath};
+use oxidized_mount_common::path_mapper::{EntryKind, PathTable};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The root inode number (FUSE convention).
 pub const ROOT_INODE: u64 = 1;
 
 /// Represents the kind of inode entry.
-#[derive(Debug, Clone)]
-pub enum InodeKind {
-    /// Root directory of the vault.
-    Root,
-    /// A directory within the vault.
-    Directory {
-        /// The directory ID used by Cryptomator.
-        dir_id: DirId,
-    },
-    /// A regular file.
-    File {
-        /// Parent directory ID.
-        dir_id: DirId,
-        /// Decrypted filename.
-        name: String,
-    },
-    /// A symbolic link.
-    Symlink {
-        /// Parent directory ID.
-        dir_id: DirId,
-        /// Decrypted filename.
-        name: String,
-    },
-}
+///
+/// This is a re-export of [`EntryKind`] from `oxidized-mount-common` for
+/// backwards compatibility with existing FUSE code.
+pub type InodeKind = EntryKind;
 
 /// An entry in the inode table.
+///
+/// Contains the path, entry kind, and FUSE-specific `nlookup` counter
+/// for reference counting.
 #[derive(Debug)]
 pub struct InodeEntry {
     /// The virtual path within the vault.
@@ -103,102 +90,64 @@ impl InodeEntry {
     }
 
     /// Returns the parent directory ID if this is a file or symlink.
+    #[inline]
     pub fn parent_dir_id(&self) -> Option<&DirId> {
-        match &self.kind {
-            InodeKind::Root => None,
-            InodeKind::Directory { .. } => None, // Directories don't store parent
-            InodeKind::File { dir_id, .. } => Some(dir_id),
-            InodeKind::Symlink { dir_id, .. } => Some(dir_id),
-        }
+        self.kind.parent_dir_id()
     }
 
     /// Returns the filename if this is a file or symlink.
+    #[inline]
     pub fn filename(&self) -> Option<&str> {
-        match &self.kind {
-            InodeKind::Root => None,
-            InodeKind::Directory { .. } => None,
-            InodeKind::File { name, .. } => Some(name),
-            InodeKind::Symlink { name, .. } => Some(name),
-        }
+        self.kind.filename()
     }
 
     /// Returns the directory ID if this is a directory or root.
     /// For root, returns a cloned root DirId.
+    #[inline]
     pub fn dir_id(&self) -> Option<DirId> {
-        match &self.kind {
-            InodeKind::Root => Some(DirId::root()),
-            InodeKind::Directory { dir_id } => Some(dir_id.clone()),
-            InodeKind::File { .. } => None,
-            InodeKind::Symlink { .. } => None,
-        }
+        self.kind.dir_id()
     }
 }
 
 /// Thread-safe table mapping between inodes and vault paths.
 ///
-/// This table maintains a bidirectional mapping:
-/// - `path_to_inode`: VaultPath -> inode number
-/// - `inode_to_entry`: inode number -> InodeEntry
+/// This table maintains a bidirectional mapping using [`PathTable`] from
+/// `oxidized-mount-common`, with FUSE-specific `nlookup` tracking for
+/// proper reference counting.
 ///
 /// The table uses `DashMap` for lock-free concurrent access.
 pub struct InodeTable {
-    /// Maps vault paths to inode numbers.
-    path_to_inode: DashMap<VaultPath, u64>,
-    /// Maps inode numbers to entry details.
-    inode_to_entry: DashMap<u64, InodeEntry>,
-    /// Next available inode number (atomic counter).
-    next_inode: AtomicU64,
+    /// The underlying path table.
+    inner: PathTable<u64, InodeEntry>,
 }
 
 impl InodeTable {
     /// Creates a new inode table with the root directory pre-allocated.
     pub fn new() -> Self {
-        let table = Self {
-            path_to_inode: DashMap::new(),
-            inode_to_entry: DashMap::new(),
-            // Start at 2 since inode 1 is reserved for root
-            next_inode: AtomicU64::new(2),
-        };
-
-        // Pre-allocate root inode
-        let root_path = VaultPath::root();
-        table
-            .path_to_inode
-            .insert(root_path.clone(), ROOT_INODE);
-        table.inode_to_entry.insert(
-            ROOT_INODE,
-            InodeEntry::new(root_path, InodeKind::Root),
-        );
-
-        table
+        Self {
+            inner: PathTable::with_root(
+                ROOT_INODE,
+                2, // First non-root inode
+                InodeEntry::new(VaultPath::root(), InodeKind::Root),
+            ),
+        }
     }
 
     /// Allocates a new inode for the given path and kind.
     /// If the path already has an inode, increments its lookup count and returns the existing inode.
     pub fn get_or_insert(&self, path: VaultPath, kind: InodeKind) -> u64 {
-        // Fast path: check if already exists
-        if let Some(inode) = self.path_to_inode.get(&path) {
-            let ino = *inode;
+        // Check if already exists
+        if let Some(inode) = self.inner.get_id(&path) {
             // Increment lookup count
-            if let Some(entry) = self.inode_to_entry.get(&ino) {
+            if let Some(entry) = self.inner.get(inode) {
                 entry.inc_nlookup();
             }
-            return ino;
+            return inode;
         }
 
-        // Slow path: allocate new inode
-        // Use entry API to avoid TOCTOU race
-        let inode = self
-            .path_to_inode
-            .entry(path.clone())
-            .or_insert_with(|| {
-                let ino = self.next_inode.fetch_add(1, Ordering::SeqCst);
-                self.inode_to_entry
-                    .insert(ino, InodeEntry::new(path.clone(), kind));
-                ino
-            });
-
-        *inode
+        // Allocate new inode
+        self.inner
+            .get_or_insert_with(path.clone(), || InodeEntry::new(path, kind))
     }
 
     /// Allocates a new inode for the given path and kind WITHOUT incrementing nlookup.
@@ -210,43 +159,30 @@ impl InodeTable {
     /// If the path already has an inode, returns the existing inode without incrementing.
     /// If the path is new, creates an inode entry with nlookup = 0.
     pub fn get_or_insert_no_lookup_inc(&self, path: VaultPath, kind: InodeKind) -> u64 {
-        // Fast path: check if already exists
-        if let Some(inode) = self.path_to_inode.get(&path) {
-            return *inode; // Return existing inode without incrementing nlookup
+        // Check if already exists - return without incrementing
+        if let Some(inode) = self.inner.get_id(&path) {
+            return inode;
         }
 
-        // Slow path: allocate new inode with nlookup = 0
-        // Use entry API to avoid TOCTOU race
-        let inode = self
-            .path_to_inode
-            .entry(path.clone())
-            .or_insert_with(|| {
-                let ino = self.next_inode.fetch_add(1, Ordering::SeqCst);
-                self.inode_to_entry
-                    .insert(ino, InodeEntry::new_no_lookup(path.clone(), kind));
-                ino
-            });
-
-        *inode
+        // Allocate new inode with nlookup = 0
+        self.inner
+            .get_or_insert_with(path.clone(), || InodeEntry::new_no_lookup(path, kind))
     }
 
     /// Looks up an entry by inode number.
-    pub fn get(&self, inode: u64) -> Option<dashmap::mapref::one::Ref<'_, u64, InodeEntry>> {
-        self.inode_to_entry.get(&inode)
+    pub fn get(&self, inode: u64) -> Option<Ref<'_, u64, InodeEntry>> {
+        self.inner.get(inode)
     }
 
     /// Looks up an entry by inode number for mutation.
-    pub fn get_mut(
-        &self,
-        inode: u64,
-    ) -> Option<dashmap::mapref::one::RefMut<'_, u64, InodeEntry>> {
-        self.inode_to_entry.get_mut(&inode)
+    pub fn get_mut(&self, inode: u64) -> Option<RefMut<'_, u64, InodeEntry>> {
+        self.inner.get_mut(inode)
     }
 
     /// Updates the kind of an existing inode entry.
     /// Returns true if the inode was found and updated.
     pub fn update_kind(&self, inode: u64, kind: InodeKind) -> bool {
-        if let Some(mut entry) = self.inode_to_entry.get_mut(&inode) {
+        if let Some(mut entry) = self.inner.get_mut(inode) {
             entry.kind = kind;
             true
         } else {
@@ -256,7 +192,7 @@ impl InodeTable {
 
     /// Looks up an inode by vault path.
     pub fn get_inode(&self, path: &VaultPath) -> Option<u64> {
-        self.path_to_inode.get(path).map(|r| *r)
+        self.inner.get_id(path)
     }
 
     /// Decrements the lookup count for an inode.
@@ -268,51 +204,46 @@ impl InodeTable {
             return false;
         }
 
-        if let Some(entry) = self.inode_to_entry.get(&inode)
-            && let Some(remaining) = entry.dec_nlookup(nlookup)
-                && remaining == 0 {
+        if let Some(entry) = self.inner.get(inode) {
+            if let Some(remaining) = entry.dec_nlookup(nlookup) {
+                if remaining == 0 {
                     // Safe to evict - drop the ref first
                     drop(entry);
                     return self.evict(inode);
                 }
+            }
+        }
         false
     }
 
     /// Evicts an inode from the table.
     /// This should only be called when nlookup reaches 0.
     fn evict(&self, inode: u64) -> bool {
-        if let Some((_, entry)) = self.inode_to_entry.remove(&inode) {
-            self.path_to_inode.remove(&entry.path);
-            true
-        } else {
-            false
-        }
+        self.inner.remove_by_id(inode).is_some()
     }
 
     /// Invalidates an inode by path (used after delete operations).
     /// This removes the path mapping but keeps the inode entry until forget() is called.
     pub fn invalidate_path(&self, path: &VaultPath) {
-        self.path_to_inode.remove(path);
+        self.inner.invalidate_path(path);
     }
 
     /// Updates the path for an inode (used after rename operations).
     pub fn update_path(&self, inode: u64, old_path: &VaultPath, new_path: VaultPath) {
-        self.path_to_inode.remove(old_path);
-        self.path_to_inode.insert(new_path.clone(), inode);
-
-        if let Some(mut entry) = self.inode_to_entry.get_mut(&inode) {
-            entry.path = new_path;
-        }
+        self.inner
+            .update_path(inode, old_path, new_path, |entry, path| {
+                entry.path = path;
+            });
     }
 
     /// Returns the number of inodes currently in the table.
     pub fn len(&self) -> usize {
-        self.inode_to_entry.len()
+        self.inner.len()
     }
 
     /// Returns true if the table only contains the root inode.
     pub fn is_empty(&self) -> bool {
-        self.inode_to_entry.len() <= 1
+        self.inner.is_empty()
     }
 }
 
@@ -573,7 +504,10 @@ mod tests {
 
         assert!(dir_entry.filename().is_none());
         assert!(dir_entry.parent_dir_id().is_none());
-        assert_eq!(dir_entry.dir_id().map(|d| d.as_str().to_string()), Some("subdir-id".to_string()));
+        assert_eq!(
+            dir_entry.dir_id().map(|d| d.as_str().to_string()),
+            Some("subdir-id".to_string())
+        );
     }
 
     #[test]

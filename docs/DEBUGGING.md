@@ -38,12 +38,12 @@ cargo bench -p oxidized-cryptolib --bench timing_leaks -- --continuous key_unwra
 
 ## Async Debugging with tokio-console
 
-All mount backends (`oxidized-fuse`, `oxidized-fskit`, `oxidized-webdav`, `oxidized-nfs`) and the GUI support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection.
+All mount backends (`oxidized-fuse`, `oxidized-fskit-legacy`, `oxidized-webdav`, `oxidized-nfs`) and the GUI support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection.
 
 ```bash
 # Build a specific backend with console support
 cargo build -p oxidized-fuse --features tokio-console
-cargo build -p oxidized-fskit --features tokio-console
+cargo build -p oxidized-fskit-legacy --features tokio-console
 cargo build -p oxidized-webdav --features tokio-console
 cargo build -p oxidized-nfs --features tokio-console
 
@@ -76,6 +76,26 @@ tokio-console http://127.0.0.1:6670  # GUI (oxvault)
 - Active async tasks and their states
 - Task poll times and waker counts
 - Resource contention (mutexes, semaphores)
-- `spawn_blocking` threads for CPU-bound crypto
+- `spawn_blocking` threads for CPU-bound crypto (vault decryption operations)
+- `block_on` calls from FUSE operations (filesystem.rs)
+
+**Verification via gRPC** (if tokio-console TUI isn't available):
+
+```bash
+# Install grpcurl
+brew install grpcurl
+
+# Query the console endpoint directly
+cd ~/.cargo/registry/src/*/console-api-*/proto
+timeout 2 grpcurl -plaintext -import-path . -proto instrument.proto \
+    127.0.0.1:6669 rs.tokio.console.instrument.Instrument/WatchUpdates \
+    | jq '.taskUpdate.newTasks[]? | "\(.location.file):(\(.location.line))"'
+```
+
+**Troubleshooting**:
+- **No tasks visible**: Trigger some vault operations (read files, list directories). Idle vaults won't show activity.
+- **Port in use**: Another instance may be running. Check with `lsof -i :6669` and kill the old process.
+- **grpc-status: 12**: The gRPC server is running but you sent an invalid request. Use proper protobuf encoding.
+- **Console shows empty**: Ensure `tokio_unstable` cfg is set in `.cargo/config.toml` (already configured in this repo).
 
 The `tokio-console` feature is opt-in and adds zero overhead to normal builds.

@@ -4,17 +4,29 @@ use dioxus::prelude::*;
 
 use crate::backend::{mount_manager, BackendInfo, BackendType};
 
+/// Settings returned from the backend dialog
+#[derive(Clone, Copy, PartialEq, Default)]
+pub struct VaultMountSettings {
+    /// Filesystem backend to use
+    pub backend: BackendType,
+    /// Use local mode (shorter cache TTLs)
+    pub local_mode: bool,
+}
+
 /// Props for the backend selection dialog
 #[derive(Props, Clone, PartialEq)]
 pub struct BackendDialogProps {
     /// Currently selected backend
     pub current_backend: BackendType,
+    /// Current local_mode setting
+    #[props(default = false)]
+    pub local_mode: bool,
     /// Whether the vault is currently mounted
     pub is_mounted: bool,
-    /// Called when a backend is selected (save only)
-    pub on_select: EventHandler<BackendType>,
+    /// Called when settings are saved (backend + local_mode)
+    pub on_select: EventHandler<VaultMountSettings>,
     /// Called when user wants to unmount and apply immediately
-    pub on_unmount_and_apply: EventHandler<BackendType>,
+    pub on_unmount_and_apply: EventHandler<VaultMountSettings>,
     /// Called when dialog is cancelled
     pub on_cancel: EventHandler<()>,
 }
@@ -26,20 +38,27 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
     let backends: Vec<BackendInfo> = manager.backend_info();
 
     let mut selected = use_signal(|| props.current_backend);
+    let mut local_mode = use_signal(|| props.local_mode);
 
     let is_mounted = props.is_mounted;
 
     let handle_confirm = {
         let on_select = props.on_select;
         move |_| {
-            on_select.call(selected());
+            on_select.call(VaultMountSettings {
+                backend: selected(),
+                local_mode: local_mode(),
+            });
         }
     };
 
     let handle_unmount_and_apply = {
         let on_unmount_and_apply = props.on_unmount_and_apply;
         move |_| {
-            on_unmount_and_apply.call(selected());
+            on_unmount_and_apply.call(VaultMountSettings {
+                backend: selected(),
+                local_mode: local_mode(),
+            });
         }
     };
 
@@ -97,6 +116,46 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
                                 on_click: move |backend_type| {
                                     selected.set(backend_type);
                                 },
+                            }
+                        }
+                    }
+
+                    // Performance settings section
+                    div {
+                        class: "mt-6 pt-4 border-t border-gray-200 dark:border-neutral-700",
+
+                        h3 {
+                            class: "text-sm font-medium text-gray-900 dark:text-gray-100 mb-3",
+                            "Performance"
+                        }
+
+                        // Local mode toggle
+                        label {
+                            class: "flex items-start gap-3 p-3 bg-gray-50 dark:bg-neutral-800 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-neutral-750",
+
+                            // Toggle switch
+                            div {
+                                class: "flex-shrink-0 mt-0.5",
+                                input {
+                                    r#type: "checkbox",
+                                    class: "toggle-switch",
+                                    checked: local_mode(),
+                                    onchange: move |e| local_mode.set(e.checked()),
+                                }
+                            }
+
+                            div {
+                                class: "flex-1 min-w-0",
+
+                                span {
+                                    class: "block text-sm font-medium text-gray-900 dark:text-gray-100",
+                                    "Local vault mode"
+                                }
+
+                                p {
+                                    class: "mt-0.5 text-xs text-gray-600 dark:text-gray-400",
+                                    "Uses shorter cache timeouts (1s vs 60s). Enable this for vaults on local or fast filesystems. Keep disabled for cloud-synced folders (Google Drive, iCloud, Dropbox) to avoid performance issues."
+                                }
                             }
                         }
                     }

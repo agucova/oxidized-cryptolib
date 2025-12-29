@@ -7,10 +7,19 @@ license.workspace = true
 repository.workspace = true
 description = "Shared utilities for Cryptomator vault mount backends (FUSE, FSKit, WebDAV)"
 
+[features]
+default = []
+# Enable detailed tracing spans for cache operations (debug instrumentation).
+# This adds some overhead but provides visibility into cache behavior.
+cache-tracing = []
+
 [dependencies]
+anyhow.workspace = true
 dashmap = "6"
+moka = { version = "0.12", features = ["sync", "future"] }
 humantime-serde = "1"
 libc = "0.2.178"
+nix = { version = "0.30.1", features = ["signal", "process"] }
 oxidized-cryptolib = { path = "../oxidized-cryptolib" }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }

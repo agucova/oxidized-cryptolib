@@ -10,7 +10,8 @@
 mod common;
 
 use common::{
-    assert_file_content, assert_file_hash, generators::*, sha256, TestServer, CHUNK_SIZE,
+    assert_file_content, assert_file_hash, multi_chunk_content, random_bytes, sha256, TestServer,
+    CHUNK_SIZE,
 };
 
 // ============================================================================
@@ -213,7 +214,7 @@ async fn test_filename_with_special_chars() {
         ("/file `backtick`.txt", "backtick"),
     ];
 
-    for (path, name) in test_cases {
+    for (path, _name) in test_cases {
         server.put_ok(path, content.to_vec()).await;
         assert_file_content(&server, path, content).await;
     }
@@ -370,7 +371,7 @@ async fn test_multiple_overwrite_same_size() {
 
     let size = 10000;
 
-    for i in 0..5 {
+    for _i in 0..5 {
         let content = random_bytes(size);
         server.put_ok("/same_size.bin", content.clone()).await;
         assert_file_content(&server, "/same_size.bin", &content).await;

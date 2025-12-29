@@ -16,9 +16,9 @@ enum ForceLockContext {
     BackendChange,
 }
 
-use crate::backend::{generate_mountpoint, mount_manager, BackendType};
+use crate::backend::{generate_mountpoint, mount_manager, BackendType, MountOptions};
 use crate::app::open_stats_window;
-use crate::dialogs::{BackendDialog, ChangePasswordDialog, ConfirmDialog, ErrorDialog, ForceLockDialog, UnlockDialog};
+use crate::dialogs::{BackendDialog, ChangePasswordDialog, ConfirmDialog, ErrorDialog, ForceLockDialog, UnlockDialog, VaultMountSettings};
 use crate::error::UserFacingError;
 use crate::state::{use_app_state, VaultState};
 
@@ -66,6 +66,7 @@ pub fn VaultDetail(
     let vault_name = vault.config.name.clone();
     let vault_path = vault.config.path.clone();
     let preferred_backend = vault.config.preferred_backend;
+    let local_mode = vault.config.local_mode;
 
     // Handle unlock attempt - directly mounts the vault
     let handle_password_submit = {
@@ -162,10 +163,16 @@ pub fn VaultDetail(
                 let vault_id_for_log = vault_id.clone();
                 let vault_id_for_state = vault_id.clone();
 
+                // Create mount options with local_mode from vault config
+                let mount_options = MountOptions {
+                    local_mode,
+                    attr_ttl: None, // Use defaults based on local_mode
+                };
+
                 // Run mount in blocking task using the vault's preferred backend
                 // Use vault_id as the key for mount tracking (must match unmount calls)
                 let result = tokio::task::spawn_blocking(move || {
-                    manager.mount_with_backend(&vault_id, &vault_path, &password, &mountpoint, preferred_backend)
+                    manager.mount_with_backend_and_options(&vault_id, &vault_path, &password, &mountpoint, preferred_backend, &mount_options)
                 })
                 .await;
 
@@ -520,6 +527,7 @@ pub fn VaultDetail(
                 let vault_id_for_backend = vault_id.clone();
                 let vault_id_for_unmount = vault_id.clone();
                 let current_backend = vault.config.preferred_backend;
+                let current_local_mode = vault.config.local_mode;
                 let is_mounted = matches!(vault.state, VaultState::Mounted { .. });
                 let mountpoint_for_lsof = match &vault.state {
                     VaultState::Mounted { mountpoint } => Some(mountpoint.clone()),
@@ -528,26 +536,27 @@ pub fn VaultDetail(
                 rsx! {
                     BackendDialog {
                         current_backend: current_backend,
+                        local_mode: current_local_mode,
                         is_mounted: is_mounted,
-                        on_select: move |backend: BackendType| {
-                            // Update the vault's preferred backend
-                            app_state.write().set_vault_backend(&vault_id_for_backend, backend);
+                        on_select: move |settings: VaultMountSettings| {
+                            // Update the vault's backend and local_mode settings
+                            app_state.write().set_vault_mount_settings(&vault_id_for_backend, settings.backend, settings.local_mode);
                             // Save to disk
                             if let Err(e) = app_state.read().save() {
                                 tracing::error!("Failed to save config: {}", e);
                             }
                             show_backend_dialog.set(false);
                         },
-                        on_unmount_and_apply: move |backend: BackendType| {
+                        on_unmount_and_apply: move |settings: VaultMountSettings| {
                             let vault_id = vault_id_for_unmount.clone();
                             let vault_id_for_log = vault_id.clone();
                             let vault_id_for_state = vault_id.clone();
-                            let vault_id_for_backend_update = vault_id.clone();
+                            let vault_id_for_settings_update = vault_id.clone();
                             let mp_for_lsof = mountpoint_for_lsof.clone();
                             show_backend_dialog.set(false);
                             spawn(async move {
-                                // First update the backend config
-                                app_state.write().set_vault_backend(&vault_id_for_backend_update, backend);
+                                // First update the backend and local_mode config
+                                app_state.write().set_vault_mount_settings(&vault_id_for_settings_update, settings.backend, settings.local_mode);
                                 if let Err(e) = app_state.read().save() {
                                     tracing::error!("Failed to save config: {}", e);
                                 }
@@ -560,7 +569,7 @@ pub fn VaultDetail(
 
                                 match result {
                                     Ok(Ok(())) => {
-                                        tracing::info!("Vault {} unmounted after backend change", vault_id_for_log);
+                                        tracing::info!("Vault {} unmounted after settings change", vault_id_for_log);
                                         app_state.write().set_vault_state(&vault_id_for_state, VaultState::Locked);
                                     }
                                     Ok(Err(e)) => {
@@ -571,7 +580,7 @@ pub fn VaultDetail(
                                             || err_str.contains("resource busy")
                                             || err_str.contains("device busy")
                                         {
-                                            tracing::warn!("Vault busy during backend change, showing force lock dialog: {}", e);
+                                            tracing::warn!("Vault busy during settings change, showing force lock dialog: {}", e);
                                             // Get processes using the mount
                                             if let Some(mp) = &mp_for_lsof {
                                                 let procs = find_processes_using_mount(mp);
@@ -584,7 +593,7 @@ pub fn VaultDetail(
                                             tracing::error!("Failed to unmount vault: {}", e);
                                             error_state.set(Some(
                                                 UserFacingError::new("Couldn't Unmount Vault", e.to_string())
-                                                    .with_suggestion("The backend was changed but the vault couldn't be unmounted. Try locking it manually.")
+                                                    .with_suggestion("The settings were changed but the vault couldn't be unmounted. Try locking it manually.")
                                             ));
                                         }
                                     }

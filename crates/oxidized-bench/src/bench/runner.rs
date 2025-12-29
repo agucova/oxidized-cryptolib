@@ -345,13 +345,8 @@ impl BenchmarkRunner {
         // Brief pause to let filesystem sync after setup
         std::thread::sleep(Duration::from_millis(100));
 
-        // Warmup iterations
-        for _ in 0..self.config.warmup_iterations {
-            if self.should_stop() {
-                break;
-            }
-            let _ = benchmark.run(mount_point);
-        }
+        // Note: Warmup is skipped because it fills OS caches and produces
+        // misleading results, especially for network backends like WebDAV.
 
         // Actual measurements with timeout enforcement
         let iterations = self.config.effective_iterations();

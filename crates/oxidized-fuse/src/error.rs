@@ -5,6 +5,7 @@
 //! [`VaultErrorCategory`](oxidized_mount_common::VaultErrorCategory) for
 //! consistent error mapping.
 
+use crate::executor::ExecutorError;
 use oxidized_cryptolib::error::{VaultOperationError, VaultWriteError};
 use oxidized_mount_common::{io_error_to_errno, VaultErrorCategory};
 use std::io;
@@ -24,6 +25,10 @@ pub enum FuseError {
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+
+    /// Executor error (timeout, shutdown, etc.).
+    #[error("Executor error: {0}")]
+    Executor(#[from] ExecutorError),
 
     /// Invalid inode.
     #[error("Invalid inode: {0}")]
@@ -61,6 +66,7 @@ impl FuseError {
             FuseError::Vault(e) => vault_error_to_errno(e.as_ref()),
             FuseError::Write(e) => write_error_to_errno(e.as_ref()),
             FuseError::Io(e) => io_error_to_errno(e),
+            FuseError::Executor(e) => e.to_errno(),
             FuseError::InvalidInode(_) => libc::ENOENT,
             FuseError::InvalidHandle(_) => libc::EBADF,
             FuseError::WrongHandleType => libc::EBADF,

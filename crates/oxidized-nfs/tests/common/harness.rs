@@ -347,8 +347,12 @@ impl TestMount {
     }
 
     /// Copy a file.
+    ///
+    /// We explicitly read and write to avoid NFS caching issues with fs::copy.
     pub fn copy(&self, from: &str, to: &str) -> io::Result<u64> {
-        fs::copy(self.full_path(from), self.full_path(to))
+        let content = self.read(from)?;
+        self.write(to, &content)?;
+        Ok(content.len() as u64)
     }
 
     /// Check if a path exists.

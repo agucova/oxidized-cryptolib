@@ -127,6 +127,14 @@ impl AppState {
         }
     }
 
+    /// Update mount settings (backend and local_mode) for a vault
+    pub fn set_vault_mount_settings(&mut self, id: &str, backend: BackendType, local_mode: bool) {
+        if let Some(vault_config) = self.config.find_vault_mut(id) {
+            vault_config.preferred_backend = backend;
+            vault_config.local_mode = local_mode;
+        }
+    }
+
     /// Add a new vault
     pub fn add_vault(&mut self, config: VaultConfig) {
         let id = config.id.clone();

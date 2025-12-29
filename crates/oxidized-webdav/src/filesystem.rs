@@ -15,20 +15,21 @@ use dav_server::fs::{
 use futures::stream;
 use oxidized_cryptolib::vault::operations_async::VaultOperationsAsync;
 use oxidized_cryptolib::vault::DirId;
-use oxidized_mount_common::{HandleTable, TtlCache, VaultStats, WriteBuffer};
+use oxidized_mount_common::moka_cache::SyncTtlCache;
+use oxidized_mount_common::{HandleTable, VaultStats, WriteBuffer};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, instrument, trace};
 
 /// Type alias for write buffer table (path -> WriteBuffer).
 type WriteBufferTable = HandleTable<String, WriteBuffer>;
 
 /// Type alias for metadata cache (path -> CryptomatorMetaData).
-type MetadataCache = TtlCache<String, CryptomatorMetaData>;
+type MetadataCache = SyncTtlCache<String, CryptomatorMetaData>;
 
 /// Type alias for path resolution cache (path -> DirId).
-type PathResolutionCache = TtlCache<String, DirId>;
+type PathResolutionCache = SyncTtlCache<String, DirId>;
 
 /// TTL for path resolution cache entries (5 seconds - longer than metadata).
 /// Path structure changes less frequently than file contents.
@@ -66,12 +67,12 @@ impl CryptomatorWebDav {
         let stats = Arc::new(VaultStats::new());
 
         // Create metadata cache and connect it to stats for hit/miss tracking
-        let mut metadata_cache = TtlCache::with_defaults();
+        let mut metadata_cache = SyncTtlCache::with_defaults();
         metadata_cache.set_stats(stats.cache_stats());
 
         // Create path resolution cache with longer TTL (5s)
         // Path structure changes less frequently than file contents
-        let path_cache = TtlCache::new(PATH_CACHE_TTL);
+        let path_cache = SyncTtlCache::new(PATH_CACHE_TTL);
 
         Self {
             ops,
@@ -331,17 +332,29 @@ impl DavFileSystem for CryptomatorWebDav {
         _meta: ReadDirMeta,
     ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
         Box::pin(async move {
+            let start = Instant::now();
+            self.stats.record_metadata_op();
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Reading directory");
 
-            let dir_id = self.resolve_dir_path(&vault_path).await?;
+            let dir_id = match self.resolve_dir_path(&vault_path).await {
+                Ok(id) => id,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
             // Use list_all for efficiency (single lock, concurrent fetches)
-            let (files, dirs, symlinks) = self
-                .ops
-                .list_all(&dir_id)
-                .await
-                .map_err(vault_error_to_fs_error)?;
+            let (files, dirs, symlinks) = match self.ops.list_all(&dir_id).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(vault_error_to_fs_error(e));
+                }
+            };
 
             let mut entries: Vec<Box<dyn DavDirEntry>> = Vec::new();
 
@@ -362,6 +375,7 @@ impl DavFileSystem for CryptomatorWebDav {
 
             trace!(count = entries.len(), "Directory entries found");
 
+            self.stats.record_metadata_latency(start.elapsed());
             Ok(Box::pin(stream::iter(entries.into_iter().map(Ok))) as FsStream<_>)
         })
     }
@@ -369,7 +383,7 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
     fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
-            let meta_start = std::time::Instant::now();
+            let _meta_start = std::time::Instant::now();
             let vault_path = Self::parse_path(path);
             trace!(vault_path = %vault_path, "Getting metadata");
 
@@ -381,25 +395,38 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
     fn create_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
+            let start = Instant::now();
+            self.stats.record_metadata_op();
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Creating directory");
 
             // Check if the path already exists (RFC 4918: MKCOL on existing resource returns 405)
             if self.find_entry(&vault_path).await.is_ok() {
+                self.stats.record_error();
+                self.stats.record_metadata_latency(start.elapsed());
                 return Err(FsError::Exists);
             }
 
-            let (parent_dir_id, name) = self.resolve_path(&vault_path).await?;
+            let (parent_dir_id, name) = match self.resolve_path(&vault_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
-            self.ops
-                .create_directory(&parent_dir_id, &name)
-                .await
-                .map_err(write_error_to_fs_error)?;
+            if let Err(e) = self.ops.create_directory(&parent_dir_id, &name).await {
+                self.stats.record_error();
+                self.stats.record_metadata_latency(start.elapsed());
+                return Err(write_error_to_fs_error(e));
+            }
 
             // Invalidate caches for the new directory
             self.metadata_cache.invalidate(&vault_path);
             // Don't need to invalidate path_cache - new dir won't be in it yet
 
+            self.stats.record_metadata_latency(start.elapsed());
             Ok(())
         })
     }
@@ -407,20 +434,31 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
     fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
+            let start = Instant::now();
+            self.stats.record_metadata_op();
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Removing directory");
 
-            let (parent_dir_id, name) = self.resolve_path(&vault_path).await?;
+            let (parent_dir_id, name) = match self.resolve_path(&vault_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
-            self.ops
-                .delete_directory(&parent_dir_id, &name)
-                .await
-                .map_err(write_error_to_fs_error)?;
+            if let Err(e) = self.ops.delete_directory(&parent_dir_id, &name).await {
+                self.stats.record_error();
+                self.stats.record_metadata_latency(start.elapsed());
+                return Err(write_error_to_fs_error(e));
+            }
 
             // Invalidate caches for the directory and all children
             self.metadata_cache.invalidate_prefix(&vault_path);
             self.path_cache.invalidate_prefix(&vault_path);
 
+            self.stats.record_metadata_latency(start.elapsed());
             Ok(())
         })
     }
@@ -428,23 +466,34 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
     fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
+            let start = Instant::now();
+            self.stats.record_metadata_op();
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, "Removing file");
 
             // First flush any pending writes
             self.flush_write_buffer(&vault_path).await.ok();
 
-            let (parent_dir_id, name) = self.resolve_path(&vault_path).await?;
+            let (parent_dir_id, name) = match self.resolve_path(&vault_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
             // Try to delete as file first
             if self.ops.delete_file(&parent_dir_id, &name).await.is_ok() {
                 self.metadata_cache.invalidate(&vault_path);
+                self.stats.record_metadata_latency(start.elapsed());
                 return Ok(());
             }
 
             // Try as symlink
             if self.ops.delete_symlink(&parent_dir_id, &name).await.is_ok() {
                 self.metadata_cache.invalidate(&vault_path);
+                self.stats.record_metadata_latency(start.elapsed());
                 return Ok(());
             }
 
@@ -452,9 +501,12 @@ impl DavFileSystem for CryptomatorWebDav {
             if self.ops.delete_directory(&parent_dir_id, &name).await.is_ok() {
                 self.metadata_cache.invalidate_prefix(&vault_path);
                 self.path_cache.invalidate_prefix(&vault_path);
+                self.stats.record_metadata_latency(start.elapsed());
                 return Ok(());
             }
 
+            self.stats.record_error();
+            self.stats.record_metadata_latency(start.elapsed());
             Err(FsError::NotFound)
         })
     }
@@ -462,6 +514,8 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(from = %from.as_url_string(), to = %to.as_url_string()))]
     fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
+            let start = Instant::now();
+            self.stats.record_metadata_op();
             let from_path = Self::parse_path(from);
             let to_path = Self::parse_path(to);
             debug!(from = %from_path, to = %to_path, "Renaming/moving");
@@ -469,24 +523,52 @@ impl DavFileSystem for CryptomatorWebDav {
             // Flush any pending writes on source
             self.flush_write_buffer(&from_path).await.ok();
 
-            let (from_dir_id, from_name) = self.resolve_path(&from_path).await?;
-            let (to_dir_id, to_name) = self.resolve_path(&to_path).await?;
+            let (from_dir_id, from_name) = match self.resolve_path(&from_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
+            let (to_dir_id, to_name) = match self.resolve_path(&to_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
             // Determine if source is a directory or file
-            let source_meta = self.find_entry(&from_path).await?;
+            let source_meta = match self.find_entry(&from_path).await {
+                Ok(meta) => meta,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
             if source_meta.is_dir() {
                 // Directory operations
                 if from_dir_id != to_dir_id {
                     // Cross-directory move not supported for directories
                     debug!("Cross-directory move not supported for directories");
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
                     return Err(FsError::NotImplemented);
                 }
                 // Same directory rename
-                self.ops
+                if let Err(e) = self
+                    .ops
                     .rename_directory(&from_dir_id, &from_name, &to_name)
                     .await
-                    .map_err(write_error_to_fs_error)?;
+                {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(write_error_to_fs_error(e));
+                }
             } else {
                 // File operations
                 // dav-server doesn't delete destination files for us when Overwrite: T is set,
@@ -495,31 +577,47 @@ impl DavFileSystem for CryptomatorWebDav {
                 if let Ok(dest_meta) = self.find_entry(&to_path).await {
                     if dest_meta.is_file() {
                         debug!(dest = %to_path, "Deleting existing destination file for overwrite");
-                        self.ops
-                            .delete_file(&to_dir_id, &to_name)
-                            .await
-                            .map_err(write_error_to_fs_error)?;
+                        if let Err(e) = self.ops.delete_file(&to_dir_id, &to_name).await {
+                            self.stats.record_error();
+                            self.stats.record_metadata_latency(start.elapsed());
+                            return Err(write_error_to_fs_error(e));
+                        }
                     }
                 }
 
                 if from_dir_id == to_dir_id && from_name != to_name {
                     // Same directory, just rename
-                    self.ops
+                    if let Err(e) = self
+                        .ops
                         .rename_file(&from_dir_id, &from_name, &to_name)
                         .await
-                        .map_err(write_error_to_fs_error)?;
+                    {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(write_error_to_fs_error(e));
+                    }
                 } else if from_name == to_name {
                     // Different directory, same name - move
-                    self.ops
+                    if let Err(e) = self
+                        .ops
                         .move_file(&from_dir_id, &from_name, &to_dir_id)
                         .await
-                        .map_err(write_error_to_fs_error)?;
+                    {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(write_error_to_fs_error(e));
+                    }
                 } else {
                     // Different directory and name - move and rename
-                    self.ops
+                    if let Err(e) = self
+                        .ops
                         .move_and_rename_file(&from_dir_id, &from_name, &to_dir_id, &to_name)
                         .await
-                        .map_err(write_error_to_fs_error)?;
+                    {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(write_error_to_fs_error(e));
+                    }
                 }
             }
 
@@ -532,6 +630,7 @@ impl DavFileSystem for CryptomatorWebDav {
                 self.path_cache.invalidate_prefix(&to_path);
             }
 
+            self.stats.record_metadata_latency(start.elapsed());
             Ok(())
         })
     }
@@ -539,29 +638,54 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(from = %from.as_url_string(), to = %to.as_url_string()))]
     fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         Box::pin(async move {
+            let start = Instant::now();
+            self.stats.record_metadata_op();
             let from_path = Self::parse_path(from);
             let to_path = Self::parse_path(to);
             debug!(from = %from_path, to = %to_path, "Copying");
 
-            let (from_dir_id, from_name) = self.resolve_path(&from_path).await?;
-            let (to_dir_id, to_name) = self.resolve_path(&to_path).await?;
+            let (from_dir_id, from_name) = match self.resolve_path(&from_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
+            let (to_dir_id, to_name) = match self.resolve_path(&to_path).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
 
             // Read source file
-            let content = self
-                .ops
-                .read_file(&from_dir_id, &from_name)
-                .await
-                .map_err(vault_error_to_fs_error)?;
+            let content = match self.ops.read_file(&from_dir_id, &from_name).await {
+                Ok(content) => content,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(vault_error_to_fs_error(e));
+                }
+            };
 
             // Write to destination
-            self.ops
+            if let Err(e) = self
+                .ops
                 .write_file(&to_dir_id, &to_name, &content.content)
                 .await
-                .map_err(write_error_to_fs_error)?;
+            {
+                self.stats.record_error();
+                self.stats.record_metadata_latency(start.elapsed());
+                return Err(write_error_to_fs_error(e));
+            }
 
             // Invalidate cache for the destination
             self.metadata_cache.invalidate(&to_path);
 
+            self.stats.record_metadata_latency(start.elapsed());
             Ok(())
         })
     }

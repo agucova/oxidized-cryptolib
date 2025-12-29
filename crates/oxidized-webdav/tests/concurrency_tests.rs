@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{generators::*, sha256, SharedTestClient, TestServer, CHUNK_SIZE};
+use common::{multi_chunk_content, random_bytes, sha256, TestServer};
 use reqwest::StatusCode;
 use tokio::task::JoinSet;
 

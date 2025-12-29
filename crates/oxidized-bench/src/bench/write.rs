@@ -165,7 +165,7 @@ impl Benchmark for RandomWriteBenchmark {
         rng.fill_bytes(&mut buffer);
 
         let offsets: Vec<u64> = (0..self.num_writes)
-            .map(|_| rng.gen_range(0..=max_offset) as u64)
+            .map(|_| rng.random_range(0..=max_offset) as u64)
             .collect();
 
         let start = Instant::now();

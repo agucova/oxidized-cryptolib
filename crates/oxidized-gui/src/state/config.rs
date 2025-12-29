@@ -86,6 +86,11 @@ pub struct VaultConfig {
     pub preferred_backend: BackendType,
     /// Custom mount point (if None, auto-generated)
     pub default_mountpoint: Option<PathBuf>,
+    /// Use local mode with shorter cache TTLs (1s instead of 60s).
+    /// Enable this when the vault is on a local/fast filesystem.
+    /// Default (false) is optimized for network filesystems (Google Drive, etc.)
+    #[serde(default)]
+    pub local_mode: bool,
 }
 
 impl VaultConfig {
@@ -97,6 +102,7 @@ impl VaultConfig {
             path,
             preferred_backend: BackendType::default(),
             default_mountpoint: None,
+            local_mode: false,
         }
     }
 
@@ -108,6 +114,7 @@ impl VaultConfig {
             path,
             preferred_backend: backend,
             default_mountpoint: None,
+            local_mode: false,
         }
     }
 

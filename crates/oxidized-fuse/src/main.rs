@@ -13,9 +13,10 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use oxidized_fuse::CryptomatorFS;
+use oxidized_fuse::{CryptomatorFS, MountConfig};
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::Duration;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use zeroize::Zeroizing;
@@ -45,6 +46,17 @@ struct Cli {
     /// Mount as read-only (default: read-write)
     #[arg(long)]
     read_only: bool,
+
+    /// Use local mode with shorter cache TTLs (1s instead of 60s).
+    /// Recommended when the vault is on a local/fast filesystem.
+    /// Default mode is optimized for network filesystems (Google Drive, etc.)
+    #[arg(long)]
+    local_mode: bool,
+
+    /// Custom cache TTL in seconds for file attributes.
+    /// Overrides --local-mode setting. Default: 60s (network) or 1s (local).
+    #[arg(long, value_name = "SECONDS")]
+    cache_ttl: Option<u64>,
 }
 
 fn main() -> Result<()> {
@@ -122,6 +134,23 @@ fn main() -> Result<()> {
     }
 }
 
+/// Build mount configuration from CLI arguments.
+fn build_config(cli: &Cli) -> MountConfig {
+    // Start with base config based on local_mode flag
+    let mut config = if cli.local_mode {
+        MountConfig::local()
+    } else {
+        MountConfig::default()
+    };
+
+    // Override TTL if explicitly specified
+    if let Some(ttl_secs) = cli.cache_ttl {
+        config = config.attr_ttl(Duration::from_secs(ttl_secs));
+    }
+
+    config
+}
+
 /// Run the mount with an external runtime handle (for tokio-console support).
 #[cfg(feature = "tokio-console")]
 fn run_mount(cli: Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Result<()> {
@@ -139,10 +168,20 @@ fn run_mount(cli: Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Res
     // Get password
     let password = get_password(&cli)?;
 
-    info!(vault = %cli.vault.display(), mount = %cli.mount.display(), "Mounting vault");
+    // Build configuration
+    let config = build_config(&cli);
+    let mode = if cli.local_mode { "local" } else { "network" };
+
+    info!(
+        vault = %cli.vault.display(),
+        mount = %cli.mount.display(),
+        mode = mode,
+        cache_ttl_secs = config.attr_ttl.as_secs(),
+        "Mounting vault"
+    );
 
     // Create filesystem with external runtime handle for tokio-console visibility
-    let fs = CryptomatorFS::with_runtime_handle(&cli.vault, &password, handle)
+    let fs = CryptomatorFS::with_runtime_handle_and_config(&cli.vault, &password, handle, config)
         .context("Failed to initialize filesystem")?;
 
     mount_and_wait(cli, fs)
@@ -162,10 +201,20 @@ fn run_mount_simple(cli: Cli) -> Result<()> {
     // Get password
     let password = get_password(&cli)?;
 
-    info!(vault = %cli.vault.display(), mount = %cli.mount.display(), "Mounting vault");
+    // Build configuration
+    let config = build_config(&cli);
+    let mode = if cli.local_mode { "local" } else { "network" };
 
-    // Create filesystem (creates its own internal runtime)
-    let fs = CryptomatorFS::new(&cli.vault, &password)
+    info!(
+        vault = %cli.vault.display(),
+        mount = %cli.mount.display(),
+        mode = mode,
+        cache_ttl_secs = config.attr_ttl.as_secs(),
+        "Mounting vault"
+    );
+
+    // Create filesystem with custom configuration
+    let fs = CryptomatorFS::with_config(&cli.vault, &password, config)
         .context("Failed to initialize filesystem")?;
 
     mount_and_wait(cli, fs)

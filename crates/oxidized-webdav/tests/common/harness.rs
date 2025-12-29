@@ -75,7 +75,7 @@ impl TestServer {
             .build()
             .expect("Failed to create HTTP client");
 
-        let mut test_server = Self {
+        let test_server = Self {
             server,
             client,
             base_url,
@@ -123,7 +123,7 @@ impl TestServer {
             .build()
             .expect("Failed to create HTTP client");
 
-        let mut test_server = Self {
+        let test_server = Self {
             server,
             client,
             base_url,
@@ -415,5 +415,82 @@ impl TestServer {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
         }
+    }
+
+    /// Get the underlying HTTP client for custom requests.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// GET with Range header for partial content.
+    pub async fn get_range(&self, path: &str, range: &str) -> Response {
+        self.client
+            .get(self.url(path))
+            .header("Range", range)
+            .send()
+            .await
+            .expect("Range GET request failed")
+    }
+
+    /// GET with Range header and return bytes on success.
+    pub async fn get_range_bytes(&self, path: &str, range: &str) -> Result<Bytes, (StatusCode, String)> {
+        let resp = self.get_range(path, range).await;
+        let status = resp.status();
+        if status == StatusCode::PARTIAL_CONTENT || status.is_success() {
+            Ok(resp.bytes().await.expect("Failed to read response bytes"))
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err((status, body))
+        }
+    }
+
+    /// GET with If-None-Match header for conditional request.
+    pub async fn get_if_none_match(&self, path: &str, etag: &str) -> Response {
+        self.client
+            .get(self.url(path))
+            .header("If-None-Match", etag)
+            .send()
+            .await
+            .expect("Conditional GET request failed")
+    }
+
+    /// PUT with If-Match header for conditional update.
+    pub async fn put_if_match(&self, path: &str, body: impl Into<reqwest::Body>, etag: &str) -> Response {
+        self.client
+            .put(self.url(path))
+            .header("If-Match", etag)
+            .body(body)
+            .send()
+            .await
+            .expect("Conditional PUT request failed")
+    }
+
+    /// LOCK a resource.
+    pub async fn lock(&self, path: &str) -> Response {
+        let lock_body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:lockinfo xmlns:D="DAV:">
+  <D:lockscope><D:exclusive/></D:lockscope>
+  <D:locktype><D:write/></D:locktype>
+  <D:owner><D:href>test-owner</D:href></D:owner>
+</D:lockinfo>"#;
+
+        self.client
+            .request(Method::from_bytes(b"LOCK").unwrap(), self.url(path))
+            .header("Content-Type", "application/xml")
+            .header("Timeout", "Second-3600")
+            .body(lock_body)
+            .send()
+            .await
+            .expect("LOCK request failed")
+    }
+
+    /// UNLOCK a resource.
+    pub async fn unlock(&self, path: &str, lock_token: &str) -> Response {
+        self.client
+            .request(Method::from_bytes(b"UNLOCK").unwrap(), self.url(path))
+            .header("Lock-Token", format!("<{}>", lock_token))
+            .send()
+            .await
+            .expect("UNLOCK request failed")
     }
 }

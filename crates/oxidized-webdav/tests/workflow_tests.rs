@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{assert_file_content, assert_not_found, generators::*, sha256, TestServer, CHUNK_SIZE};
+use common::{assert_file_content, assert_not_found, multi_chunk_content, one_chunk_content, random_bytes, sha256, TestServer, CHUNK_SIZE};
 use reqwest::StatusCode;
 
 // ============================================================================

@@ -2,143 +2,45 @@
 //!
 //! This module provides the mapping between NFS file IDs (fileid3) and vault paths.
 //! Unlike FUSE, NFS is stateless so we don't need nlookup tracking.
+//!
+//! The implementation uses the shared `PathTable` from `oxidized-mount-common`,
+//! providing consistent behavior across mount backends.
 
 use dashmap::mapref::one::{Ref, RefMut};
-use dashmap::DashMap;
-use oxidized_cryptolib::vault::path::{DirId, VaultPath};
-use std::sync::atomic::{AtomicU64, Ordering};
+use oxidized_cryptolib::vault::path::VaultPath;
+use oxidized_mount_common::path_mapper::{EntryKind, PathEntry, PathTable};
 
 /// The root file ID (NFS convention, matching FUSE).
 pub const ROOT_FILEID: u64 = 1;
 
 /// Represents the kind of inode entry.
-#[derive(Debug, Clone)]
-pub enum InodeKind {
-    /// Root directory of the vault.
-    Root,
-    /// A directory within the vault.
-    Directory {
-        /// The directory ID used by Cryptomator.
-        dir_id: DirId,
-    },
-    /// A regular file.
-    File {
-        /// Parent directory ID.
-        dir_id: DirId,
-        /// Decrypted filename.
-        name: String,
-    },
-    /// A symbolic link.
-    Symlink {
-        /// Parent directory ID.
-        dir_id: DirId,
-        /// Decrypted filename.
-        name: String,
-    },
-}
+/// This is an alias for the shared `EntryKind` from mount-common.
+pub type InodeKind = EntryKind;
 
 /// An entry in the inode table.
-#[derive(Debug)]
-pub struct InodeEntry {
-    /// The virtual path within the vault.
-    pub path: VaultPath,
-    /// The kind of entry (directory, file, symlink).
-    pub kind: InodeKind,
-}
-
-impl InodeEntry {
-    /// Creates a new inode entry.
-    pub fn new(path: VaultPath, kind: InodeKind) -> Self {
-        Self { path, kind }
-    }
-
-    /// Returns the parent directory ID if this is a file or symlink.
-    pub fn parent_dir_id(&self) -> Option<&DirId> {
-        match &self.kind {
-            InodeKind::Root => None,
-            InodeKind::Directory { .. } => None,
-            InodeKind::File { dir_id, .. } => Some(dir_id),
-            InodeKind::Symlink { dir_id, .. } => Some(dir_id),
-        }
-    }
-
-    /// Returns the filename if this is a file or symlink.
-    pub fn filename(&self) -> Option<&str> {
-        match &self.kind {
-            InodeKind::Root => None,
-            InodeKind::Directory { .. } => None,
-            InodeKind::File { name, .. } => Some(name),
-            InodeKind::Symlink { name, .. } => Some(name),
-        }
-    }
-
-    /// Returns the directory ID if this is a directory or root.
-    pub fn dir_id(&self) -> Option<DirId> {
-        match &self.kind {
-            InodeKind::Root => Some(DirId::root()),
-            InodeKind::Directory { dir_id } => Some(dir_id.clone()),
-            InodeKind::File { .. } => None,
-            InodeKind::Symlink { .. } => None,
-        }
-    }
-
-    /// Returns file info (dir_id, filename) if this is a file or symlink.
-    pub fn file_info(&self) -> Option<(&DirId, &str)> {
-        match &self.kind {
-            InodeKind::File { dir_id, name } => Some((dir_id, name)),
-            InodeKind::Symlink { dir_id, name } => Some((dir_id, name)),
-            _ => None,
-        }
-    }
-
-    /// Returns true if this is a directory (including root).
-    pub fn is_directory(&self) -> bool {
-        matches!(self.kind, InodeKind::Root | InodeKind::Directory { .. })
-    }
-
-    /// Returns true if this is a regular file.
-    pub fn is_file(&self) -> bool {
-        matches!(self.kind, InodeKind::File { .. })
-    }
-
-    /// Returns true if this is a symlink.
-    pub fn is_symlink(&self) -> bool {
-        matches!(self.kind, InodeKind::Symlink { .. })
-    }
-}
+/// This is an alias for the shared `PathEntry` from mount-common.
+pub type InodeEntry = PathEntry;
 
 /// Thread-safe table mapping between file IDs and vault paths.
 ///
 /// Unlike FUSE's InodeTable, this doesn't track nlookup because NFS is stateless.
 /// Entries are kept until explicitly removed (on delete/rename).
-#[derive(Debug)]
 pub struct NfsInodeTable {
-    /// Maps vault paths to file IDs.
-    path_to_id: DashMap<VaultPath, u64>,
-    /// Maps file IDs to entry details.
-    id_to_entry: DashMap<u64, InodeEntry>,
-    /// Next available file ID (atomic counter).
-    next_id: AtomicU64,
+    /// The shared path table implementation.
+    inner: PathTable<u64, InodeEntry>,
 }
 
 impl NfsInodeTable {
     /// Creates a new inode table with the root directory pre-allocated.
     pub fn new() -> Self {
-        let table = Self {
-            path_to_id: DashMap::new(),
-            id_to_entry: DashMap::new(),
-            // Start at 2 since ID 1 is reserved for root
-            next_id: AtomicU64::new(2),
-        };
-
-        // Pre-allocate root
-        let root_path = VaultPath::root();
-        table.path_to_id.insert(root_path.clone(), ROOT_FILEID);
-        table
-            .id_to_entry
-            .insert(ROOT_FILEID, InodeEntry::new(root_path, InodeKind::Root));
-
-        table
+        Self {
+            inner: PathTable::with_root(
+                ROOT_FILEID,
+                // Start at 2 since ID 1 is reserved for root
+                2,
+                PathEntry::new(VaultPath::root(), InodeKind::Root),
+            ),
+        }
     }
 
     /// Gets or creates a file ID for the given path.
@@ -146,50 +48,30 @@ impl NfsInodeTable {
     /// If the path already has an ID, returns the existing ID.
     /// Otherwise, allocates a new ID and stores the entry.
     pub fn get_or_insert(&self, path: VaultPath, kind: InodeKind) -> u64 {
-        // Fast path: check if already exists
-        if let Some(id) = self.path_to_id.get(&path) {
-            return *id;
-        }
-
-        // Slow path: allocate new ID
-        let id = self
-            .path_to_id
-            .entry(path.clone())
-            .or_insert_with(|| {
-                let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-                self.id_to_entry
-                    .insert(new_id, InodeEntry::new(path.clone(), kind));
-                new_id
-            });
-
-        *id
+        self.inner
+            .get_or_insert_with(path.clone(), || PathEntry::new(path, kind))
     }
 
     /// Looks up an entry by file ID.
     pub fn get(&self, id: u64) -> Option<Ref<'_, u64, InodeEntry>> {
-        self.id_to_entry.get(&id)
+        self.inner.get(id)
     }
 
     /// Looks up an entry by file ID for mutation.
     pub fn get_mut(&self, id: u64) -> Option<RefMut<'_, u64, InodeEntry>> {
-        self.id_to_entry.get_mut(&id)
+        self.inner.get_mut(id)
     }
 
     /// Looks up a file ID by vault path.
     pub fn get_id(&self, path: &VaultPath) -> Option<u64> {
-        self.path_to_id.get(path).map(|r| *r)
+        self.inner.get_id(path)
     }
 
     /// Removes an entry by path.
     ///
     /// Returns the file ID if it was removed.
     pub fn remove(&self, path: &VaultPath) -> Option<u64> {
-        if let Some((_, id)) = self.path_to_id.remove(path) {
-            self.id_to_entry.remove(&id);
-            Some(id)
-        } else {
-            None
-        }
+        self.inner.remove_by_path(path).map(|(id, _)| id)
     }
 
     /// Removes an entry by file ID.
@@ -201,27 +83,20 @@ impl NfsInodeTable {
             return None;
         }
 
-        if let Some((_, entry)) = self.id_to_entry.remove(&id) {
-            self.path_to_id.remove(&entry.path);
-            Some(entry)
-        } else {
-            None
-        }
+        self.inner.remove_by_id(id)
     }
 
     /// Updates the path for an entry (used after rename operations).
     pub fn update_path(&self, id: u64, old_path: &VaultPath, new_path: VaultPath) {
-        self.path_to_id.remove(old_path);
-        self.path_to_id.insert(new_path.clone(), id);
-
-        if let Some(mut entry) = self.id_to_entry.get_mut(&id) {
-            entry.path = new_path;
-        }
+        self.inner
+            .update_path(id, old_path, new_path.clone(), |entry, path| {
+                entry.path = path;
+            });
     }
 
     /// Updates the kind of an existing entry.
     pub fn update_kind(&self, id: u64, kind: InodeKind) -> bool {
-        if let Some(mut entry) = self.id_to_entry.get_mut(&id) {
+        if let Some(mut entry) = self.inner.get_mut(id) {
             entry.kind = kind;
             true
         } else {
@@ -231,34 +106,24 @@ impl NfsInodeTable {
 
     /// Returns the number of entries in the table.
     pub fn len(&self) -> usize {
-        self.id_to_entry.len()
+        self.inner.len()
     }
 
     /// Returns true if the table only contains the root entry.
     pub fn is_empty(&self) -> bool {
-        self.id_to_entry.len() <= 1
+        self.inner.len() <= 1
     }
 
     /// Checks if an entry exists for the given ID.
     pub fn contains(&self, id: u64) -> bool {
-        self.id_to_entry.contains_key(&id)
+        self.inner.contains(id)
     }
 
     /// Invalidates all cached entries except root.
     ///
     /// This can be called when the vault state may have changed externally.
     pub fn invalidate_all(&self) {
-        // Collect non-root entries to remove
-        let to_remove: Vec<u64> = self
-            .id_to_entry
-            .iter()
-            .filter(|e| *e.key() != ROOT_FILEID)
-            .map(|e| *e.key())
-            .collect();
-
-        for id in to_remove {
-            self.remove_by_id(id);
-        }
+        self.inner.invalidate_all();
     }
 }
 
@@ -271,6 +136,7 @@ impl Default for NfsInodeTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxidized_cryptolib::vault::path::DirId;
 
     #[test]
     fn test_root_exists() {
@@ -353,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_entry_methods() {
-        let file_entry = InodeEntry::new(
+        let file_entry = PathEntry::new(
             VaultPath::new("test/file.txt"),
             InodeKind::File {
                 dir_id: DirId::from_raw("parent-id"),
@@ -375,7 +241,7 @@ mod tests {
             Some(("parent-id", "file.txt"))
         );
 
-        let dir_entry = InodeEntry::new(
+        let dir_entry = PathEntry::new(
             VaultPath::new("test/subdir"),
             InodeKind::Directory {
                 dir_id: DirId::from_raw("subdir-id"),

@@ -1,0 +1,77 @@
+[package]
+name = "oxidized-fskit-legacy"
+version = "0.1.0"
+description = "[DEPRECATED: Use oxidized-fskit-ffi instead] FSKit filesystem for Cryptomator vaults using oxidized-cryptolib (macOS 15.4+)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["cryptomator", "fskit", "encryption", "filesystem", "macos"]
+categories = ["filesystem", "cryptography", "os::macos-apis"]
+
+[[bin]]
+name = "oxmount-fskit"
+path = "src/main.rs"
+
+[[bin]]
+name = "oxfskit-setup"
+path = "src/bin/oxfskit-setup.rs"
+required-features = ["setup"]
+
+[features]
+default = []
+tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+# Enable download/install functionality for FSKitBridge setup
+setup = ["dep:reqwest", "dep:zip", "dep:serde", "dep:serde_json", "dep:tempfile"]
+# Enable integration tests (requires macOS 15.4+ with FSKitBridge installed)
+fskit-tests = []
+
+[dependencies]
+oxidized-cryptolib = { workspace = true, features = ["async"] }
+clap = { workspace = true }
+rpassword = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# FSKit bindings
+fskit-rs = { git = "https://github.com/debox-network/fskit-rs", branch = "main" }
+async-trait = "0.1"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros", "net", "time"] }
+
+# Home directory detection
+dirs = "6"
+
+# Concurrent data structures
+dashmap = "6"
+
+# POSIX types
+libc = "0.2"
+
+# UUID generation for volume IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Protobuf types for FSKit timestamps
+prost-types = "0.14"
+
+# Unix filesystem types
+nix = { version = "0.30", features = ["fs"] }
+
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
+
+# Optional: FSKitBridge download/setup functionality
+reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
+zip = { version = "7", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }
+oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }

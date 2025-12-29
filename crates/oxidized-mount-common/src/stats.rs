@@ -36,6 +36,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::moka_cache::{CacheHealth, CacheHealthThresholds, CacheWarning};
+
 /// Statistics for cache operations.
 ///
 /// Tracks hits, misses, and entries for computing cache efficiency.
@@ -137,6 +139,66 @@ impl CacheStats {
             misses: self.miss_count(),
             entries: self.entry_count(),
             evictions: self.eviction_count(),
+        }
+    }
+
+    /// Compute cache health based on current statistics.
+    ///
+    /// This analyzes hit rate, eviction rate, and returns any applicable warnings.
+    /// Use default thresholds or provide custom ones via `health_with_thresholds()`.
+    pub fn health(&self) -> CacheHealth {
+        self.health_with_thresholds(CacheHealthThresholds::default())
+    }
+
+    /// Compute cache health with custom thresholds.
+    pub fn health_with_thresholds(&self, thresholds: CacheHealthThresholds) -> CacheHealth {
+        let hits = self.hit_count();
+        let misses = self.miss_count();
+        let entries = self.entry_count();
+        let evictions = self.eviction_count();
+
+        let total_lookups = hits + misses;
+        let hit_rate = if total_lookups == 0 {
+            1.0 // Assume healthy when no data
+        } else {
+            hits as f64 / total_lookups as f64
+        };
+
+        // Eviction rate: evictions per entry (approximation)
+        let eviction_rate = if entries == 0 {
+            0.0
+        } else {
+            evictions as f64 / entries as f64
+        };
+
+        // Build warnings
+        let mut warnings = Vec::new();
+
+        // Low hit rate warning (only if we have enough data)
+        if total_lookups >= 10 && hit_rate < thresholds.min_hit_rate {
+            warnings.push(CacheWarning::LowHitRate {
+                rate: hit_rate,
+                threshold: thresholds.min_hit_rate,
+            });
+        }
+
+        // High eviction rate warning
+        if evictions > 0 && eviction_rate > thresholds.max_eviction_rate {
+            warnings.push(CacheWarning::HighEvictionRate {
+                rate: eviction_rate,
+                threshold: thresholds.max_eviction_rate,
+            });
+        }
+
+        CacheHealth {
+            hit_rate,
+            eviction_rate,
+            negative_hit_ratio: 0.0, // CacheStats doesn't track negative cache separately
+            entry_count: entries,
+            hits,
+            misses,
+            evictions,
+            warnings,
         }
     }
 }
@@ -314,6 +376,16 @@ pub struct VaultStats {
     read_latency: LatencyStats,
     /// Write operation latency statistics.
     write_latency: LatencyStats,
+    /// Metadata operation latency statistics.
+    metadata_latency: LatencyStats,
+
+    // === Metadata Operation Tracking ===
+    /// Total number of metadata operations (lookup, getattr, readdir, etc.).
+    pub total_metadata_ops: AtomicU64,
+
+    // === Error Tracking ===
+    /// Total number of errors encountered.
+    pub total_errors: AtomicU64,
 
     // === Session Information ===
     /// When this statistics instance was created.
@@ -346,6 +418,9 @@ impl VaultStats {
             writes_in_progress: AtomicU64::new(0),
             read_latency: LatencyStats::new(),
             write_latency: LatencyStats::new(),
+            metadata_latency: LatencyStats::new(),
+            total_metadata_ops: AtomicU64::new(0),
+            total_errors: AtomicU64::new(0),
             session_start: SystemTime::now(),
         }
     }
@@ -469,6 +544,34 @@ impl VaultStats {
     #[inline]
     pub fn record_write_latency(&self, elapsed: Duration) {
         self.write_latency.record(elapsed);
+    }
+
+    /// Record a metadata operation (lookup, getattr, readdir, etc.).
+    ///
+    /// This increments both the metadata ops counter and total ops counter.
+    #[inline]
+    pub fn record_metadata_op(&self) {
+        self.total_metadata_ops.fetch_add(1, Ordering::Relaxed);
+        self.total_ops.fetch_add(1, Ordering::Relaxed);
+        self.touch();
+    }
+
+    /// Record latency for a metadata operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `elapsed` - Duration of the metadata operation
+    #[inline]
+    pub fn record_metadata_latency(&self, elapsed: Duration) {
+        self.metadata_latency.record(elapsed);
+    }
+
+    /// Record an error.
+    ///
+    /// Call this when a filesystem operation fails.
+    #[inline]
+    pub fn record_error(&self) {
+        self.total_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Update the last activity timestamp.
@@ -598,11 +701,33 @@ impl VaultStats {
         self.write_latency.count()
     }
 
+    /// Get the total number of metadata operations.
+    pub fn metadata_op_count(&self) -> u64 {
+        self.total_metadata_ops.load(Ordering::Relaxed)
+    }
+
+    /// Get average metadata latency in milliseconds.
+    pub fn avg_metadata_latency_ms(&self) -> f64 {
+        self.metadata_latency.avg_millis()
+    }
+
+    /// Get the number of metadata operations with latency tracked.
+    pub fn metadata_latency_count(&self) -> u64 {
+        self.metadata_latency.count()
+    }
+
+    /// Get the total number of errors.
+    pub fn error_count(&self) -> u64 {
+        self.total_errors.load(Ordering::Relaxed)
+    }
+
     /// Reset all statistics.
     pub fn reset(&self) {
         self.total_reads.store(0, Ordering::Relaxed);
         self.total_writes.store(0, Ordering::Relaxed);
         self.total_ops.store(0, Ordering::Relaxed);
+        self.total_metadata_ops.store(0, Ordering::Relaxed);
+        self.total_errors.store(0, Ordering::Relaxed);
         self.bytes_read.store(0, Ordering::Relaxed);
         self.bytes_written.store(0, Ordering::Relaxed);
         self.bytes_decrypted.store(0, Ordering::Relaxed);
@@ -610,6 +735,7 @@ impl VaultStats {
         self.cache_stats.reset();
         self.read_latency.reset();
         self.write_latency.reset();
+        self.metadata_latency.reset();
     }
 
     /// Create a snapshot of current statistics.
@@ -618,6 +744,8 @@ impl VaultStats {
             total_reads: self.read_count(),
             total_writes: self.write_count(),
             total_ops: self.op_count(),
+            total_metadata_ops: self.metadata_op_count(),
+            total_errors: self.error_count(),
             bytes_read: self.bytes_read(),
             bytes_written: self.bytes_written(),
             bytes_decrypted: self.bytes_decrypted(),
@@ -625,8 +753,36 @@ impl VaultStats {
             open_files: self.open_file_count(),
             open_dirs: self.open_dir_count(),
             cache: self.cache_stats.snapshot(),
+            cache_health: self.cache_stats.health(),
             read_latency_avg_ms: self.avg_read_latency_ms(),
             write_latency_avg_ms: self.avg_write_latency_ms(),
+            metadata_latency_avg_ms: self.avg_metadata_latency_ms(),
+            session_start: self.session_start,
+        }
+    }
+
+    /// Create a snapshot with custom cache health thresholds.
+    ///
+    /// This allows the caller to specify custom warning thresholds
+    /// for cache health assessment.
+    pub fn snapshot_with_thresholds(&self, thresholds: CacheHealthThresholds) -> VaultStatsSnapshot {
+        VaultStatsSnapshot {
+            total_reads: self.read_count(),
+            total_writes: self.write_count(),
+            total_ops: self.op_count(),
+            total_metadata_ops: self.metadata_op_count(),
+            total_errors: self.error_count(),
+            bytes_read: self.bytes_read(),
+            bytes_written: self.bytes_written(),
+            bytes_decrypted: self.bytes_decrypted(),
+            bytes_encrypted: self.bytes_encrypted(),
+            open_files: self.open_file_count(),
+            open_dirs: self.open_dir_count(),
+            cache: self.cache_stats.snapshot(),
+            cache_health: self.cache_stats.health_with_thresholds(thresholds),
+            read_latency_avg_ms: self.avg_read_latency_ms(),
+            write_latency_avg_ms: self.avg_write_latency_ms(),
+            metadata_latency_avg_ms: self.avg_metadata_latency_ms(),
             session_start: self.session_start,
         }
     }
@@ -641,6 +797,10 @@ pub struct VaultStatsSnapshot {
     pub total_writes: u64,
     /// Total number of all operations.
     pub total_ops: u64,
+    /// Total number of metadata operations.
+    pub total_metadata_ops: u64,
+    /// Total number of errors.
+    pub total_errors: u64,
     /// Total bytes read.
     pub bytes_read: u64,
     /// Total bytes written.
@@ -655,10 +815,14 @@ pub struct VaultStatsSnapshot {
     pub open_dirs: u64,
     /// Cache statistics snapshot.
     pub cache: CacheStatsSnapshot,
+    /// Cache health assessment with warnings.
+    pub cache_health: CacheHealth,
     /// Average read latency in milliseconds.
     pub read_latency_avg_ms: f64,
     /// Average write latency in milliseconds.
     pub write_latency_avg_ms: f64,
+    /// Average metadata latency in milliseconds.
+    pub metadata_latency_avg_ms: f64,
     /// When this session started.
     #[serde(with = "humantime_serde")]
     pub session_start: SystemTime,
@@ -668,6 +832,16 @@ impl VaultStatsSnapshot {
     /// Get the cache hit rate.
     pub fn cache_hit_rate(&self) -> f64 {
         self.cache.hit_rate()
+    }
+
+    /// Check if there are any cache health warnings.
+    pub fn has_cache_warnings(&self) -> bool {
+        !self.cache_health.warnings.is_empty()
+    }
+
+    /// Get cache health warnings.
+    pub fn cache_warnings(&self) -> &[CacheWarning] {
+        &self.cache_health.warnings
     }
 }
 
@@ -877,5 +1051,88 @@ mod tests {
 
         assert!((snapshot.read_latency_avg_ms - 8.0).abs() < 0.1);
         assert!((snapshot.write_latency_avg_ms - 12.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_vault_stats_metadata_ops() {
+        let stats = VaultStats::new();
+
+        // Initially no metadata ops
+        assert_eq!(stats.metadata_op_count(), 0);
+        assert_eq!(stats.metadata_latency_count(), 0);
+
+        // Record some metadata operations
+        stats.record_metadata_op();
+        stats.record_metadata_op();
+        stats.record_metadata_op();
+
+        assert_eq!(stats.metadata_op_count(), 3);
+        // Metadata ops should also count as total ops
+        assert_eq!(stats.op_count(), 3);
+
+        // Record latency for metadata ops
+        stats.record_metadata_latency(Duration::from_millis(5));
+        stats.record_metadata_latency(Duration::from_millis(15));
+
+        assert_eq!(stats.metadata_latency_count(), 2);
+        // Average should be 10ms
+        let avg = stats.avg_metadata_latency_ms();
+        assert!((avg - 10.0).abs() < 0.1, "avg_metadata_latency = {}", avg);
+    }
+
+    #[test]
+    fn test_vault_stats_errors() {
+        let stats = VaultStats::new();
+
+        // Initially no errors
+        assert_eq!(stats.error_count(), 0);
+
+        // Record some errors
+        stats.record_error();
+        stats.record_error();
+
+        assert_eq!(stats.error_count(), 2);
+    }
+
+    #[test]
+    fn test_vault_stats_reset_includes_new_fields() {
+        let stats = VaultStats::new();
+
+        // Add some data
+        stats.record_metadata_op();
+        stats.record_metadata_latency(Duration::from_millis(10));
+        stats.record_error();
+
+        assert!(stats.metadata_op_count() > 0);
+        assert!(stats.error_count() > 0);
+
+        // Reset should clear everything
+        stats.reset();
+
+        assert_eq!(stats.metadata_op_count(), 0);
+        assert_eq!(stats.metadata_latency_count(), 0);
+        assert_eq!(stats.error_count(), 0);
+    }
+
+    #[test]
+    fn test_snapshot_includes_metadata_and_errors() {
+        let stats = VaultStats::new();
+
+        stats.record_metadata_op();
+        stats.record_metadata_op();
+        stats.record_metadata_latency(Duration::from_millis(6));
+        stats.record_error();
+
+        let snapshot = stats.snapshot();
+
+        assert_eq!(snapshot.total_metadata_ops, 2);
+        assert_eq!(snapshot.total_errors, 1);
+        assert!((snapshot.metadata_latency_avg_ms - 6.0).abs() < 0.1);
+
+        // Verify serialization includes new fields
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("\"total_metadata_ops\":2"));
+        assert!(json.contains("\"total_errors\":1"));
+        assert!(json.contains("metadata_latency_avg_ms"));
     }
 }

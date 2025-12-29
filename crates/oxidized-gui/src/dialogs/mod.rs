@@ -16,7 +16,7 @@ mod unlock_dialog;
 mod fskit_setup_dialog;
 
 pub use add_vault_dialog::AddVaultDialog;
-pub use backend_dialog::BackendDialog;
+pub use backend_dialog::{BackendDialog, VaultMountSettings};
 pub use change_password_dialog::ChangePasswordDialog;
 pub use confirm_dialog::ConfirmDialog;
 pub use create_vault_dialog::CreateVaultDialog;

@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{generators::*, TestServer, CHUNK_SIZE};
+use common::{multi_chunk_content, one_chunk_content, TestServer, CHUNK_SIZE};
 use reqwest::StatusCode;
 
 // ============================================================================
@@ -220,7 +220,7 @@ async fn test_propfind_list_after_create() {
     server.mkcol_ok("/listtest").await;
 
     // Check it's empty
-    let (status1, body1) = server.propfind_body("/listtest", "1").await;
+    let (status1, _body1) = server.propfind_body("/listtest", "1").await;
     assert!(status1 == StatusCode::MULTI_STATUS || status1.is_success());
 
     // Add a file

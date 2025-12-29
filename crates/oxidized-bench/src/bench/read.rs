@@ -176,7 +176,7 @@ impl Benchmark for RandomReadBenchmark {
         // Generate random offsets
         let mut rng = ChaCha8Rng::seed_from_u64(self.seed);
         let offsets: Vec<u64> = (0..self.num_reads)
-            .map(|_| rng.gen_range(0..=max_offset) as u64)
+            .map(|_| rng.random_range(0..=max_offset) as u64)
             .collect();
 
         let start = Instant::now();

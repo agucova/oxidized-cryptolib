@@ -9,15 +9,50 @@
 
 use fuser::{BackgroundSession, MountOption};
 use oxidized_fuse::filesystem::CryptomatorFS;
+use oxidized_mount_common::cleanup_test_mounts;
 use oxidized_mount_common::testing::{
     shared_vault_path, TempVault, SHARED_VAULT_PASSWORD, TEST_PASSWORD,
 };
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+/// Ensure stale test mounts are cleaned up before running tests.
+/// This runs at most once per test process.
+static CLEANUP_ONCE: Once = Once::new();
+
+/// Clean up any stale test mounts from previous test runs.
+///
+/// This function is called automatically before creating new mounts,
+/// and runs at most once per test process. It cleans up mounts with
+/// `cryptomator-test` in their fsname that are unresponsive.
+fn cleanup_stale_test_mounts() {
+    CLEANUP_ONCE.call_once(|| {
+        // Use a short timeout - if mount is unresponsive for 500ms, it's stale
+        let timeout = Duration::from_millis(500);
+        match cleanup_test_mounts(timeout) {
+            Ok(results) => {
+                for result in results {
+                    if result.success {
+                        if let oxidized_mount_common::CleanupAction::Unmounted = result.action {
+                            eprintln!(
+                                "[test-harness] Cleaned stale test mount: {}",
+                                result.mountpoint.display()
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[test-harness] Warning: Failed to clean stale mounts: {}", e);
+            }
+        }
+    });
+}
 
 /// How long to wait for mount to become ready.
 const MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,6 +95,9 @@ impl TestMount {
     /// Creates a new empty vault that is automatically cleaned up on drop.
     /// Use this for tests that modify the filesystem.
     pub fn with_temp_vault() -> Result<Self, String> {
+        // Clean up any stale test mounts from previous runs
+        cleanup_stale_test_mounts();
+
         let temp_vault = TempVault::new();
         let temp_mount = TempDir::new().map_err(|e| format!("Failed to create temp dir: {}", e))?;
         let mount_path = temp_mount.path().join("mnt");
@@ -78,6 +116,10 @@ impl TestMount {
 
         // Wait for mount to become ready
         Self::wait_for_mount(&mount_path)?;
+
+        // Additional delay to ensure FUSE is fully initialized
+        // macFUSE on macOS can report the mount as ready before create() works
+        thread::sleep(Duration::from_millis(100));
 
         Ok(Self {
             _session: session,
@@ -105,6 +147,9 @@ impl TestMount {
     }
 
     fn with_test_vault_inner(read_only: bool) -> Result<Self, String> {
+        // Clean up any stale test mounts from previous runs
+        cleanup_stale_test_mounts();
+
         let vault_path = shared_vault_path()
             .ok_or_else(|| "test_vault not found in repository".to_string())?;
 

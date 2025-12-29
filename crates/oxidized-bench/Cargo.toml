@@ -29,7 +29,7 @@ oxidized-mount-common = { path = "../oxidized-mount-common" }
 
 # FUSE filesystem
 oxidized-fuse = { path = "../oxidized-fuse" }
-fuser = "0.16"
+fuser = "0.15"
 
 # WebDAV backend
 oxidized-webdav = { path = "../oxidized-webdav" }
@@ -43,7 +43,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macro
 # Terminal UI
 owo-colors = "4"
 terminal_size = "0.4"
-indicatif = "0.17"
+indicatif = "0.18"
 
 # Statistics (HDR Histogram for percentile calculations)
 hdrhistogram = "7"
@@ -59,12 +59,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Random number generation for benchmarks
-rand = "0.8"
-rand_chacha = "0.3"
+rand = "0.9"
+rand_chacha = "0.9"
 
 # FSKit (macOS 15.4+ only)
 [target.'cfg(target_os = "macos")'.dependencies]
-oxidized-fskit = { path = "../oxidized-fskit" }
+oxidized-fskit-legacy = { path = "../oxidized-fskit-legacy" }
 fskit-rs = { git = "https://github.com/debox-network/fskit-rs", branch = "main" }
 
 [features]

@@ -16,7 +16,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["async"]
-async = ["dep:tokio", "dep:dashmap"]
+async = ["dep:tokio", "dep:dashmap", "dep:futures"]
 stress = []  # Enable long-running stress tests
 
 [dependencies]
@@ -51,6 +51,7 @@ memsafe = "0.4"
 tracing.workspace = true
 tokio = { version = "1", features = ["fs", "io-util", "sync", "rt", "macros"], optional = true }
 dashmap = { version = "6", optional = true }
+futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
 assert_fs = "1"

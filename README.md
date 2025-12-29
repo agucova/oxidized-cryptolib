@@ -9,7 +9,7 @@ This monorepo contains six crates:
 - **oxidized-cryptolib** - Core library implementing all cryptographic and vault operations
 - **[oxidized-cli](crates/oxidized-cli/)** (`oxcrypt`) - Command-line interface for interacting with vaults
 - **[oxidized-fuse](crates/oxidized-fuse/)** (`oxmount`) - FUSE filesystem for mounting vaults (Linux/macOS)
-- **[oxidized-fskit](crates/oxidized-fskit/)** (`oxmount-fskit`) - FSKit filesystem for mounting vaults (macOS 15.4+)
+- **[oxidized-fskit-legacy](crates/oxidized-fskit-legacy/)** (`oxmount-fskit`) - FSKit filesystem for mounting vaults (macOS 15.4+)
 - **[oxidized-gui](crates/oxidized-gui/)** (`oxvault`) - Desktop GUI for vault management
 - **[oxidized-bench](crates/oxidized-bench/)** (`oxbench`) - Cross-implementation filesystem benchmark harness
 
@@ -87,7 +87,7 @@ FSKit provides better macOS integration than FUSE (native Finder support, no ker
 
 ```bash
 # Build and install
-cargo install --path crates/oxidized-fskit
+cargo install --path crates/oxidized-fskit-legacy
 
 # Mount a vault
 oxmount-fskit /path/to/vault --mount-point /tmp/vault
@@ -97,7 +97,7 @@ oxmount-fskit /path/to/vault --mount-point /tmp/vault
 umount /tmp/vault  # or Ctrl+C
 ```
 
-See the [FSKit README](crates/oxidized-fskit/README.md) for full documentation.
+See the [FSKit README](crates/oxidized-fskit-legacy/README.md) for full documentation.
 
 ## GUI Usage
 
@@ -241,7 +241,7 @@ crates/
 │   └── src/commands/      # ls, cat, tree, mkdir, rm, cp, mv, info
 ├── oxidized-fuse/         # FUSE filesystem (oxmount)
 │   └── src/               # FUSE trait impl, inode table, caches
-├── oxidized-fskit/        # FSKit filesystem (oxmount-fskit, macOS 15.4+)
+├── oxidized-fskit-legacy/        # FSKit filesystem (oxmount-fskit, macOS 15.4+)
 │   └── src/               # FSKit trait impl, item table, handles
 ├── oxidized-gui/          # Desktop GUI (oxvault)
 │   └── src/               # Dioxus app, backend integration
@@ -291,7 +291,7 @@ See [ROADMAP.md](ROADMAP.md) for planned features. Key milestones completed:
 - ✅ Async I/O support (VaultOperationsAsync)
 - ✅ Streaming API for large files
 - ✅ FUSE filesystem integration (oxidized-fuse)
-- ✅ FSKit filesystem integration (oxidized-fskit, macOS 15.4+)
+- ✅ FSKit filesystem integration (oxidized-fskit-legacy, macOS 15.4+)
 - ✅ Desktop GUI (oxidized-gui)
 
 ## Contributing

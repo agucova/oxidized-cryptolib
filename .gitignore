@@ -12,3 +12,10 @@ fuzz/corpus
 fuzz/artifacts
 
 node_modules
+
+# Swift build artifacts
+**/.build/
+**/generated/
+
+# Specific Swift package build directories
+swift/OxVaultFSExtension/.build/

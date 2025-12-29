@@ -37,7 +37,173 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
+
+/// Mount options for configuring filesystem behavior.
+///
+/// These options affect how the filesystem behaves once mounted.
+/// Not all backends support all options, but they should gracefully
+/// ignore unsupported options.
+///
+/// # Presets
+///
+/// Use [`MountOptions::local()`] for vaults on local/fast storage, or
+/// [`MountOptions::network()`] (the default) for cloud storage backends.
+///
+/// # Example
+///
+/// ```
+/// use oxidized_mount_common::MountOptions;
+/// use std::time::Duration;
+///
+/// // Use local preset for a vault on local SSD
+/// let local_opts = MountOptions::local();
+///
+/// // Use network preset with custom TTL
+/// let network_opts = MountOptions::network()
+///     .with_attr_ttl(Duration::from_secs(120));
+///
+/// // Custom configuration
+/// let custom = MountOptions::default()
+///     .with_attr_ttl(Duration::from_secs(30))
+///     .with_negative_ttl(Duration::from_secs(10))
+///     .with_background_refresh(true);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct MountOptions {
+    /// Use local mode with shorter cache TTLs.
+    ///
+    /// When enabled (true):
+    /// - Attribute cache TTL: 1 second
+    /// - Negative cache TTL: 500ms
+    /// - Background refresh: disabled
+    ///
+    /// When disabled (false, default):
+    /// - Attribute cache TTL: 60 seconds
+    /// - Negative cache TTL: 30 seconds
+    /// - Background refresh: enabled
+    ///
+    /// Local mode is recommended when the vault is stored on a local/fast
+    /// filesystem. Network mode (default) is optimized for cloud storage
+    /// backends like Google Drive or Dropbox.
+    pub local_mode: bool,
+
+    /// Custom attribute cache TTL, overriding the local/network mode default.
+    ///
+    /// Default: 1 second (local) or 60 seconds (network).
+    pub attr_ttl: Option<Duration>,
+
+    /// Custom negative cache TTL for ENOENT results.
+    ///
+    /// Default: 500ms (local) or 30 seconds (network).
+    pub negative_ttl: Option<Duration>,
+
+    /// Enable background directory refresh.
+    ///
+    /// When enabled, `readdir` returns cached results immediately and
+    /// refreshes in the background. This keeps file browsers responsive
+    /// even when the underlying storage is slow.
+    ///
+    /// Default: false (local) or true (network).
+    pub background_refresh: Option<bool>,
+
+    /// Maximum concurrent I/O operations for directory listings.
+    ///
+    /// Higher values improve throughput on high-latency backends but
+    /// may overwhelm rate-limited services.
+    ///
+    /// Default: 32.
+    pub concurrency_limit: Option<usize>,
+}
+
+impl MountOptions {
+    /// Create options optimized for local filesystem vaults.
+    ///
+    /// Uses shorter cache TTLs (1s / 500ms) for fresher metadata
+    /// and disables background refresh.
+    pub fn local() -> Self {
+        Self {
+            local_mode: true,
+            attr_ttl: None,
+            negative_ttl: None,
+            background_refresh: None,
+            concurrency_limit: None,
+        }
+    }
+
+    /// Create options optimized for network filesystem vaults (default).
+    ///
+    /// Uses longer cache TTLs (60s / 30s) and enables background refresh
+    /// for responsive UI with high-latency cloud storage.
+    pub fn network() -> Self {
+        Self::default()
+    }
+
+    /// Set a custom attribute cache TTL.
+    #[must_use]
+    pub fn with_attr_ttl(mut self, ttl: Duration) -> Self {
+        self.attr_ttl = Some(ttl);
+        self
+    }
+
+    /// Set a custom negative cache TTL.
+    #[must_use]
+    pub fn with_negative_ttl(mut self, ttl: Duration) -> Self {
+        self.negative_ttl = Some(ttl);
+        self
+    }
+
+    /// Enable or disable background directory refresh.
+    #[must_use]
+    pub fn with_background_refresh(mut self, enabled: bool) -> Self {
+        self.background_refresh = Some(enabled);
+        self
+    }
+
+    /// Set the concurrency limit for directory operations.
+    #[must_use]
+    pub fn with_concurrency_limit(mut self, limit: usize) -> Self {
+        self.concurrency_limit = Some(limit);
+        self
+    }
+
+    /// Get the effective attribute TTL based on mode and overrides.
+    ///
+    /// Returns the custom TTL if set, otherwise the mode default.
+    pub fn effective_attr_ttl(&self) -> Duration {
+        self.attr_ttl.unwrap_or(if self.local_mode {
+            crate::LOCAL_TTL
+        } else {
+            crate::DEFAULT_TTL
+        })
+    }
+
+    /// Get the effective negative cache TTL based on mode and overrides.
+    ///
+    /// Returns the custom TTL if set, otherwise the mode default.
+    pub fn effective_negative_ttl(&self) -> Duration {
+        self.negative_ttl.unwrap_or(if self.local_mode {
+            crate::LOCAL_NEGATIVE_TTL
+        } else {
+            crate::DEFAULT_NEGATIVE_TTL
+        })
+    }
+
+    /// Get the effective background refresh setting based on mode and overrides.
+    ///
+    /// Returns the custom setting if set, otherwise the mode default.
+    pub fn effective_background_refresh(&self) -> bool {
+        self.background_refresh.unwrap_or(!self.local_mode)
+    }
+
+    /// Get the effective concurrency limit.
+    ///
+    /// Returns the custom limit if set, otherwise the default (32).
+    pub fn effective_concurrency_limit(&self) -> usize {
+        self.concurrency_limit.unwrap_or(32)
+    }
+}
 
 /// Errors that can occur during mount operations
 #[derive(Error, Debug)]
@@ -199,6 +365,27 @@ pub trait MountBackend: Send + Sync {
         password: &str,
         mountpoint: &Path,
     ) -> Result<Box<dyn MountHandle>, MountError>;
+
+    /// Mount a Cryptomator vault with custom options.
+    ///
+    /// This is like [`mount()`](MountBackend::mount) but allows passing
+    /// configuration options like local mode or custom cache TTLs.
+    ///
+    /// # Default Implementation
+    ///
+    /// Falls back to [`mount()`](MountBackend::mount), ignoring the options.
+    /// Backends that support options should override this method.
+    fn mount_with_options(
+        &self,
+        vault_id: &str,
+        vault_path: &Path,
+        password: &str,
+        mountpoint: &Path,
+        _options: &MountOptions,
+    ) -> Result<Box<dyn MountHandle>, MountError> {
+        // Default: ignore options and use standard mount
+        self.mount(vault_id, vault_path, password, mountpoint)
+    }
 }
 
 /// Available backend types for vault mounting
@@ -508,5 +695,95 @@ mod tests {
     #[test]
     fn backend_type_default() {
         assert_eq!(BackendType::default(), BackendType::Fuse);
+    }
+
+    #[test]
+    fn mount_options_default_is_network() {
+        let opts = MountOptions::default();
+        assert!(!opts.local_mode);
+        assert!(opts.attr_ttl.is_none());
+        assert!(opts.negative_ttl.is_none());
+        assert!(opts.background_refresh.is_none());
+        assert!(opts.concurrency_limit.is_none());
+    }
+
+    #[test]
+    fn mount_options_local_preset() {
+        let opts = MountOptions::local();
+        assert!(opts.local_mode);
+        assert!(opts.attr_ttl.is_none()); // Uses mode default
+        assert!(opts.negative_ttl.is_none());
+        assert!(opts.background_refresh.is_none());
+    }
+
+    #[test]
+    fn mount_options_network_preset() {
+        let opts = MountOptions::network();
+        assert!(!opts.local_mode);
+        // network() is just default()
+        assert!(opts.attr_ttl.is_none());
+    }
+
+    #[test]
+    fn mount_options_effective_ttl_local_mode() {
+        use crate::{LOCAL_NEGATIVE_TTL, LOCAL_TTL};
+
+        let opts = MountOptions::local();
+        assert_eq!(opts.effective_attr_ttl(), LOCAL_TTL);
+        assert_eq!(opts.effective_negative_ttl(), LOCAL_NEGATIVE_TTL);
+        assert!(!opts.effective_background_refresh());
+    }
+
+    #[test]
+    fn mount_options_effective_ttl_network_mode() {
+        use crate::{DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
+
+        let opts = MountOptions::network();
+        assert_eq!(opts.effective_attr_ttl(), DEFAULT_TTL);
+        assert_eq!(opts.effective_negative_ttl(), DEFAULT_NEGATIVE_TTL);
+        assert!(opts.effective_background_refresh());
+    }
+
+    #[test]
+    fn mount_options_custom_overrides_mode() {
+        use std::time::Duration;
+
+        let custom_attr = Duration::from_secs(120);
+        let custom_neg = Duration::from_secs(15);
+
+        // Custom values should override local mode defaults
+        let opts = MountOptions::local()
+            .with_attr_ttl(custom_attr)
+            .with_negative_ttl(custom_neg)
+            .with_background_refresh(true);
+
+        assert_eq!(opts.effective_attr_ttl(), custom_attr);
+        assert_eq!(opts.effective_negative_ttl(), custom_neg);
+        assert!(opts.effective_background_refresh());
+    }
+
+    #[test]
+    fn mount_options_concurrency_limit() {
+        let opts = MountOptions::default();
+        assert_eq!(opts.effective_concurrency_limit(), 32); // Default
+
+        let custom = MountOptions::default().with_concurrency_limit(16);
+        assert_eq!(custom.effective_concurrency_limit(), 16);
+    }
+
+    #[test]
+    fn mount_options_builder_chain() {
+        use std::time::Duration;
+
+        let opts = MountOptions::default()
+            .with_attr_ttl(Duration::from_secs(90))
+            .with_negative_ttl(Duration::from_secs(45))
+            .with_background_refresh(false)
+            .with_concurrency_limit(64);
+
+        assert_eq!(opts.effective_attr_ttl(), Duration::from_secs(90));
+        assert_eq!(opts.effective_negative_ttl(), Duration::from_secs(45));
+        assert!(!opts.effective_background_refresh());
+        assert_eq!(opts.effective_concurrency_limit(), 64);
     }
 }

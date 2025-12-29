@@ -15,7 +15,7 @@
 //! ## Implementation Utilities
 //!
 //! - [`WriteBuffer`] - Read-modify-write buffer for random-access file writes
-//! - [`TtlCache`] - Generic TTL-based cache with optional negative caching
+//! - [`moka_cache`] - TTL-based caching backed by Moka
 //! - [`VaultErrorCategory`] - Error classification for vault operations
 //! - [`HandleTable`] - Thread-safe handle management
 //!
@@ -32,14 +32,16 @@
 //! 2. On write: modify the in-memory buffer
 //! 3. On close: write the entire buffer back to the vault
 //!
-//! ## TtlCache
+//! ## moka_cache
 //!
 //! Mount backends need efficient caching of file metadata to reduce repeated
-//! vault operations. [`TtlCache`] provides:
-//! - Time-based expiration (default 1 second)
+//! vault operations. The [`moka_cache`] module provides:
+//! - [`moka_cache::SyncTtlCache`] for synchronous contexts (FUSE, FSKit, NFS)
+//! - [`moka_cache::AsyncTtlCache`] for async contexts (WebDAV with tokio)
+//! - Per-entry TTL support via Moka's `Expiry` trait
 //! - Negative caching (for ENOENT results)
 //! - Bulk invalidation (by predicate or prefix)
-//! - Automatic cleanup when threshold exceeded
+//! - Thundering herd prevention via `get_with()`
 //!
 //! ## VaultErrorCategory
 //!
@@ -58,7 +60,8 @@
 //! # Example
 //!
 //! ```
-//! use oxidized_mount_common::{WriteBuffer, TtlCache, VaultErrorCategory, HandleTable};
+//! use oxidized_mount_common::{WriteBuffer, VaultErrorCategory, HandleTable};
+//! use oxidized_mount_common::moka_cache::SyncTtlCache;
 //! use oxidized_cryptolib::vault::DirId;
 //! use std::time::Duration;
 //!
@@ -66,7 +69,7 @@
 //! let buffer = WriteBuffer::new_for_create(DirId::root(), "example.txt".to_string());
 //!
 //! // Create a cache with negative caching
-//! let cache: TtlCache<u64, String> = TtlCache::with_negative_cache(
+//! let cache: SyncTtlCache<u64, String> = SyncTtlCache::with_negative_cache(
 //!     Duration::from_secs(1),
 //!     Duration::from_millis(500),
 //! );
@@ -80,19 +83,29 @@
 #![warn(clippy::all)]
 
 mod backend;
+mod cleanup;
 mod error_category;
+mod force_unmount;
 mod handle_table;
+mod mount_markers;
 mod mount_utils;
+pub mod path_mapper;
 mod process_detection;
+pub mod stale_detection;
 pub mod stats;
 mod timeout_fs;
-mod ttl_cache;
 mod write_buffer;
+
+/// TTL-based caching backed by Moka.
+///
+/// Provides [`moka_cache::SyncTtlCache`] for synchronous contexts (FUSE, FSKit, NFS)
+/// and [`moka_cache::AsyncTtlCache`] for async contexts (WebDAV with tokio).
+pub mod moka_cache;
 
 // Backend abstraction exports
 pub use backend::{
     first_available_backend, list_backend_info, safe_sync, select_backend, BackendInfo,
-    BackendType, MountBackend, MountError, MountHandle,
+    BackendType, MountBackend, MountError, MountHandle, MountOptions,
 };
 pub use mount_utils::{
     check_mountpoint_status, find_available_mountpoint, is_directory_readable, is_on_fuse_mount,
@@ -101,11 +114,29 @@ pub use mount_utils::{
 pub use process_detection::{find_processes_using_mount, ProcessInfo};
 pub use timeout_fs::{TimeoutFs, DEFAULT_FS_TIMEOUT};
 
+// Stale mount cleanup exports
+pub use cleanup::{
+    cleanup_stale_mounts, cleanup_test_mounts, CleanupAction, CleanupOptions, CleanupResult,
+    TrackedMountInfo, DEFAULT_CHECK_TIMEOUT,
+};
+pub use force_unmount::{force_unmount, lazy_unmount};
+pub use mount_markers::{
+    find_fuse_mounts, find_our_mounts, get_system_mounts_detailed, is_fuse_fstype, is_our_mount,
+    SystemMount,
+};
+pub use stale_detection::{
+    check_mount_status, find_orphaned_mounts, is_process_alive, MountStatus, StaleReason,
+    TrackedMount,
+};
+
 // Implementation utility exports
 pub use error_category::{io_error_to_errno, VaultErrorCategory};
 pub use handle_table::HandleTable;
 pub use stats::{ActivityStatus, CacheStats, VaultStats, VaultStatsSnapshot, format_bytes};
-pub use ttl_cache::{CachedEntry, NegativeEntry, TtlCache, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
+pub use moka_cache::{
+    CacheHealth, CacheHealthThresholds, CacheWarning, CachedEntry, NegativeEntry,
+    DEFAULT_NEGATIVE_TTL, DEFAULT_TTL, LOCAL_NEGATIVE_TTL, LOCAL_TTL,
+};
 pub use write_buffer::WriteBuffer;
 
 /// Testing utilities for mount backend integration tests.

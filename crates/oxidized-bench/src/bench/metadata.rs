@@ -199,7 +199,7 @@ impl Benchmark for MetadataBenchmark {
             let mut file = File::create(&file_path)?;
 
             // Variable size content
-            let size = rng.gen_range(1024..10240);
+            let size = rng.random_range(1024..10240);
             let mut content = vec![0u8; size];
             rng.fill_bytes(&mut content);
             file.write_all(&content)?;

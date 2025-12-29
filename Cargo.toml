@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/oxidized-cryptolib", "crates/oxidized-cli", "crates/oxidized-fuse", "crates/oxidized-fskit", "crates/oxidized-webdav", "crates/oxidized-nfs", "crates/oxidized-gui", "crates/oxidized-bench", "crates/oxidized-mount-common"]
+members = ["crates/oxidized-cryptolib", "crates/oxidized-cli", "crates/oxidized-fuse", "crates/oxidized-fskit-legacy", "crates/oxidized-fskit-ffi", "crates/oxidized-webdav", "crates/oxidized-nfs", "crates/oxidized-gui", "crates/oxidized-bench", "crates/oxidized-mount-common"]
 # Note: oxidized-fuse requires macFUSE (macOS) or libfuse (Linux) to be installed
-# Note: oxidized-fskit requires macOS 15.4+ and FSKitBridge.app
+# Note: oxidized-fskit-legacy requires macOS 15.4+ and FSKitBridge.app (deprecated, use oxidized-fskit-ffi)
 # Note: oxidized-webdav provides WebDAV mounting (no kernel extensions required)
 exclude = ["fuzz"]
 
@@ -20,7 +20,7 @@ comfy-table = "7.2"
 anyhow = "1.0"
 thiserror = "2"
 tracing = "0.1"
-console-subscriber = { version = "0.4" }
+console-subscriber = { version = "0.5" }
 
 [profile.release]
 lto = true
@@ -33,3 +33,10 @@ opt-level = 0
 
 [profile.test]
 opt-level = 2
+
+# Patch fuser to fix macOS rename bug (truncated source filename)
+# See: https://github.com/cberner/fuser/pull/342
+# This patches fuser globally to 0.15.1 with the fix. Linux stays on 0.15.1 too.
+# TODO: Remove this patch when fuser 0.17+ is released with the fix
+[patch.crates-io]
+fuser = { git = "https://github.com/nicolaspapp/fuser.git", rev = "f4b1ba26c340c45a6c205c471333b806302d6acf" }

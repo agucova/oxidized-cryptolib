@@ -1,16 +1,17 @@
 //! Attribute caching for the FUSE filesystem.
 //!
 //! This module provides TTL-based caching of file attributes to reduce
-//! repeated calls to the underlying vault operations. It uses the shared
-//! [`TtlCache`](oxidized_mount_common::TtlCache) from `oxidized-mount-common`.
+//! repeated calls to the underlying vault operations. It uses the Moka-backed
+//! cache from `oxidized-mount-common`.
 
 use fuser::FileAttr;
-use oxidized_mount_common::{CacheStats, CachedEntry, TtlCache, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
+use oxidized_mount_common::moka_cache::{CachedEntry, SyncTtlCache, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
+use oxidized_mount_common::CacheStats;
 use std::sync::Arc;
 use std::time::Duration;
 
 // Re-export constants for backwards compatibility
-pub use oxidized_mount_common::{
+pub use oxidized_mount_common::moka_cache::{
     DEFAULT_NEGATIVE_TTL as DEFAULT_NEGATIVE_TTL_COMPAT, DEFAULT_TTL as DEFAULT_ATTR_TTL,
 };
 
@@ -23,24 +24,24 @@ pub type CachedAttr = CachedEntry<FileAttr>;
 ///
 /// This cache helps reduce the number of calls to the underlying vault
 /// by caching recently accessed file attributes. Uses two internal
-/// [`TtlCache`] instances:
+/// Moka-backed caches:
 /// - Positive cache: inode -> attributes
 /// - Negative cache: (parent_inode, name) -> ENOENT
 pub struct AttrCache {
     /// Cached positive entries (inode -> attributes).
-    entries: TtlCache<u64, FileAttr>,
+    entries: SyncTtlCache<u64, FileAttr>,
     /// Cached negative entries (parent_inode, name) -> ENOENT.
     /// Uses a separate cache because the key type differs.
     /// The value is `()` since we only care about presence and expiration.
-    negative: TtlCache<(u64, String), ()>,
+    negative: SyncTtlCache<(u64, String), ()>,
 }
 
 impl AttrCache {
     /// Creates a new attribute cache with the given TTLs.
     pub fn new(attr_ttl: Duration, negative_ttl: Duration) -> Self {
         Self {
-            entries: TtlCache::new(attr_ttl),
-            negative: TtlCache::new(negative_ttl),
+            entries: SyncTtlCache::new(attr_ttl),
+            negative: SyncTtlCache::new(negative_ttl),
         }
     }
 
@@ -98,7 +99,7 @@ impl AttrCache {
     /// Invalidates all negative cache entries for a parent directory.
     /// Call this when the directory contents change.
     pub fn invalidate_parent_negative(&self, parent: u64) {
-        self.negative.invalidate_where(|k| k.0 == parent);
+        self.negative.invalidate_where(move |k| k.0 == parent);
     }
 
     /// Clears all expired entries from the cache.
@@ -150,17 +151,17 @@ pub struct DirListingEntry {
 /// FUSE calls `readdir` multiple times with an offset to read directories
 /// in chunks. Caching the full listing improves performance.
 ///
-/// This is a thin wrapper around [`TtlCache`] for directory listings.
+/// This is a thin wrapper around [`SyncTtlCache`] for directory listings.
 pub struct DirCache {
     /// The underlying cache.
-    cache: TtlCache<u64, Vec<DirListingEntry>>,
+    cache: SyncTtlCache<u64, Vec<DirListingEntry>>,
 }
 
 impl DirCache {
     /// Creates a new directory cache with the given TTL.
     pub fn new(ttl: Duration) -> Self {
         Self {
-            cache: TtlCache::new(ttl),
+            cache: SyncTtlCache::new(ttl),
         }
     }
 
@@ -266,16 +267,33 @@ mod tests {
 
     #[test]
     fn test_insert_with_custom_ttl() {
-        let cache = AttrCache::with_defaults();
-        let attr = make_test_attr(42);
+        // Test per-entry TTL support via Moka's Expiry trait
+        let cache = AttrCache::with_defaults(); // Uses 60s default TTL
 
-        // Insert with a very short TTL
-        cache.insert_with_ttl(42, attr, Duration::from_millis(10));
-        assert!(cache.get(42).is_some());
+        // Insert one entry with short TTL
+        let attr1 = make_test_attr(1);
+        cache.insert_with_ttl(1, attr1, Duration::from_millis(10));
 
-        // Wait for expiry
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(cache.get(42).is_none());
+        // Insert another entry with longer TTL
+        let attr2 = make_test_attr(2);
+        cache.insert_with_ttl(2, attr2, Duration::from_millis(200));
+
+        cache.cleanup_expired(); // Force pending inserts
+        assert!(cache.get(1).is_some());
+        assert!(cache.get(2).is_some());
+
+        // Wait for the short TTL to expire
+        std::thread::sleep(Duration::from_millis(50));
+        cache.cleanup_expired();
+
+        // Short TTL entry should be expired, long TTL should still be valid
+        assert!(cache.get(1).is_none(), "Entry with 10ms TTL should have expired");
+        assert!(cache.get(2).is_some(), "Entry with 200ms TTL should still be valid");
+
+        // Wait for the longer TTL to expire too
+        std::thread::sleep(Duration::from_millis(200));
+        cache.cleanup_expired();
+        assert!(cache.get(2).is_none(), "Entry with 200ms TTL should now be expired");
     }
 
     #[test]
@@ -288,6 +306,9 @@ mod tests {
         // Add negative entry for parent 2
         cache.insert_negative(2, "file3".to_string());
 
+        // Force pending inserts to complete
+        cache.cleanup_expired();
+
         assert!(cache.is_negative(1, "file1"));
         assert!(cache.is_negative(1, "file2"));
         assert!(cache.is_negative(2, "file3"));
@@ -295,6 +316,9 @@ mod tests {
 
         // Invalidate all negative entries for parent 1
         cache.invalidate_parent_negative(1);
+
+        // Force pending invalidations to complete
+        cache.cleanup_expired();
 
         assert!(!cache.is_negative(1, "file1"));
         assert!(!cache.is_negative(1, "file2"));
@@ -311,18 +335,24 @@ mod tests {
         cache.insert(2, make_test_attr(2));
         cache.insert_negative(1, "gone".to_string());
 
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache.negative_len(), 1);
+        // Force pending inserts to complete
+        cache.cleanup_expired();
+
+        // Entries should exist initially
+        assert!(cache.get(1).is_some(), "Entry 1 should exist");
+        assert!(cache.get(2).is_some(), "Entry 2 should exist");
+        assert!(cache.is_negative(1, "gone"), "Negative entry should exist");
 
         // Wait for expiry
         std::thread::sleep(Duration::from_millis(20));
 
-        // Entries are still in the map but expired
+        // Force expired entries to be cleaned up
         cache.cleanup_expired();
 
-        // Now they should be gone
-        assert_eq!(cache.len(), 0);
-        assert_eq!(cache.negative_len(), 0);
+        // Now they should be expired (get() never returns expired entries)
+        assert!(cache.get(1).is_none(), "Entry 1 should be expired");
+        assert!(cache.get(2).is_none(), "Entry 2 should be expired");
+        assert!(!cache.is_negative(1, "gone"), "Negative entry should be expired");
     }
 
     #[test]
@@ -461,6 +491,8 @@ mod tests {
             assert!(result.is_some());
         }
 
+        // Force pending inserts to complete before checking count
+        cache.cleanup_expired();
         assert_eq!(cache.len(), 10);
     }
 
@@ -471,13 +503,16 @@ mod tests {
         assert_eq!(cache.len(), 0);
 
         cache.insert(1, make_test_attr(1));
+        cache.cleanup_expired(); // Force pending insert
         assert!(!cache.is_empty());
         assert_eq!(cache.len(), 1);
 
         cache.insert(2, make_test_attr(2));
+        cache.cleanup_expired(); // Force pending insert
         assert_eq!(cache.len(), 2);
 
         cache.invalidate(1);
+        cache.cleanup_expired(); // Force pending invalidation
         assert_eq!(cache.len(), 1);
     }
 

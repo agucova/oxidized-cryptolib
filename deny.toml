@@ -41,7 +41,10 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "Unlicense",
-    "OpenSSL",
+    # bzip2 license - permissive, similar to BSD (via libbz2-rs-sys -> zip)
+    "bzip2-1.0.6",
+    # Community Data License Agreement - permissive (via webpki-roots)
+    "CDLA-Permissive-2.0",
 ]
 
 # Handle special license cases
@@ -109,9 +112,6 @@ unknown-registry = "deny"
 unknown-git = "warn"  # Warn instead of deny to allow fskit-rs during development
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    # FSKit Rust bindings - required for oxidized-fskit (macOS 15.4+)
+    # FSKit Rust bindings - required for oxidized-fskit-legacy (macOS 15.4+)
     "https://github.com/debox-network/fskit-rs",
 ]
-
-[sources.allow-org]
-github = ["debox-network"]

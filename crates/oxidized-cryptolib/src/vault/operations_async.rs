@@ -37,6 +37,9 @@
 //! );
 //! ```
 
+use dashmap::DashMap;
+use futures::stream::{self, StreamExt};
+
 use crate::{
     crypto::keys::MasterKey,
     fs::file::DecryptedFile,
@@ -109,6 +112,10 @@ impl From<VaultOperationError> for AsyncVaultError {
 /// - Read operations (list, read): shared read locks
 /// - Write operations (write, delete): exclusive write locks
 /// - Multi-resource operations (move, rename): ordered locking to prevent deadlocks
+/// Cache for encrypted filenames: (dir_id, plaintext_name) -> encrypted_name.
+/// AES-SIV encryption is deterministic, so results can be cached indefinitely.
+type EncryptedNameCache = DashMap<(String, String), String>;
+
 pub struct VaultOperationsAsync {
     /// Core vault state and pure operations (shared with sync implementation).
     core: VaultCore,
@@ -118,6 +125,8 @@ pub struct VaultOperationsAsync {
     lock_manager: Arc<VaultLockManager>,
     /// Handle table for tracking open files (shared across instances).
     handle_table: Arc<VaultHandleTable>,
+    /// Cache for encrypted filenames to avoid repeated AES-SIV encryption.
+    encrypted_name_cache: Arc<EncryptedNameCache>,
 }
 
 impl VaultOperationsAsync {
@@ -285,6 +294,7 @@ impl VaultOperationsAsync {
             master_key,
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
+            encrypted_name_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -317,6 +327,7 @@ impl VaultOperationsAsync {
             master_key: cloned_key,
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
+            encrypted_name_cache: Arc::new(DashMap::new()),
         })
     }
 
@@ -376,6 +387,32 @@ impl VaultOperationsAsync {
     /// Returns the shortening threshold for encrypted filenames.
     pub fn shortening_threshold(&self) -> usize {
         self.core.shortening_threshold()
+    }
+
+    /// Encrypt a filename with caching.
+    ///
+    /// AES-SIV encryption is deterministic, so (dir_id, name) always produces
+    /// the same encrypted result. This method caches results to avoid repeated
+    /// expensive AES-SIV operations.
+    #[inline]
+    fn encrypt_filename_cached(
+        &self,
+        name: &str,
+        dir_id: &str,
+    ) -> Result<String, VaultOperationError> {
+        let cache_key = (dir_id.to_string(), name.to_string());
+
+        // Check cache first
+        if let Some(cached) = self.encrypted_name_cache.get(&cache_key) {
+            trace!(name = %name, "encrypted filename cache hit");
+            return Ok(cached.value().clone());
+        }
+
+        // Cache miss - encrypt and store
+        let encrypted = encrypt_filename(name, dir_id, &self.master_key)?;
+        self.encrypted_name_cache.insert(cache_key, encrypted.clone());
+        trace!(name = %name, "encrypted filename cache miss");
+        Ok(encrypted)
     }
 
     /// Calculate the storage path for a directory given its ID.
@@ -516,13 +553,17 @@ impl VaultOperationsAsync {
             context: VaultOpContext::new().with_dir_id(directory_id.as_str()),
         })?;
 
-        // Phase 3: Handle shortened files (these have their own async I/O for reading name.c9s)
+        // Phase 3: Handle shortened files in parallel (these have their own async I/O for reading name.c9s)
+        // Using buffer_unordered for concurrent processing - critical for high-latency backends
+        let shortened_files: Vec<VaultFileInfo> = stream::iter(shortened_paths)
+            .map(|path| async move { self.read_shortened_file_info(&path, directory_id).await })
+            .buffer_unordered(32) // Process up to 32 shortened files concurrently
+            .filter_map(|result| async move { result.ok() })
+            .collect()
+            .await;
+
         let mut files = decrypted_regular;
-        for path in shortened_paths {
-            if let Ok(info) = self.read_shortened_file_info(&path, directory_id).await {
-                files.push(info);
-            }
-        }
+        files.extend(shortened_files);
 
         debug!(file_count = files.len(), "Listed files in directory");
         Ok(files)
@@ -645,13 +686,19 @@ impl VaultOperationsAsync {
             context: VaultOpContext::new().with_dir_id(directory_id.as_str()),
         })?;
 
-        // Phase 3: Handle shortened directories (these have their own async I/O for reading name.c9s)
+        // Phase 3: Handle shortened directories in parallel (these have their own async I/O for reading name.c9s)
+        // Using buffer_unordered for concurrent processing - critical for high-latency backends
+        let shortened_dirs: Vec<VaultDirectoryInfo> = stream::iter(shortened_paths)
+            .map(|path| async move {
+                self.read_shortened_directory_info(&path, directory_id).await
+            })
+            .buffer_unordered(32) // Process up to 32 shortened directories concurrently
+            .filter_map(|result| async move { result.ok() })
+            .collect()
+            .await;
+
         let mut directories = decrypted_regular;
-        for path in shortened_paths {
-            if let Ok(dir_info) = self.read_shortened_directory_info(&path, directory_id).await {
-                directories.push(dir_info);
-            }
-        }
+        directories.extend(shortened_dirs);
 
         debug!(directory_count = directories.len(), "Listed subdirectories");
         Ok(directories)
@@ -691,8 +738,8 @@ impl VaultOperationsAsync {
     ) -> Result<Option<VaultFileInfo>, VaultOperationError> {
         let storage_path = self.calculate_directory_storage_path(directory_id)?;
 
-        // Encrypt the filename to get the expected path
-        let encrypted_name = encrypt_filename(filename, directory_id.as_str(), &self.master_key)?;
+        // Encrypt the filename to get the expected path (cached)
+        let encrypted_name = self.encrypt_filename_cached(filename, directory_id.as_str())?;
 
         // Calculate paths using shared helper
         let paths = calculate_file_lookup_paths(
@@ -764,8 +811,8 @@ impl VaultOperationsAsync {
     ) -> Result<Option<VaultDirectoryInfo>, VaultOperationError> {
         let storage_path = self.calculate_directory_storage_path(parent_directory_id)?;
 
-        // Encrypt the directory name to get the expected path
-        let encrypted_name = encrypt_filename(dir_name, parent_directory_id.as_str(), &self.master_key)?;
+        // Encrypt the directory name to get the expected path (cached)
+        let encrypted_name = self.encrypt_filename_cached(dir_name, parent_directory_id.as_str())?;
 
         // Calculate paths using shared helper
         let paths = calculate_directory_lookup_paths(
@@ -832,8 +879,8 @@ impl VaultOperationsAsync {
     ) -> Result<Option<VaultSymlinkInfo>, VaultOperationError> {
         let storage_path = self.calculate_directory_storage_path(directory_id)?;
 
-        // Encrypt the symlink name to get the expected path
-        let encrypted_name = encrypt_filename(symlink_name, directory_id.as_str(), &self.master_key)?;
+        // Encrypt the symlink name to get the expected path (cached)
+        let encrypted_name = self.encrypt_filename_cached(symlink_name, directory_id.as_str())?;
 
         // Calculate paths using shared helper
         let paths = calculate_symlink_lookup_paths(
@@ -2247,7 +2294,10 @@ impl VaultOperationsAsync {
             return Ok(Vec::new());
         }
 
-        let mut symlinks = Vec::new();
+        // Phase 1: Collect all potential symlink entries (path, encrypted_name, is_shortened)
+        // We only do metadata checks here, deferring the actual symlink.c9r check to parallel phase
+        let mut regular_symlinks: Vec<(PathBuf, String)> = Vec::new(); // (path, encrypted_name)
+        let mut shortened_symlinks: Vec<PathBuf> = Vec::new();
 
         let mut entries = fs::read_dir(&dir_path).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -2260,25 +2310,53 @@ impl VaultOperationsAsync {
             };
 
             if metadata.is_dir() && file_name.ends_with(".c9r") {
-                // Check if this is a symlink (has symlink.c9r)
+                // Potential regular symlink - will verify symlink.c9r exists in parallel phase
+                regular_symlinks.push((path, file_name));
+            } else if metadata.is_dir() && file_name.ends_with(".c9s") {
+                // Potential shortened symlink - will verify symlink.c9r exists in parallel phase
+                shortened_symlinks.push(path);
+            }
+        }
+
+        // Phase 2: Process regular symlinks in parallel
+        // Each task checks for symlink.c9r and reads symlink info if present
+        let regular_results: Vec<VaultSymlinkInfo> = stream::iter(regular_symlinks)
+            .map(|(path, file_name)| async move {
                 let symlink_file = path.join("symlink.c9r");
                 if fs::try_exists(&symlink_file).await.unwrap_or(false) {
                     trace!(encrypted_name = %file_name, "Processing symlink entry");
-                    if let Ok(info) = self.read_symlink_info_async(&path, &file_name, directory_id, false).await {
-                        symlinks.push(info);
-                    }
+                    self.read_symlink_info_async(&path, &file_name, directory_id, false)
+                        .await
+                        .ok()
+                } else {
+                    None
                 }
-            } else if metadata.is_dir() && file_name.ends_with(".c9s") {
-                // Check if this is a shortened symlink
+            })
+            .buffer_unordered(32) // Process up to 32 symlinks concurrently
+            .filter_map(|result| async move { result })
+            .collect()
+            .await;
+
+        // Phase 3: Process shortened symlinks in parallel
+        let shortened_results: Vec<VaultSymlinkInfo> = stream::iter(shortened_symlinks)
+            .map(|path| async move {
                 let symlink_file = path.join("symlink.c9r");
                 if fs::try_exists(&symlink_file).await.unwrap_or(false) {
-                    trace!(shortened_name = %file_name, "Processing shortened symlink entry");
-                    if let Ok(info) = self.read_shortened_symlink_info_async(&path, directory_id).await {
-                        symlinks.push(info);
-                    }
+                    trace!(path = %path.display(), "Processing shortened symlink entry");
+                    self.read_shortened_symlink_info_async(&path, directory_id)
+                        .await
+                        .ok()
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .buffer_unordered(32) // Process up to 32 shortened symlinks concurrently
+            .filter_map(|result| async move { result })
+            .collect()
+            .await;
+
+        let mut symlinks = regular_results;
+        symlinks.extend(shortened_results);
 
         debug!(symlink_count = symlinks.len(), "Listed symlinks in directory");
         Ok(symlinks)

@@ -2,10 +2,18 @@
 //!
 //! State is persisted to `~/.config/oxcrypt/mounts.json` (Linux/macOS)
 //! or `%APPDATA%\oxidized\oxcrypt\mounts.json` (Windows).
+//!
+//! # Concurrency Safety
+//!
+//! The state file is protected by advisory file locking to prevent races
+//! between multiple CLI/GUI instances. Use `with_lock()` for safe
+//! read-modify-write operations.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 /// A single mount entry in the state file.
@@ -66,7 +74,11 @@ fn default_version() -> u32 {
 /// Manages the mount state file.
 pub struct MountStateManager {
     state_path: PathBuf,
+    lock_path: PathBuf,
 }
+
+/// Default timeout for acquiring the state file lock.
+const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl MountStateManager {
     /// Create a new state manager, initializing the config directory if needed.
@@ -79,8 +91,12 @@ impl MountStateManager {
         std::fs::create_dir_all(config_dir)
             .with_context(|| format!("Failed to create config dir: {}", config_dir.display()))?;
 
+        let state_path = config_dir.join("mounts.json");
+        let lock_path = config_dir.join("mounts.lock");
+
         Ok(Self {
-            state_path: config_dir.join("mounts.json"),
+            state_path,
+            lock_path,
         })
     }
 
@@ -88,6 +104,90 @@ impl MountStateManager {
     #[allow(dead_code)]
     pub fn state_path(&self) -> &Path {
         &self.state_path
+    }
+
+    /// Execute a function while holding an exclusive lock on the state file.
+    ///
+    /// This prevents races between multiple CLI/GUI instances when modifying state.
+    /// The lock is automatically released when the function returns.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// state_manager.with_lock(|state| {
+    ///     state.mounts.push(new_entry);
+    ///     Ok(())
+    /// })?;
+    /// ```
+    pub fn with_lock<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut MountState) -> Result<R>,
+    {
+        // Create/open lock file
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&self.lock_path)
+            .with_context(|| format!("Failed to open lock file: {}", self.lock_path.display()))?;
+
+        // Try to acquire lock with timeout using polling
+        let start = std::time::Instant::now();
+        loop {
+            match lock_file.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed() > LOCK_TIMEOUT {
+                        anyhow::bail!(
+                            "Timed out waiting for state file lock after {:?}. \
+                             Another oxcrypt process may be holding the lock.",
+                            LOCK_TIMEOUT
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("Failed to lock: {}", self.lock_path.display()))
+                }
+            }
+        }
+
+        // Load state, execute function, save if modified
+        let mut state = self.load_internal()?;
+        let result = f(&mut state);
+
+        // Always save to persist any changes, even on error path
+        // (caller might have made partial changes)
+        if let Err(e) = self.save_internal(&state) {
+            tracing::warn!("Failed to save state: {}", e);
+        }
+
+        // Release lock (happens automatically when lock_file is dropped,
+        // but explicit unlock is clearer)
+        let _ = lock_file.unlock();
+
+        result
+    }
+
+    /// Internal load without locking (for use within with_lock).
+    fn load_internal(&self) -> Result<MountState> {
+        if !self.state_path.exists() {
+            return Ok(MountState::default());
+        }
+
+        let contents = std::fs::read_to_string(&self.state_path)
+            .with_context(|| format!("Failed to read state file: {}", self.state_path.display()))?;
+
+        serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse state file: {}", self.state_path.display()))
+    }
+
+    /// Internal save without locking (for use within with_lock).
+    fn save_internal(&self, state: &MountState) -> Result<()> {
+        let contents = serde_json::to_string_pretty(state)?;
+        std::fs::write(&self.state_path, contents)
+            .with_context(|| format!("Failed to write state file: {}", self.state_path.display()))
     }
 
     /// Load the current state, returning default if file doesn't exist.
@@ -110,42 +210,37 @@ impl MountStateManager {
             .with_context(|| format!("Failed to write state file: {}", self.state_path.display()))
     }
 
-    /// Add a new mount entry.
+    /// Add a new mount entry (thread-safe with file locking).
     pub fn add_mount(&self, entry: MountEntry) -> Result<()> {
-        let mut state = self.load()?;
+        self.with_lock(|state| {
+            // Remove any existing entry for the same mountpoint (stale)
+            state
+                .mounts
+                .retain(|m| m.mountpoint != entry.mountpoint);
 
-        // Remove any existing entry for the same mountpoint (stale)
-        state
-            .mounts
-            .retain(|m| m.mountpoint != entry.mountpoint);
-
-        state.mounts.push(entry);
-        self.save(&state)
+            state.mounts.push(entry);
+            Ok(())
+        })
     }
 
-    /// Remove a mount entry by ID.
+    /// Remove a mount entry by ID (thread-safe with file locking).
     #[allow(dead_code)]
     pub fn remove_mount(&self, id: &str) -> Result<bool> {
-        let mut state = self.load()?;
-        let initial_len = state.mounts.len();
-        state.mounts.retain(|m| m.id != id);
-        let removed = state.mounts.len() != initial_len;
-        if removed {
-            self.save(&state)?;
-        }
-        Ok(removed)
+        self.with_lock(|state| {
+            let initial_len = state.mounts.len();
+            state.mounts.retain(|m| m.id != id);
+            Ok(state.mounts.len() != initial_len)
+        })
     }
 
-    /// Remove a mount entry by mountpoint path.
+    /// Remove a mount entry by mountpoint path (thread-safe with file locking).
     pub fn remove_by_mountpoint(&self, mountpoint: &Path) -> Result<bool> {
-        let mut state = self.load()?;
-        let initial_len = state.mounts.len();
-        state.mounts.retain(|m| m.mountpoint != mountpoint);
-        let removed = state.mounts.len() != initial_len;
-        if removed {
-            self.save(&state)?;
-        }
-        Ok(removed)
+        let mountpoint = mountpoint.to_path_buf();
+        self.with_lock(|state| {
+            let initial_len = state.mounts.len();
+            state.mounts.retain(|m| m.mountpoint != mountpoint);
+            Ok(state.mounts.len() != initial_len)
+        })
     }
 
     /// Find a mount entry by mountpoint path.
@@ -156,30 +251,28 @@ impl MountStateManager {
 
     /// Remove stale entries (process dead or not in system mounts).
     /// Returns the entries that were removed.
+    /// Thread-safe with file locking.
     pub fn cleanup_stale(&self) -> Result<Vec<MountEntry>> {
-        let mut state = self.load()?;
         let system_mounts = get_system_mounts()?;
 
-        let mut stale = Vec::new();
-        let mut active = Vec::new();
+        self.with_lock(|state| {
+            let mut stale = Vec::new();
+            let mut active = Vec::new();
 
-        for entry in state.mounts {
-            let pid_alive = is_process_alive(entry.pid);
-            let in_system = system_mounts.contains(&entry.mountpoint);
+            for entry in std::mem::take(&mut state.mounts) {
+                let pid_alive = is_process_alive(entry.pid);
+                let in_system = system_mounts.contains(&entry.mountpoint);
 
-            if pid_alive && in_system {
-                active.push(entry);
-            } else {
-                stale.push(entry);
+                if pid_alive && in_system {
+                    active.push(entry);
+                } else {
+                    stale.push(entry);
+                }
             }
-        }
 
-        if !stale.is_empty() {
             state.mounts = active;
-            self.save(&state)?;
-        }
-
-        Ok(stale)
+            Ok(stale)
+        })
     }
 
     /// Validate entries and partition into active vs stale.
