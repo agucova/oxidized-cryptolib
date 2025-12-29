@@ -21,6 +21,10 @@ pub mod ids {
         format!("vault_lock_{}", vault_id)
     }
 
+    pub fn vault_force_lock(vault_id: &str) -> String {
+        format!("vault_force_lock_{}", vault_id)
+    }
+
     pub fn vault_reveal(vault_id: &str) -> String {
         format!("vault_reveal_{}", vault_id)
     }
@@ -31,6 +35,8 @@ pub mod ids {
             Some(super::VaultAction::Unlock(vault_id.to_string()))
         } else if let Some(vault_id) = id.strip_prefix("vault_lock_") {
             Some(super::VaultAction::Lock(vault_id.to_string()))
+        } else if let Some(vault_id) = id.strip_prefix("vault_force_lock_") {
+            Some(super::VaultAction::ForceLock(vault_id.to_string()))
         } else if let Some(vault_id) = id.strip_prefix("vault_reveal_") {
             Some(super::VaultAction::Reveal(vault_id.to_string()))
         } else {
@@ -44,6 +50,7 @@ pub mod ids {
 pub enum VaultAction {
     Unlock(String),
     Lock(String),
+    ForceLock(String),
     Reveal(String),
 }
 
@@ -170,6 +177,15 @@ fn build_vault_submenu(vault: &ManagedVault) -> Submenu {
             // Lock option
             let lock = MenuItem::with_id(ids::vault_lock(&vault.config.id), "Lock", true, None);
             let _ = submenu.append(&lock);
+
+            // Force Lock option
+            let force_lock = MenuItem::with_id(
+                ids::vault_force_lock(&vault.config.id),
+                "Force Lock...",
+                true,
+                None,
+            );
+            let _ = submenu.append(&force_lock);
         }
     }
 

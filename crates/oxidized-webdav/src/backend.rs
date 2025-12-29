@@ -4,9 +4,10 @@
 //! to provide WebDAV-based mounting as an alternative to FUSE and FSKit.
 
 use crate::filesystem::CryptomatorWebDav;
-use crate::server::{auto_mount_macos, unmount_macos, ServerConfig, WebDavServer};
-use oxidized_cryptolib::mount::{BackendType, MountBackend, MountError, MountHandle};
+use crate::server::{auto_mount_macos, force_unmount_macos, unmount_macos, ServerConfig, WebDavServer};
+use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle, VaultStats};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tracing::{debug, info, warn};
 
@@ -119,6 +120,9 @@ impl MountBackend for WebDavBackend {
         let fs = CryptomatorWebDav::open(vault_path, password)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
+        // Capture stats before starting server
+        let stats = fs.stats();
+
         // Start the server
         let config = self.config.clone();
         let server = runtime.block_on(async {
@@ -158,6 +162,7 @@ impl MountBackend for WebDavBackend {
             url,
             mountpoint: mountpoint.to_path_buf(),
             auto_mounted,
+            stats,
         }))
     }
 }
@@ -174,6 +179,8 @@ pub struct WebDavMountHandle {
     mountpoint: PathBuf,
     /// Whether auto-mount succeeded.
     auto_mounted: bool,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 impl WebDavMountHandle {
@@ -186,6 +193,10 @@ impl WebDavMountHandle {
 impl MountHandle for WebDavMountHandle {
     fn mountpoint(&self) -> &Path {
         &self.mountpoint
+    }
+
+    fn stats(&self) -> Option<Arc<VaultStats>> {
+        Some(Arc::clone(&self.stats))
     }
 
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
@@ -204,6 +215,27 @@ impl MountHandle for WebDavMountHandle {
         }
 
         info!("WebDAV unmounted successfully");
+        Ok(())
+    }
+
+    fn force_unmount(mut self: Box<Self>) -> Result<(), MountError> {
+        info!(url = %self.url, "Force unmounting WebDAV");
+
+        // Force unmount using OS tools if we auto-mounted
+        if self.auto_mounted {
+            if let Err(e) = force_unmount_macos(&self.mountpoint) {
+                warn!(error = %e, "Force unmount failed");
+            }
+        }
+
+        // Stop the server
+        if let (Some(server), Some(runtime)) = (self.server.take(), self.runtime.take()) {
+            runtime.block_on(async {
+                server.stop().await;
+            });
+        }
+
+        info!("WebDAV force unmounted successfully");
         Ok(())
     }
 }

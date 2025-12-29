@@ -89,8 +89,9 @@ pub fn AddVaultDialog(props: AddVaultDialogProps) -> Element {
 
                 state.set(AddVaultState::Adding);
 
-                // Create vault config and add to app state
-                let config = VaultConfig::new(&name, path.clone());
+                // Create vault config with the default backend from settings
+                let default_backend = app_state.read().config.default_backend;
+                let config = VaultConfig::with_backend(&name, path.clone(), default_backend);
                 app_state.write().add_vault(config);
 
                 // Save config

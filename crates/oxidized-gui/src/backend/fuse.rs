@@ -23,7 +23,7 @@ pub use oxidized_fuse::FuseBackend;
 // When the fuse feature is disabled, provide a stub implementation
 #[cfg(not(feature = "fuse"))]
 mod stub {
-    use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+    use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle};
     use std::path::Path;
 
     /// FUSE-based mounting backend (stub)
@@ -111,7 +111,7 @@ pub use stub::FuseBackend;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxidized_cryptolib::MountBackend;
+    use oxidized_mount_common::MountBackend;
 
     #[test]
     fn fuse_backend_id() {

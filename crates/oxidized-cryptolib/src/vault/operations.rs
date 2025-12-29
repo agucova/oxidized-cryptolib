@@ -39,7 +39,7 @@ use crate::{
     fs::name::{create_c9s_filename, decrypt_filename, decrypt_parent_dir_id, encrypt_filename, hash_dir_id, NameError},
     fs::symlink::{decrypt_symlink_target, encrypt_symlink_target, SymlinkError},
     vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
-    vault::ops::{calculate_directory_lookup_paths, calculate_file_lookup_paths, VaultCore},
+    vault::ops::{calculate_directory_lookup_paths, calculate_file_lookup_paths, calculate_symlink_lookup_paths, VaultCore},
     vault::path::{DirId, EntryType, VaultPath},
 };
 use std::{
@@ -1058,6 +1058,70 @@ impl VaultOperations {
                 context: VaultOpContext::new()
                     .with_filename(dir_name)
                     .with_dir_id(parent_directory_id.as_str())
+                    .with_encrypted_path(&paths.content_path),
+            }),
+        }
+    }
+
+    /// Find a specific symlink by name without scanning the entire parent directory.
+    ///
+    /// This is significantly faster than `list_symlinks()` for directories with many entries,
+    /// as it directly checks the expected encrypted path rather than iterating all entries.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The parent directory to search in
+    /// * `name` - The cleartext symlink name to look for
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(info))` - Symlink found
+    /// * `Ok(None)` - Symlink not found
+    /// * `Err(...)` - I/O or encryption error
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str(), name = %name))]
+    pub fn find_symlink(
+        &self,
+        directory_id: &DirId,
+        name: &str,
+    ) -> Result<Option<VaultSymlinkInfo>, VaultOperationError> {
+        let storage_path = self.calculate_directory_storage_path(directory_id)?;
+
+        // Encrypt the symlink name to get the expected path
+        let encrypted_name = encrypt_filename(name, directory_id.as_str(), &self.master_key)?;
+
+        // Calculate paths using shared helper
+        let paths = calculate_symlink_lookup_paths(
+            &storage_path,
+            &encrypted_name,
+            self.core.shortening_threshold(),
+        );
+
+        // Perform I/O to read symlink target from symlink.c9r
+        match fs::read(&paths.content_path) {
+            Ok(encrypted_data) => {
+                let target = decrypt_symlink_target(&encrypted_data, &self.master_key)?;
+                trace!(target_len = target.len(), shortened = paths.is_shortened, "Found symlink");
+                Ok(Some(VaultSymlinkInfo {
+                    name: name.to_string(),
+                    target,
+                    encrypted_path: paths.entry_path,
+                    is_shortened: paths.is_shortened,
+                }))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                trace!(shortened = paths.is_shortened, "Symlink not found");
+                Ok(None)
+            }
+            // NotADirectory means the entry_path exists but is a file, not a symlink
+            Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => {
+                trace!("Entry exists but is a file, not a symlink");
+                Ok(None)
+            }
+            Err(e) => Err(VaultOperationError::Io {
+                source: e,
+                context: VaultOpContext::new()
+                    .with_filename(name)
+                    .with_dir_id(directory_id.as_str())
                     .with_encrypted_path(&paths.content_path),
             }),
         }

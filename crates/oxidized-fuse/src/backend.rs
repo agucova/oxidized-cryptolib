@@ -4,8 +4,13 @@
 
 use crate::CryptomatorFS;
 use fuser::{BackgroundSession, MountOption};
-use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+use oxidized_mount_common::{
+    find_available_mountpoint, is_directory_readable, BackendType, MountBackend, MountError,
+    MountHandle, MountPointError, VaultStats, DEFAULT_ACCESS_TIMEOUT,
+};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Handle to a FUSE-mounted filesystem.
@@ -14,12 +19,14 @@ use std::time::{Duration, Instant};
 pub struct FuseMountHandle {
     session: Option<BackgroundSession>,
     mountpoint: PathBuf,
+    /// Statistics for monitoring vault activity
+    stats: Arc<VaultStats>,
 }
 
 impl FuseMountHandle {
     /// Force unmount the filesystem using system tools.
     /// This is a fallback when the normal unmount is blocked.
-    fn force_unmount(&self) {
+    fn force_unmount_impl(&self) {
         #[cfg(target_os = "macos")]
         {
             // Try diskutil unmount force first (more reliable on macOS)
@@ -61,10 +68,23 @@ impl MountHandle for FuseMountHandle {
         &self.mountpoint
     }
 
+    fn stats(&self) -> Option<Arc<VaultStats>> {
+        Some(Arc::clone(&self.stats))
+    }
+
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
         if let Some(session) = self.session.take() {
-            // First, try force unmount to release any busy handles
-            self.force_unmount();
+            // Join the session for clean unmount
+            // This may block if files are open
+            session.join();
+        }
+        Ok(())
+    }
+
+    fn force_unmount(mut self: Box<Self>) -> Result<(), MountError> {
+        if let Some(session) = self.session.take() {
+            // First, force unmount using OS tools to release any busy handles
+            self.force_unmount_impl();
 
             // Brief pause to let the force unmount take effect
             std::thread::sleep(Duration::from_millis(100));
@@ -82,8 +102,8 @@ impl Drop for FuseMountHandle {
         if let Some(session) = self.session.take() {
             tracing::debug!("Unmounting FUSE filesystem at {}", self.mountpoint.display());
 
-            // Force unmount first to avoid blocking
-            self.force_unmount();
+            // Force unmount first to avoid blocking on drop
+            self.force_unmount_impl();
             std::thread::sleep(Duration::from_millis(100));
 
             session.join();
@@ -121,22 +141,18 @@ impl FuseBackend {
     }
 
     /// Wait for the mount to become ready by polling until we can read the directory.
+    ///
+    /// Uses timeout-wrapped filesystem operations to avoid blocking indefinitely
+    /// on stale mounts.
     fn wait_for_mount(&self, mount_point: &Path) -> Result<(), MountError> {
         let deadline = Instant::now() + self.mount_timeout;
+        // Timeout for each individual read_dir attempt (prevents blocking on stale mounts)
+        let single_check_timeout = Duration::from_millis(500);
 
         while Instant::now() < deadline {
-            // Try to read the directory - success means the mount is ready
-            // (even if the directory is empty)
-            match std::fs::read_dir(mount_point) {
-                Ok(mut entries) => {
-                    // Try to iterate - this confirms FUSE is responding
-                    // We just need to confirm we can read, not that there's content
-                    let _ = entries.next();
-                    return Ok(());
-                }
-                Err(_) => {
-                    // ENOENT or permission errors during mount setup are expected
-                }
+            // Use timeout-wrapped directory read to avoid blocking on stale mounts
+            if is_directory_readable(mount_point, single_check_timeout) {
+                return Ok(());
             }
             std::thread::sleep(self.poll_interval);
         }
@@ -148,6 +164,38 @@ impl FuseBackend {
                 self.mount_timeout
             ),
         )))
+    }
+
+    /// Try to mount with spawn_mount2, with a timeout to handle cases where
+    /// the mount syscall itself blocks (e.g., stale mount at mountpoint).
+    fn spawn_mount_with_timeout(
+        &self,
+        fs: CryptomatorFS,
+        mountpoint: &Path,
+        options: &[MountOption],
+    ) -> Result<BackgroundSession, MountError> {
+        let mountpoint = mountpoint.to_path_buf();
+        let options: Vec<MountOption> = options.to_vec();
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn the mount in a separate thread so we can timeout
+        std::thread::spawn(move || {
+            let result = fuser::spawn_mount2(fs, &mountpoint, &options);
+            let _ = tx.send(result);
+        });
+
+        // Wait for mount with timeout
+        match rx.recv_timeout(self.mount_timeout) {
+            Ok(Ok(session)) => Ok(session),
+            Ok(Err(e)) => Err(MountError::Mount(e)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(MountError::Mount(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Mount operation timed out - the mountpoint may be on a stale FUSE mount",
+            ))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(MountError::Mount(
+                std::io::Error::other("Mount thread terminated unexpectedly"),
+            ))
+        }
     }
 }
 
@@ -217,9 +265,50 @@ impl MountBackend for FuseBackend {
             ));
         }
 
+        // Find an available mount point, detecting stale mounts and trying alternatives
+        let actual_mountpoint = find_available_mountpoint(mountpoint, DEFAULT_ACCESS_TIMEOUT)
+            .map_err(|e| match e {
+                MountPointError::ParentOnStaleFuseMount { parent, fuse_mount } => {
+                    MountError::Mount(std::io::Error::other(format!(
+                        "Cannot mount: {} is on a stale FUSE mount ({}). \
+                         Please unmount the stale mount first using: \
+                         diskutil unmount force {}",
+                        parent.display(),
+                        fuse_mount.display(),
+                        fuse_mount.display()
+                    )))
+                }
+                MountPointError::ParentInaccessible(path) => {
+                    MountError::Mount(std::io::Error::other(format!(
+                        "Parent directory {} is inaccessible. \
+                         It may be on a stale mount. Try: diskutil unmount force {}",
+                        path.display(),
+                        path.display()
+                    )))
+                }
+                other => MountError::Mount(std::io::Error::other(other.to_string())),
+            })?;
+
+        // Log if we're using an alternative mountpoint
+        if actual_mountpoint != mountpoint {
+            tracing::info!(
+                "Using alternative mount point {} (original {} was unavailable)",
+                actual_mountpoint.display(),
+                mountpoint.display()
+            );
+        }
+
+        // Create mount point directory if it doesn't exist
+        if !actual_mountpoint.exists() {
+            std::fs::create_dir_all(&actual_mountpoint)?;
+        }
+
         // Create the CryptomatorFS filesystem
         let fs = CryptomatorFS::new(vault_path, password)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
+
+        // Capture stats before spawning (spawn_mount2 takes ownership of fs)
+        let stats = fs.stats();
 
         // Configure mount options
         let mut options = vec![
@@ -234,15 +323,16 @@ impl MountBackend for FuseBackend {
             options.push(MountOption::CUSTOM(format!("volname={}", vault_id)));
         }
 
-        // Mount the filesystem in a background thread
-        let session = fuser::spawn_mount2(fs, mountpoint, &options)?;
+        // Mount the filesystem with timeout protection
+        let session = self.spawn_mount_with_timeout(fs, &actual_mountpoint, &options)?;
 
-        // Wait for mount to become ready
-        self.wait_for_mount(mountpoint)?;
+        // Wait for mount to become ready (also with timeout protection)
+        self.wait_for_mount(&actual_mountpoint)?;
 
         Ok(Box::new(FuseMountHandle {
             session: Some(session),
-            mountpoint: mountpoint.to_path_buf(),
+            mountpoint: actual_mountpoint,
+            stats,
         }))
     }
 }

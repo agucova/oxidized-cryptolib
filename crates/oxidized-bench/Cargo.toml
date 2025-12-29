@@ -24,6 +24,9 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 comfy-table = { workspace = true }
 
+# Mount backend abstraction
+oxidized-mount-common = { path = "../oxidized-mount-common" }
+
 # FUSE filesystem
 oxidized-fuse = { path = "../oxidized-fuse" }
 fuser = "0.16"

@@ -3,6 +3,7 @@
 use crate::bench::Benchmark;
 use crate::config::OperationType;
 use anyhow::Result;
+use oxidized_mount_common::safe_sync;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
@@ -86,7 +87,7 @@ impl Benchmark for FileCreationBenchmark {
                 .custom_flags(libc::O_DIRECTORY)
                 .open(&dir_path)
             {
-                let _ = dir.sync_all();
+                let _ = safe_sync(&dir);
             }
         }
 

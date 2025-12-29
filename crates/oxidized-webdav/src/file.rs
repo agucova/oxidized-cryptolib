@@ -11,9 +11,10 @@ use bytes::Bytes;
 use dav_server::fs::{DavFile, DavMetaData, FsError, FsFuture};
 use oxidized_cryptolib::fs::streaming::VaultFileReader;
 use oxidized_cryptolib::vault::VaultOperationsAsync;
-use oxidized_mount_common::{TtlCache, WriteBuffer};
+use oxidized_mount_common::{TtlCache, VaultStats, WriteBuffer};
 use std::io::SeekFrom;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -60,6 +61,8 @@ pub struct ReaderHandle {
     size: u64,
     /// Filename for metadata.
     filename: String,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 /// Handle for write access.
@@ -76,17 +79,21 @@ pub struct WriterHandle {
     vault_path: String,
     /// Metadata cache reference for invalidation after flush.
     cache: Arc<MetadataCache>,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 impl CryptomatorFile {
     /// Create a new reader handle from a VaultFileReader.
-    pub fn reader(reader: VaultFileReader, filename: String) -> Self {
+    pub fn reader(reader: VaultFileReader, filename: String, stats: Arc<VaultStats>) -> Self {
         let size = reader.plaintext_size();
+        stats.record_file_open();
         CryptomatorFile::Reader(ReaderHandle {
             reader: Arc::new(Mutex::new(reader)),
             position: 0,
             size,
             filename,
+            stats,
         })
     }
 
@@ -97,7 +104,9 @@ impl CryptomatorFile {
         ops: Arc<VaultOperationsAsync>,
         vault_path: String,
         cache: Arc<MetadataCache>,
+        stats: Arc<VaultStats>,
     ) -> Self {
+        stats.record_file_open();
         CryptomatorFile::Writer(WriterHandle {
             buffer: Arc::new(Mutex::new(buffer)),
             ops,
@@ -105,6 +114,7 @@ impl CryptomatorFile {
             filename,
             vault_path,
             cache,
+            stats,
         })
     }
 
@@ -143,18 +153,34 @@ impl DavFile for CryptomatorFile {
         Box::pin(async move {
             match self {
                 CryptomatorFile::Reader(h) => {
+                    h.stats.start_read();
+                    let start = Instant::now();
                     let mut reader = h.reader.lock().await;
-                    let data = reader
+                    let result = reader
                         .read_range(h.position, count)
                         .await
-                        .map_err(|_| FsError::GeneralFailure)?;
-                    h.position += data.len() as u64;
-                    Ok(Bytes::from(data))
+                        .map_err(|_| FsError::GeneralFailure);
+                    let elapsed = start.elapsed();
+                    h.stats.finish_read();
+                    h.stats.record_read_latency(elapsed);
+
+                    match result {
+                        Ok(data) => {
+                            let len = data.len() as u64;
+                            h.position += len;
+                            h.stats.record_read(len);
+                            h.stats.record_decrypted(len);
+                            Ok(Bytes::from(data))
+                        }
+                        Err(e) => Err(e),
+                    }
                 }
                 CryptomatorFile::Writer(h) => {
                     let buf = h.buffer.lock().await;
                     let data = buf.read(h.position, count).to_vec();
-                    h.position += data.len() as u64;
+                    let len = data.len() as u64;
+                    h.position += len;
+                    h.stats.record_read(len);
                     Ok(Bytes::from(data))
                 }
             }
@@ -166,9 +192,11 @@ impl DavFile for CryptomatorFile {
             match self {
                 CryptomatorFile::Reader(_) => Err(FsError::Forbidden),
                 CryptomatorFile::Writer(h) => {
+                    let len = buf.len() as u64;
                     let mut buffer = h.buffer.lock().await;
                     buffer.write(h.position, &buf);
-                    h.position += buf.len() as u64;
+                    h.position += len;
+                    h.stats.record_write(len);
                     Ok(())
                 }
             }
@@ -224,6 +252,7 @@ impl DavFile for CryptomatorFile {
                         let dir_id = buffer.dir_id().clone();
                         let filename = buffer.filename().to_string();
                         let content = buffer.content().to_vec();
+                        let content_len = content.len() as u64;
 
                         debug!(
                             filename = %filename,
@@ -231,10 +260,20 @@ impl DavFile for CryptomatorFile {
                             "Flushing write buffer to vault"
                         );
 
-                        h.ops
+                        h.stats.start_write();
+                        let start = Instant::now();
+                        let result = h.ops
                             .write_file(&dir_id, &filename, &content)
                             .await
-                            .map_err(write_error_to_fs_error)?;
+                            .map_err(write_error_to_fs_error);
+                        let elapsed = start.elapsed();
+                        h.stats.finish_write();
+                        h.stats.record_write_latency(elapsed);
+
+                        result?;
+
+                        // Record encrypted bytes written to vault
+                        h.stats.record_encrypted(content_len);
 
                         // Invalidate metadata cache so PROPFIND returns updated size
                         h.cache.invalidate(&h.vault_path);
@@ -245,6 +284,15 @@ impl DavFile for CryptomatorFile {
                 }
             }
         })
+    }
+}
+
+impl Drop for CryptomatorFile {
+    fn drop(&mut self) {
+        match self {
+            CryptomatorFile::Reader(h) => h.stats.record_file_close(),
+            CryptomatorFile::Writer(h) => h.stats.record_file_close(),
+        }
     }
 }
 

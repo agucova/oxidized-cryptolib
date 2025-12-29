@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
-// Re-export BackendType from cryptolib for convenience
-pub use oxidized_cryptolib::BackendType;
+// Re-export BackendType from mount-common for convenience
+pub use oxidized_mount_common::BackendType;
 
 /// User preference for application theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -100,6 +100,17 @@ impl VaultConfig {
         }
     }
 
+    /// Create a new vault configuration with a specific backend preference
+    pub fn with_backend(name: impl Into<String>, path: PathBuf, backend: BackendType) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.into(),
+            path,
+            preferred_backend: backend,
+            default_mountpoint: None,
+        }
+    }
+
     /// Validate that this vault configuration points to a valid vault
     pub fn validate(&self) -> Result<(), String> {
         if !self.path.exists() {
@@ -134,9 +145,6 @@ pub struct AppConfig {
     /// User dismissed the FSKit setup wizard (don't show again)
     #[serde(default)]
     pub fskit_setup_dismissed: bool,
-    /// Enable debug logging (verbose output)
-    #[serde(default)]
-    pub debug_logging: bool,
     /// Theme preference (system, light, or dark)
     #[serde(default)]
     pub theme: ThemePreference,

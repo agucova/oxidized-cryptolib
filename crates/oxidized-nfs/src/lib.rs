@@ -25,7 +25,7 @@
 //!
 //! ```ignore
 //! use oxidized_nfs::NfsBackend;
-//! use oxidized_cryptolib::mount::MountBackend;
+//! use oxidized_mount_common::MountBackend;
 //!
 //! let backend = NfsBackend::default();
 //! if backend.is_available() {

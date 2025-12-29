@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "tokio-console")]
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use oxidized_cryptolib::vault::config::{extract_master_key, validate_vault_claims};
 use oxidized_cryptolib::vault::operations::VaultOperations;
@@ -103,6 +105,23 @@ fn main() -> Result<()> {
         2 => "debug",
         _ => "trace",
     };
+
+    #[cfg(feature = "tokio-console")]
+    {
+        // console_subscriber::spawn() returns a layer with its own built-in filter
+        // for tokio instrumentation. We use per-layer filtering so the fmt layer
+        // gets our custom filter while console uses its own.
+        use tracing_subscriber::Layer;
+        let console_layer = console_subscriber::spawn();
+        let fmt_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into());
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
+            .init();
+        tracing::info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
+    }
+
+    #[cfg(not(feature = "tokio-console"))]
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
         .with_writer(std::io::stderr)

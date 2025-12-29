@@ -33,7 +33,7 @@
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Statistics for cache operations.
@@ -166,6 +166,69 @@ impl CacheStatsSnapshot {
     }
 }
 
+/// Statistics for operation latency.
+///
+/// Tracks total nanoseconds and count for computing average latency.
+/// All operations are lock-free using atomic counters.
+#[derive(Debug, Default)]
+pub struct LatencyStats {
+    /// Total nanoseconds across all operations.
+    total_nanos: AtomicU64,
+    /// Number of operations recorded.
+    count: AtomicU64,
+}
+
+impl LatencyStats {
+    /// Create new latency statistics.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a latency measurement.
+    ///
+    /// # Arguments
+    ///
+    /// * `elapsed` - Duration of the operation
+    #[inline]
+    pub fn record(&self, elapsed: Duration) {
+        let nanos = elapsed.as_nanos() as u64;
+        self.total_nanos.fetch_add(nanos, Ordering::Relaxed);
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get the number of operations recorded.
+    pub fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    /// Get the average latency in nanoseconds.
+    ///
+    /// Returns 0.0 if no operations have been recorded.
+    pub fn avg_nanos(&self) -> f64 {
+        let count = self.count.load(Ordering::Relaxed);
+        if count == 0 {
+            return 0.0;
+        }
+        self.total_nanos.load(Ordering::Relaxed) as f64 / count as f64
+    }
+
+    /// Get the average latency in microseconds.
+    pub fn avg_micros(&self) -> f64 {
+        self.avg_nanos() / 1000.0
+    }
+
+    /// Get the average latency in milliseconds.
+    pub fn avg_millis(&self) -> f64 {
+        self.avg_nanos() / 1_000_000.0
+    }
+
+    /// Reset all counters to zero.
+    pub fn reset(&self) {
+        self.total_nanos.store(0, Ordering::Relaxed);
+        self.count.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Activity status for the vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityStatus {
@@ -233,8 +296,8 @@ pub struct VaultStats {
     pub open_dirs: AtomicU64,
 
     // === Cache Statistics ===
-    /// Attribute cache statistics.
-    cache_stats: CacheStats,
+    /// Attribute cache statistics (shared Arc for connection to TtlCache).
+    cache_stats: Arc<CacheStats>,
 
     // === Activity Tracking ===
     /// Timestamp of the last operation.
@@ -245,6 +308,12 @@ pub struct VaultStats {
     reads_in_progress: AtomicU64,
     /// Current write operations in progress.
     writes_in_progress: AtomicU64,
+
+    // === Latency Tracking ===
+    /// Read operation latency statistics.
+    read_latency: LatencyStats,
+    /// Write operation latency statistics.
+    write_latency: LatencyStats,
 
     // === Session Information ===
     /// When this statistics instance was created.
@@ -270,11 +339,13 @@ impl VaultStats {
             bytes_encrypted: AtomicU64::new(0),
             open_files: AtomicU64::new(0),
             open_dirs: AtomicU64::new(0),
-            cache_stats: CacheStats::new(),
+            cache_stats: Arc::new(CacheStats::new()),
             last_activity: RwLock::new(Instant::now()),
             ops_in_progress: AtomicU64::new(0),
             reads_in_progress: AtomicU64::new(0),
             writes_in_progress: AtomicU64::new(0),
+            read_latency: LatencyStats::new(),
+            write_latency: LatencyStats::new(),
             session_start: SystemTime::now(),
         }
     }
@@ -380,6 +451,26 @@ impl VaultStats {
         self.writes_in_progress.fetch_sub(1, Ordering::Relaxed);
     }
 
+    /// Record latency for a read operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `elapsed` - Duration of the read operation
+    #[inline]
+    pub fn record_read_latency(&self, elapsed: Duration) {
+        self.read_latency.record(elapsed);
+    }
+
+    /// Record latency for a write operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `elapsed` - Duration of the write operation
+    #[inline]
+    pub fn record_write_latency(&self, elapsed: Duration) {
+        self.write_latency.record(elapsed);
+    }
+
     /// Update the last activity timestamp.
     #[inline]
     fn touch(&self) {
@@ -391,8 +482,11 @@ impl VaultStats {
     // === Query Methods ===
 
     /// Get the cache statistics.
-    pub fn cache_stats(&self) -> &CacheStats {
-        &self.cache_stats
+    /// Returns a clone of the cache stats Arc for sharing with caches.
+    ///
+    /// This allows connecting the VaultStats cache tracking to TtlCache instances.
+    pub fn cache_stats(&self) -> Arc<CacheStats> {
+        Arc::clone(&self.cache_stats)
     }
 
     /// Get the total number of read operations.
@@ -484,6 +578,26 @@ impl VaultStats {
         self.session_start.elapsed().unwrap_or(Duration::ZERO)
     }
 
+    /// Get average read latency in milliseconds.
+    pub fn avg_read_latency_ms(&self) -> f64 {
+        self.read_latency.avg_millis()
+    }
+
+    /// Get average write latency in milliseconds.
+    pub fn avg_write_latency_ms(&self) -> f64 {
+        self.write_latency.avg_millis()
+    }
+
+    /// Get the number of read operations with latency tracked.
+    pub fn read_latency_count(&self) -> u64 {
+        self.read_latency.count()
+    }
+
+    /// Get the number of write operations with latency tracked.
+    pub fn write_latency_count(&self) -> u64 {
+        self.write_latency.count()
+    }
+
     /// Reset all statistics.
     pub fn reset(&self) {
         self.total_reads.store(0, Ordering::Relaxed);
@@ -494,6 +608,8 @@ impl VaultStats {
         self.bytes_decrypted.store(0, Ordering::Relaxed);
         self.bytes_encrypted.store(0, Ordering::Relaxed);
         self.cache_stats.reset();
+        self.read_latency.reset();
+        self.write_latency.reset();
     }
 
     /// Create a snapshot of current statistics.
@@ -509,6 +625,8 @@ impl VaultStats {
             open_files: self.open_file_count(),
             open_dirs: self.open_dir_count(),
             cache: self.cache_stats.snapshot(),
+            read_latency_avg_ms: self.avg_read_latency_ms(),
+            write_latency_avg_ms: self.avg_write_latency_ms(),
             session_start: self.session_start,
         }
     }
@@ -537,6 +655,10 @@ pub struct VaultStatsSnapshot {
     pub open_dirs: u64,
     /// Cache statistics snapshot.
     pub cache: CacheStatsSnapshot,
+    /// Average read latency in milliseconds.
+    pub read_latency_avg_ms: f64,
+    /// Average write latency in milliseconds.
+    pub write_latency_avg_ms: f64,
     /// When this session started.
     #[serde(with = "humantime_serde")]
     pub session_start: SystemTime,
@@ -693,5 +815,67 @@ mod tests {
         assert_eq!(restored.total_reads, 1);
         assert_eq!(restored.total_writes, 1);
         assert_eq!(restored.bytes_read, 1024);
+    }
+
+    #[test]
+    fn test_latency_stats_basic() {
+        let stats = LatencyStats::new();
+
+        // Initially no ops
+        assert_eq!(stats.count(), 0);
+        assert_eq!(stats.avg_nanos(), 0.0);
+
+        // Record some durations
+        stats.record(Duration::from_millis(10));
+        stats.record(Duration::from_millis(20));
+        stats.record(Duration::from_millis(30));
+
+        assert_eq!(stats.count(), 3);
+        // Average should be 20ms
+        let avg_ms = stats.avg_millis();
+        assert!((avg_ms - 20.0).abs() < 0.1, "avg_ms = {}", avg_ms);
+    }
+
+    #[test]
+    fn test_latency_stats_reset() {
+        let stats = LatencyStats::new();
+        stats.record(Duration::from_millis(100));
+        assert_eq!(stats.count(), 1);
+
+        stats.reset();
+        assert_eq!(stats.count(), 0);
+        assert_eq!(stats.avg_nanos(), 0.0);
+    }
+
+    #[test]
+    fn test_vault_stats_latency() {
+        let stats = VaultStats::new();
+
+        stats.record_read_latency(Duration::from_millis(5));
+        stats.record_read_latency(Duration::from_millis(15));
+        stats.record_write_latency(Duration::from_millis(10));
+
+        assert_eq!(stats.read_latency_count(), 2);
+        assert_eq!(stats.write_latency_count(), 1);
+
+        // Average read latency should be 10ms
+        let avg_read = stats.avg_read_latency_ms();
+        assert!((avg_read - 10.0).abs() < 0.1, "avg_read = {}", avg_read);
+
+        // Average write latency should be 10ms
+        let avg_write = stats.avg_write_latency_ms();
+        assert!((avg_write - 10.0).abs() < 0.1, "avg_write = {}", avg_write);
+    }
+
+    #[test]
+    fn test_snapshot_includes_latency() {
+        let stats = VaultStats::new();
+        stats.record_read_latency(Duration::from_millis(8));
+        stats.record_write_latency(Duration::from_millis(12));
+
+        let snapshot = stats.snapshot();
+
+        assert!((snapshot.read_latency_avg_ms - 8.0).abs() < 0.1);
+        assert!((snapshot.write_latency_avg_ms - 12.0).abs() < 0.1);
     }
 }

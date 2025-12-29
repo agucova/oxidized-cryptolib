@@ -5,7 +5,7 @@
 
 use crate::filesystem::CryptomatorNFS;
 use nfsserve::tcp::NFSTcp;
-use oxidized_cryptolib::mount::{BackendType, MountBackend, MountError, MountHandle};
+use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle, VaultStats};
 use oxidized_cryptolib::vault::operations_async::VaultOperationsAsync;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,8 @@ pub struct NfsMountHandle {
     port: u16,
     /// Flag to track if we've already unmounted.
     unmounted: AtomicBool,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 impl NfsMountHandle {
@@ -50,7 +52,16 @@ impl MountHandle for NfsMountHandle {
         &self.mountpoint
     }
 
+    fn stats(&self) -> Option<Arc<VaultStats>> {
+        Some(Arc::clone(&self.stats))
+    }
+
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
+        self.do_unmount()
+    }
+
+    fn force_unmount(mut self: Box<Self>) -> Result<(), MountError> {
+        // NFS already uses force unmount commands in do_unmount
         self.do_unmount()
     }
 }
@@ -394,6 +405,9 @@ impl MountBackend for NfsBackend {
         // Create NFS filesystem
         let fs = CryptomatorNFS::new(ops);
 
+        // Capture stats before filesystem is moved to server
+        let stats = fs.stats();
+
         // Find available port
         let port = self.find_available_port()?;
 
@@ -440,6 +454,7 @@ impl MountBackend for NfsBackend {
             mountpoint: mountpoint.to_path_buf(),
             port,
             unmounted: AtomicBool::new(false),
+            stats,
         }))
     }
 }

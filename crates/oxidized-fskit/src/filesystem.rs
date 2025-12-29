@@ -13,13 +13,14 @@ use fskit_rs::{
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::{debug, error, trace};
 use uuid::Uuid;
 
 use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
 use oxidized_cryptolib::fs::streaming::VaultFileReader;
 use oxidized_cryptolib::vault::VaultOperationsAsync;
-use oxidized_mount_common::{HandleTable, WriteBuffer};
+use oxidized_mount_common::{HandleTable, VaultStats, WriteBuffer};
 
 use crate::attr::AttrCache;
 use crate::error::{operation_error_to_errno, write_error_to_errno};
@@ -89,6 +90,8 @@ pub struct CryptomatorFSKit {
     handles: Arc<FsKitHandleTable>,
     /// Attribute cache to reduce vault operations.
     attr_cache: Arc<AttrCache>,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
     /// User ID to use for file ownership.
     uid: u32,
     /// Group ID to use for file ownership.
@@ -126,6 +129,11 @@ impl CryptomatorFSKit {
         // Generate a unique volume ID
         let volume_id = Uuid::new_v4().to_string();
 
+        // Create stats and connect to attr cache for hit/miss tracking
+        let stats = Arc::new(VaultStats::new());
+        let mut attr_cache = AttrCache::with_defaults();
+        attr_cache.set_stats(stats.cache_stats());
+
         tracing::info!(
             vault_path = %vault_path.display(),
             uid = uid,
@@ -137,12 +145,18 @@ impl CryptomatorFSKit {
             ops,
             items: Arc::new(ItemTable::new()),
             handles: Arc::new(FsKitHandleTable::new()),
-            attr_cache: Arc::new(AttrCache::with_defaults()),
+            attr_cache: Arc::new(attr_cache),
+            stats,
             uid,
             gid,
             vault_path: vault_path.to_path_buf(),
             volume_id,
         })
+    }
+
+    /// Get the stats for this filesystem.
+    pub fn stats(&self) -> Arc<VaultStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Creates ItemAttributes for a directory.
@@ -449,57 +463,63 @@ impl Filesystem for CryptomatorFSKit {
         let parent_path = dir_entry.path.clone();
         drop(dir_entry);
 
-        // Run vault operation in spawn_blocking to avoid Send requirements
+        // Use O(1) lookups instead of list_all() + linear search
+        // Try file first (most common case)
+        let name_owned = name_str.to_string();
         let dir_id_clone = dir_id.clone();
-        let (files, dirs, symlinks) = self
-            .run_vault_op(move |ops| async move { ops.list_all(&dir_id_clone).await })
+        if let Some(file_info) = self
+            .run_vault_op(move |ops| async move { ops.find_file(&dir_id_clone, &name_owned).await })
             .await?
-            .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?;
-
-        // Search directories
-        for dir_info in dirs {
-            if dir_info.name == name_str {
-                let child_path = parent_path.join(name_str);
-                let kind = ItemKind::Directory {
-                    dir_id: dir_info.directory_id.clone(),
-                };
-                let item_id = self.items.get_or_insert(child_path, kind);
-                let attrs = self.make_dir_attrs_with_parent(item_id, Some(directory_id));
-                return Ok(self.make_item(name_str, attrs));
-            }
+            .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?
+        {
+            let child_path = parent_path.join(name_str);
+            let kind = ItemKind::File {
+                dir_id: dir_id.clone(),
+                name: name_str.to_string(),
+            };
+            let item_id = self.items.get_or_insert(child_path, kind);
+            let size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
+            let attrs = self.make_file_attrs_with_parent(item_id, size, Some(directory_id));
+            return Ok(self.make_item(name_str, attrs));
         }
 
-        // Search files
-        for file_info in files {
-            if file_info.name == name_str {
-                let child_path = parent_path.join(name_str);
-                let kind = ItemKind::File {
-                    dir_id: dir_id.clone(),
-                    name: name_str.to_string(),
-                };
-                let item_id = self.items.get_or_insert(child_path, kind);
-                let size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
-                let attrs = self.make_file_attrs_with_parent(item_id, size, Some(directory_id));
-                return Ok(self.make_item(name_str, attrs));
-            }
+        // Try directory
+        let name_owned = name_str.to_string();
+        let dir_id_clone = dir_id.clone();
+        if let Some(dir_info) = self
+            .run_vault_op(move |ops| async move { ops.find_directory(&dir_id_clone, &name_owned).await })
+            .await?
+            .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?
+        {
+            let child_path = parent_path.join(name_str);
+            let kind = ItemKind::Directory {
+                dir_id: dir_info.directory_id.clone(),
+            };
+            let item_id = self.items.get_or_insert(child_path, kind);
+            let attrs = self.make_dir_attrs_with_parent(item_id, Some(directory_id));
+            return Ok(self.make_item(name_str, attrs));
         }
 
-        // Search symlinks
-        for symlink_info in symlinks {
-            if symlink_info.name == name_str {
-                let child_path = parent_path.join(name_str);
-                let kind = ItemKind::Symlink {
-                    dir_id: dir_id.clone(),
-                    name: name_str.to_string(),
-                };
-                let item_id = self.items.get_or_insert(child_path, kind);
-                let attrs = self.make_symlink_attrs_with_parent(
-                    item_id,
-                    symlink_info.target.len() as u64,
-                    Some(directory_id),
-                );
-                return Ok(self.make_item(name_str, attrs));
-            }
+        // Try symlink
+        let name_owned = name_str.to_string();
+        let dir_id_clone = dir_id.clone();
+        if let Some(symlink_info) = self
+            .run_vault_op(move |ops| async move { ops.find_symlink(&dir_id_clone, &name_owned).await })
+            .await?
+            .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?
+        {
+            let child_path = parent_path.join(name_str);
+            let kind = ItemKind::Symlink {
+                dir_id: dir_id.clone(),
+                name: name_str.to_string(),
+            };
+            let item_id = self.items.get_or_insert(child_path, kind);
+            let attrs = self.make_symlink_attrs_with_parent(
+                item_id,
+                symlink_info.target.len() as u64,
+                Some(directory_id),
+            );
+            return Ok(self.make_item(name_str, attrs));
         }
 
         // Not found
@@ -537,14 +557,11 @@ impl Filesystem for CryptomatorFSKit {
                 let name = name.clone();
                 drop(entry);
 
-                let files = self
-                    .run_vault_op(move |ops| async move { ops.list_files(&dir_id).await })
+                // Use O(1) find_file instead of list_files + linear search
+                let file_info = self
+                    .run_vault_op(move |ops| async move { ops.find_file(&dir_id, &name).await })
                     .await?
-                    .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?;
-
-                let file_info = files
-                    .into_iter()
-                    .find(|f| f.name == name)
+                    .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?
                     .ok_or(FsKitError::Posix(libc::ENOENT))?;
 
                 let size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
@@ -995,53 +1012,65 @@ impl Filesystem for CryptomatorFSKit {
             .await?
             .map_err(|e| FsKitError::Posix(operation_error_to_errno(&e)))?;
 
-        let mut all_entries = Vec::with_capacity(files.len() + dirs.len() + symlinks.len());
-
-        // Collect all entries with their names for sorting/pagination
-        for dir_info in dirs {
-            let child_path = current_path.join(&dir_info.name);
-            let item_id = self.items.get_or_insert(
-                child_path,
-                ItemKind::Directory {
-                    dir_id: dir_info.directory_id,
-                },
-            );
-            let attrs = self.make_dir_attrs_with_parent(item_id, Some(directory_id));
-            let item = self.make_item(&dir_info.name, attrs);
-            all_entries.push((dir_info.name.clone(), item));
+        // Build (name, ItemKind, size) tuples first, then process in a single loop
+        // This consolidates the three separate loops into one unified iteration
+        enum EntryData {
+            Dir { name: String, sub_dir_id: oxidized_cryptolib::vault::DirId },
+            File { name: String, size: u64 },
+            Symlink { name: String, target_len: u64 },
         }
 
-        for file_info in files {
-            let child_path = current_path.join(&file_info.name);
-            let item_id = self.items.get_or_insert(
-                child_path,
-                ItemKind::File {
-                    dir_id: dir_id.clone(),
-                    name: file_info.name.clone(),
-                },
-            );
-            let size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
-            let attrs = self.make_file_attrs_with_parent(item_id, size, Some(directory_id));
-            let item = self.make_item(&file_info.name, attrs);
-            all_entries.push((file_info.name.clone(), item));
-        }
+        let entry_data: Vec<EntryData> = dirs
+            .into_iter()
+            .map(|d| EntryData::Dir { name: d.name, sub_dir_id: d.directory_id })
+            .chain(files.into_iter().map(|f| EntryData::File {
+                name: f.name,
+                size: encrypted_to_plaintext_size_or_zero(f.encrypted_size),
+            }))
+            .chain(symlinks.into_iter().map(|s| EntryData::Symlink {
+                name: s.name,
+                target_len: s.target.len() as u64,
+            }))
+            .collect();
 
-        for symlink_info in symlinks {
-            let child_path = current_path.join(&symlink_info.name);
-            let item_id = self.items.get_or_insert(
-                child_path,
-                ItemKind::Symlink {
-                    dir_id: dir_id.clone(),
-                    name: symlink_info.name.clone(),
-                },
-            );
-            let attrs = self.make_symlink_attrs_with_parent(
-                item_id,
-                symlink_info.target.len() as u64,
-                Some(directory_id),
-            );
-            let item = self.make_item(&symlink_info.name, attrs);
-            all_entries.push((symlink_info.name.clone(), item));
+        let mut all_entries = Vec::with_capacity(entry_data.len());
+        for data in entry_data {
+            let (name, item) = match data {
+                EntryData::Dir { name, sub_dir_id } => {
+                    let child_path = current_path.join(&name);
+                    let item_id = self.items.get_or_insert(
+                        child_path,
+                        ItemKind::Directory { dir_id: sub_dir_id },
+                    );
+                    let attrs = self.make_dir_attrs_with_parent(item_id, Some(directory_id));
+                    (name.clone(), self.make_item(&name, attrs))
+                }
+                EntryData::File { name, size } => {
+                    let child_path = current_path.join(&name);
+                    let item_id = self.items.get_or_insert(
+                        child_path,
+                        ItemKind::File {
+                            dir_id: dir_id.clone(),
+                            name: name.clone(),
+                        },
+                    );
+                    let attrs = self.make_file_attrs_with_parent(item_id, size, Some(directory_id));
+                    (name.clone(), self.make_item(&name, attrs))
+                }
+                EntryData::Symlink { name, target_len } => {
+                    let child_path = current_path.join(&name);
+                    let item_id = self.items.get_or_insert(
+                        child_path,
+                        ItemKind::Symlink {
+                            dir_id: dir_id.clone(),
+                            name: name.clone(),
+                        },
+                    );
+                    let attrs = self.make_symlink_attrs_with_parent(item_id, target_len, Some(directory_id));
+                    (name.clone(), self.make_item(&name, attrs))
+                }
+            };
+            all_entries.push((name, item));
         }
 
         // Apply pagination via cookie and build Entry structs
@@ -1131,6 +1160,7 @@ impl Filesystem for CryptomatorFSKit {
             self.handles.insert(item_id, FsKitHandle::Reader(Box::new(reader)));
         }
 
+        self.stats.record_file_open();
         Ok(())
     }
 
@@ -1146,11 +1176,32 @@ impl Filesystem for CryptomatorFSKit {
                     let content = buffer.into_content();
                     let content_len = content.len();
 
-                    self.run_vault_op(move |ops| async move {
+                    self.stats.start_write();
+                    let start = Instant::now();
+                    let result = self.run_vault_op(move |ops| async move {
                         ops.write_file(&dir_id, &filename, &content).await
                     })
-                    .await?
-                    .map_err(|e| FsKitError::Posix(write_error_to_errno(&e)))?;
+                    .await;
+
+                    match result {
+                        Ok(Ok(_)) => {
+                            let elapsed = start.elapsed();
+                            self.stats.finish_write();
+                            self.stats.record_write(content_len as u64);
+                            self.stats.record_write_latency(elapsed);
+                            self.stats.record_encrypted(content_len as u64);
+                        }
+                        Ok(Err(e)) => {
+                            self.stats.finish_write();
+                            self.stats.record_write_latency(start.elapsed());
+                            return Err(FsKitError::Posix(write_error_to_errno(&e)));
+                        }
+                        Err(e) => {
+                            self.stats.finish_write();
+                            self.stats.record_write_latency(start.elapsed());
+                            return Err(e);
+                        }
+                    }
 
                     // Invalidate cache - size has changed
                     self.attr_cache.invalidate(item_id);
@@ -1158,6 +1209,7 @@ impl Filesystem for CryptomatorFSKit {
                     debug!(item_id = item_id, size = content_len, "WriteBuffer flushed");
                 }
 
+        self.stats.record_file_close();
         Ok(())
     }
 
@@ -1170,23 +1222,43 @@ impl Filesystem for CryptomatorFSKit {
             "read"
         );
 
+        self.stats.start_read();
+
         let mut handle = self
             .handles
             .get_mut(&item_id)
-            .ok_or(FsKitError::Posix(libc::EBADF))?;
+            .ok_or_else(|| {
+                self.stats.finish_read();
+                FsKitError::Posix(libc::EBADF)
+            })?;
 
         match &mut *handle {
             FsKitHandle::Reader(reader) => {
-                reader
+                let start = Instant::now();
+                let result = reader
                     .read_range(offset as u64, length as usize)
                     .await
                     .map_err(|e| {
+                        self.stats.finish_read();
+                        self.stats.record_read_latency(start.elapsed());
                         error!(error = %e, "Read failed");
                         FsKitError::Posix(libc::EIO)
-                    })
+                    })?;
+                let elapsed = start.elapsed();
+                let bytes_read = result.len() as u64;
+                self.stats.finish_read();
+                self.stats.record_read(bytes_read);
+                self.stats.record_read_latency(elapsed);
+                self.stats.record_decrypted(bytes_read);
+                Ok(result)
             }
             FsKitHandle::WriteBuffer(buffer) => {
-                Ok(buffer.read(offset as u64, length as usize).to_vec())
+                let data = buffer.read(offset as u64, length as usize).to_vec();
+                let bytes_read = data.len() as u64;
+                self.stats.finish_read();
+                self.stats.record_read(bytes_read);
+                self.stats.record_decrypted(bytes_read);
+                Ok(data)
             }
         }
     }
@@ -1200,16 +1272,27 @@ impl Filesystem for CryptomatorFSKit {
             "write"
         );
 
+        self.stats.start_write();
+
         let mut handle = self
             .handles
             .get_mut(&item_id)
-            .ok_or(FsKitError::Posix(libc::EBADF))?;
+            .ok_or_else(|| {
+                self.stats.finish_write();
+                FsKitError::Posix(libc::EBADF)
+            })?;
 
         let buffer = handle
             .as_write_buffer_mut()
-            .ok_or(FsKitError::Posix(libc::EBADF))?;
+            .ok_or_else(|| {
+                self.stats.finish_write();
+                FsKitError::Posix(libc::EBADF)
+            })?;
 
         let bytes_written = buffer.write(offset as u64, &contents);
+        self.stats.finish_write();
+        self.stats.record_write(bytes_written as u64);
+        self.stats.record_encrypted(bytes_written as u64);
         Ok(bytes_written as i64)
     }
 

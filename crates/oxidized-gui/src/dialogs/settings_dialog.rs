@@ -5,6 +5,7 @@
 
 use dioxus::prelude::*;
 
+use crate::backend::{mount_manager, BackendInfo};
 use crate::state::{use_app_state, BackendType, ThemePreference};
 
 /// Active tab in the settings dialog
@@ -153,23 +154,6 @@ fn GeneralTab() -> Element {
         }
     };
 
-    // Handle debug logging toggle
-    let handle_debug_toggle = move |_| {
-        let new_value = !app_state.read().config.debug_logging;
-        app_state.write().config.debug_logging = new_value;
-
-        // Update tracing level at runtime
-        if new_value {
-            tracing::info!("Debug logging enabled");
-        } else {
-            tracing::info!("Debug logging disabled");
-        }
-
-        if let Err(e) = app_state.read().save() {
-            tracing::error!("Failed to save config: {}", e);
-        }
-    };
-
     rsx! {
         // Theme Section
         div {
@@ -291,34 +275,6 @@ fn GeneralTab() -> Element {
                 }
             }
         }
-
-        // Debug Logging Section
-        div {
-            class: "mb-6",
-
-            h3 {
-                class: "mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100",
-                "Debug Logging"
-            }
-
-            label {
-                class: "flex items-center gap-2.5 cursor-pointer text-sm text-gray-900 dark:text-gray-100",
-
-                input {
-                    r#type: "checkbox",
-                    class: "w-4 h-4 cursor-pointer accent-blue-500",
-                    checked: config.debug_logging,
-                    onchange: handle_debug_toggle,
-                }
-
-                span { "Enable verbose debug logging" }
-            }
-
-            p {
-                class: "mt-2 ml-7 text-xs text-gray-500",
-                "Useful for troubleshooting issues. Increases log output significantly."
-            }
-        }
     }
 }
 
@@ -421,6 +377,17 @@ struct BackendSelectorProps {
 fn BackendSelector(props: BackendSelectorProps) -> Element {
     let mut is_open = use_signal(|| false);
 
+    // Get registered backends from mount manager (shows availability status)
+    let manager = mount_manager();
+    let backends: Vec<BackendInfo> = manager.backend_info();
+
+    // Find the display name for current backend
+    let current_display = backends
+        .iter()
+        .find(|b| b.backend_type == props.current_backend)
+        .map(|b| b.name.as_str())
+        .unwrap_or_else(|| props.current_backend.display_name());
+
     rsx! {
         div {
             class: "mb-6",
@@ -445,7 +412,7 @@ fn BackendSelector(props: BackendSelectorProps) -> Element {
 
                     span {
                         class: "flex-1",
-                        "{props.current_backend.display_name()}"
+                        "{current_display}"
                     }
                     span {
                         class: "text-gray-400 dark:text-gray-500 ml-2 transition-transform",
@@ -466,30 +433,63 @@ fn BackendSelector(props: BackendSelectorProps) -> Element {
                     div {
                         class: "absolute z-50 mt-1 w-full bg-white dark:bg-neutral-800 border border-gray-200 dark:border-neutral-600 rounded-lg shadow-lg overflow-hidden",
 
-                        for backend in BackendType::all() {
+                        for backend in backends.iter() {
                             {
-                                let is_selected = props.current_backend == *backend;
-                                let item_class = if is_selected {
+                                let is_selected = props.current_backend == backend.backend_type;
+                                let is_available = backend.available;
+                                let backend_type = backend.backend_type;
+
+                                let item_class = if !is_available {
+                                    // Unavailable: grayed out
+                                    "w-full px-3 py-2.5 text-left text-sm cursor-not-allowed bg-transparent text-gray-400 dark:text-gray-600 border-none opacity-60"
+                                } else if is_selected {
                                     "w-full px-3 py-2.5 text-left text-sm cursor-pointer bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-none"
                                 } else {
                                     "w-full px-3 py-2.5 text-left text-sm cursor-pointer bg-transparent text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-neutral-700 border-none"
                                 };
+
                                 rsx! {
                                     button {
-                                        key: "{backend:?}",
+                                        key: "{backend.id}",
                                         class: "{item_class}",
+                                        disabled: !is_available,
                                         onclick: move |_| {
-                                            props.on_change.call(*backend);
-                                            is_open.set(false);
+                                            if is_available {
+                                                props.on_change.call(backend_type);
+                                                is_open.set(false);
+                                            }
                                         },
 
                                         div {
-                                            class: "font-medium",
-                                            "{backend.display_name()}"
+                                            class: "flex items-center justify-between",
+
+                                            div {
+                                                class: "font-medium",
+                                                "{backend.name}"
+                                            }
+
+                                            // Availability badge
+                                            if !is_available {
+                                                span {
+                                                    class: "text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
+                                                    "Unavailable"
+                                                }
+                                            }
                                         }
+
                                         div {
                                             class: "text-xs text-gray-500 dark:text-gray-400 mt-0.5",
-                                            "{backend.description()}"
+                                            "{backend.description}"
+                                        }
+
+                                        // Show reason if unavailable
+                                        if let Some(reason) = &backend.unavailable_reason {
+                                            if !is_available {
+                                                div {
+                                                    class: "text-xs text-amber-600 dark:text-amber-400 mt-0.5 italic",
+                                                    "{reason}"
+                                                }
+                                            }
                                         }
                                     }
                                 }

@@ -20,6 +20,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "tokio-console")]
+use tokio::runtime::Handle;
+
 #[derive(Parser)]
 #[command(name = "oxmount")]
 #[command(about = "Mount Cryptomator vaults as FUSE filesystems")]
@@ -54,26 +57,53 @@ fn main() -> Result<()> {
         "info"
     };
 
+    // When tokio-console is enabled, we need to run with an async runtime
+    // so that the filesystem uses the instrumented runtime for visibility.
     #[cfg(feature = "tokio-console")]
     {
-        // With tokio-console: layer console subscriber with fmt output
-        // Must be initialized BEFORE CryptomatorFS creates its runtime
+        use tracing_subscriber::Layer;
+
+        // Build the multi-threaded runtime FIRST, before setting up tracing
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        // Now set up tracing with console subscriber
         let console_layer = console_subscriber::spawn();
+        let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter));
         tracing_subscriber::registry()
             .with(console_layer)
-            .with(tracing_subscriber::fmt::layer())
-            .with(tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)))
+            .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
             .init();
-        info!("tokio-console enabled, connect with: tokio-console");
+
+        info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
+
+        // Run the mount logic, passing the runtime handle
+        run_mount(cli, Handle::current(), &runtime)
     }
 
     #[cfg(not(feature = "tokio-console"))]
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)))
-        .init();
+    {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
+            )
+            .init();
+
+        // Run without external runtime (CryptomatorFS creates its own)
+        run_mount_simple(cli)
+    }
+}
+
+/// Run the mount with an external runtime handle (for tokio-console support).
+#[cfg(feature = "tokio-console")]
+fn run_mount(cli: Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Result<()> {
+    // Enter the runtime context so Handle::current() works
+    let _guard = runtime.enter();
 
     // Validate paths
     if !cli.vault.exists() {
@@ -83,25 +113,57 @@ fn main() -> Result<()> {
         anyhow::bail!("Mountpoint does not exist: {}", cli.mount.display());
     }
 
-    // Get password (automatically zeroized when dropped)
-    // Priority: CLI argument > environment variable > interactive prompt
-    let password = if let Some(pwd) = cli.password {
-        Zeroizing::new(pwd)
-    } else if let Ok(pwd) = std::env::var("VAULT_PASSWORD") {
-        Zeroizing::new(pwd)
-    } else {
-        Zeroizing::new(
-            rpassword::prompt_password("Vault password: ")
-                .context("Failed to read password")?,
-        )
-    };
+    // Get password
+    let password = get_password(&cli)?;
 
     info!(vault = %cli.vault.display(), mount = %cli.mount.display(), "Mounting vault");
 
-    // Create filesystem
+    // Create filesystem with external runtime handle for tokio-console visibility
+    let fs = CryptomatorFS::with_runtime_handle(&cli.vault, &password, handle)
+        .context("Failed to initialize filesystem")?;
+
+    mount_and_wait(cli, fs)
+}
+
+/// Run the mount without external runtime (standard mode).
+#[cfg(not(feature = "tokio-console"))]
+fn run_mount_simple(cli: Cli) -> Result<()> {
+    // Validate paths
+    if !cli.vault.exists() {
+        anyhow::bail!("Vault path does not exist: {}", cli.vault.display());
+    }
+    if !cli.mount.exists() {
+        anyhow::bail!("Mountpoint does not exist: {}", cli.mount.display());
+    }
+
+    // Get password
+    let password = get_password(&cli)?;
+
+    info!(vault = %cli.vault.display(), mount = %cli.mount.display(), "Mounting vault");
+
+    // Create filesystem (creates its own internal runtime)
     let fs = CryptomatorFS::new(&cli.vault, &password)
         .context("Failed to initialize filesystem")?;
 
+    mount_and_wait(cli, fs)
+}
+
+/// Get password from CLI, environment, or prompt.
+fn get_password(cli: &Cli) -> Result<Zeroizing<String>> {
+    if let Some(ref pwd) = cli.password {
+        Ok(Zeroizing::new(pwd.clone()))
+    } else if let Ok(pwd) = std::env::var("VAULT_PASSWORD") {
+        Ok(Zeroizing::new(pwd))
+    } else {
+        Ok(Zeroizing::new(
+            rpassword::prompt_password("Vault password: ")
+                .context("Failed to read password")?,
+        ))
+    }
+}
+
+/// Mount the filesystem and wait for Ctrl+C.
+fn mount_and_wait(cli: Cli, fs: CryptomatorFS) -> Result<()> {
     // Derive vault name from path for display
     let vault_name = cli
         .vault
@@ -110,14 +172,12 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "Vault".to_string());
 
     // Mount options
-    // Always use AutoUnmount as kernel-level fallback for unexpected termination
     let mut options = vec![
         fuser::MountOption::FSName(format!("cryptomator:{}", vault_name)),
         fuser::MountOption::Subtype("oxidized".to_string()),
         fuser::MountOption::AutoUnmount,
     ];
 
-    // On macOS, set the volume name shown in Finder
     #[cfg(target_os = "macos")]
     options.push(fuser::MountOption::CUSTOM(format!("volname={}", vault_name)));
 
@@ -130,14 +190,11 @@ fn main() -> Result<()> {
     // Set up channel for signal handling
     let (tx, rx) = mpsc::channel::<()>();
 
-    // Install Ctrl+C handler for graceful unmount
     ctrlc::set_handler(move || {
-        // Send signal to main thread to trigger unmount
         let _ = tx.send(());
     })
     .context("Failed to set signal handler")?;
 
-    // Mount the filesystem in background thread
     info!("Mounting filesystem (press Ctrl+C to unmount)");
 
     let session = fuser::spawn_mount2(fs, &cli.mount, &options).map_err(|e| {
@@ -147,21 +204,16 @@ fn main() -> Result<()> {
 
     info!("Filesystem mounted at {}", cli.mount.display());
 
-    // Wait for Ctrl+C or external unmount signal
     match rx.recv() {
         Ok(()) => {
             info!("Received interrupt signal, unmounting...");
         }
         Err(_) => {
-            // Channel closed unexpectedly - shouldn't happen in normal operation
             warn!("Signal channel closed unexpectedly");
         }
     }
 
-    // Explicitly drop session to trigger unmount
-    // (BackgroundSession::drop calls unmount)
     drop(session);
-
     info!("Filesystem unmounted");
     Ok(())
 }

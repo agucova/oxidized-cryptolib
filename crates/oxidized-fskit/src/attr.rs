@@ -5,7 +5,8 @@
 //! [`TtlCache`](oxidized_mount_common::TtlCache) from `oxidized-mount-common`.
 
 use fskit_rs::ItemAttributes;
-use oxidized_mount_common::{CachedEntry, TtlCache, DEFAULT_TTL};
+use oxidized_mount_common::{CacheStats, CachedEntry, TtlCache, DEFAULT_TTL};
+use std::sync::Arc;
 use std::time::Duration;
 
 // Re-export for backwards compatibility
@@ -36,6 +37,14 @@ impl AttrCache {
     /// Creates a new attribute cache with default TTL.
     pub fn with_defaults() -> Self {
         Self::new(DEFAULT_TTL)
+    }
+
+    /// Enables statistics tracking on this cache.
+    ///
+    /// The provided `CacheStats` will be updated on every cache operation,
+    /// allowing external monitoring of cache efficiency.
+    pub fn set_stats(&mut self, stats: Arc<CacheStats>) {
+        self.cache.set_stats(stats);
     }
 
     /// Gets a cached attribute if it exists and hasn't expired.

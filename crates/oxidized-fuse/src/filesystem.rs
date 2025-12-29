@@ -55,11 +55,12 @@ use fuser::{
 use libc::c_int;
 use oxidized_cryptolib::fs::encrypted_to_plaintext_size_or_zero;
 use oxidized_cryptolib::vault::{DirId, VaultOperationsAsync};
+use oxidized_mount_common::VaultStats;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
-use tokio::runtime::Runtime;
+use std::time::{Instant, SystemTime};
+use tokio::runtime::{Handle, Runtime};
 use tracing::{debug, error, info, trace};
 
 /// Block size for filesystem statistics.
@@ -86,14 +87,20 @@ pub struct CryptomatorFS {
     dir_cache: DirCache,
     /// File handle table for open files.
     handle_table: FuseHandleTable,
-    /// Tokio runtime for async operations.
-    runtime: Runtime,
+    /// Owned tokio runtime (when we create our own).
+    /// Must be kept alive for the handle to remain valid.
+    _owned_runtime: Option<Runtime>,
+    /// Handle to tokio runtime for async operations.
+    /// Points to either our owned runtime or an external one.
+    handle: Handle,
     /// User ID to use for file ownership.
     uid: u32,
     /// Group ID to use for file ownership.
     gid: u32,
     /// Path to the vault root (for statfs).
     vault_path: PathBuf,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 impl CryptomatorFS {
@@ -116,7 +123,45 @@ impl CryptomatorFS {
                 "Failed to create tokio runtime: {e}"
             )))
         })?;
+        let handle = runtime.handle().clone();
+        Self::with_runtime_internal(vault_path, password, Some(runtime), handle)
+    }
 
+    /// Creates a new CryptomatorFS using an external tokio runtime handle.
+    ///
+    /// This is useful when you want the filesystem to use a runtime that has
+    /// additional instrumentation (e.g., tokio-console) or when integrating
+    /// with an existing async application.
+    ///
+    /// # Arguments
+    ///
+    /// * `vault_path` - Path to the Cryptomator vault root directory
+    /// * `password` - The vault password
+    /// * `handle` - Handle to an existing tokio runtime
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be opened.
+    ///
+    /// # Panics
+    ///
+    /// The external runtime must remain alive for the lifetime of this filesystem.
+    /// If the runtime is dropped, subsequent operations will panic.
+    pub fn with_runtime_handle(
+        vault_path: &Path,
+        password: &str,
+        handle: Handle,
+    ) -> Result<Self, FuseError> {
+        Self::with_runtime_internal(vault_path, password, None, handle)
+    }
+
+    /// Internal constructor used by both `new()` and `with_runtime_handle()`.
+    fn with_runtime_internal(
+        vault_path: &Path,
+        password: &str,
+        owned_runtime: Option<Runtime>,
+        handle: Handle,
+    ) -> Result<Self, FuseError> {
         // Open vault - extracts key, reads config, configures cipher combo automatically
         let ops = VaultOperationsAsync::open(vault_path, password)
             .map_err(|e| {
@@ -128,6 +173,12 @@ impl CryptomatorFS {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
 
+        let stats = Arc::new(VaultStats::new());
+
+        // Create attribute cache and connect it to stats for hit/miss tracking
+        let mut attr_cache = AttrCache::with_defaults();
+        attr_cache.set_stats(stats.cache_stats());
+
         info!(
             vault_path = %vault_path.display(),
             uid = uid,
@@ -138,14 +189,23 @@ impl CryptomatorFS {
         Ok(Self {
             ops,
             inodes: InodeTable::new(),
-            attr_cache: AttrCache::with_defaults(),
+            attr_cache,
             dir_cache: DirCache::default(),
             handle_table: FuseHandleTable::new_auto_id(),
-            runtime,
+            _owned_runtime: owned_runtime,
+            handle,
             uid,
             gid,
             vault_path: vault_path.to_path_buf(),
+            stats,
         })
+    }
+
+    /// Returns a clone of the stats Arc for external access.
+    ///
+    /// This allows the mount handle to expose stats to the GUI.
+    pub fn stats(&self) -> Arc<VaultStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Creates a new CryptomatorFS with custom UID/GID.
@@ -183,7 +243,7 @@ impl CryptomatorFS {
                 drop(handle);
 
                 // Write to vault
-                let write_result = self.runtime
+                let write_result = self.handle
                     .block_on(ops.write_file(&dir_id, &filename, &content));
 
                 // Re-acquire handle to restore content (whether success or failure)
@@ -271,7 +331,10 @@ impl CryptomatorFS {
         }
     }
 
-    /// Looks up a child entry in a directory.
+    /// Looks up a child entry in a directory using O(1) path lookups.
+    ///
+    /// Uses `find_file`, `find_directory`, and `find_symlink` which calculate
+    /// the expected encrypted path directly instead of listing all entries.
     fn lookup_child(
         &self,
         parent_inode: u64,
@@ -288,59 +351,47 @@ impl CryptomatorFS {
 
         // Clone ops for async use
         let ops = self.ops_clone();
+        let child_path = parent_path.join(name);
 
-        // Use list_all to fetch all entries in a single operation (parallel I/O)
-        // This replaces 3 sequential block_on calls with a single one
-        let (files, dirs, symlinks) = self.runtime.block_on(ops.list_all(&dir_id))?;
-
-        // Search directories
-        for dir_info in dirs {
-            if dir_info.name == name {
-                let child_path = parent_path.join(name);
-                let correct_kind = InodeKind::Directory {
-                    dir_id: dir_info.directory_id.clone(),
-                };
-                let inode = self.inodes.get_or_insert(child_path, correct_kind.clone());
-                // Always update the kind to ensure correct DirId (may have been placeholder)
-                self.inodes.update_kind(inode, correct_kind);
-                let attr = self.make_dir_attr(inode);
-                self.attr_cache.insert(inode, attr);
-                return Ok((inode, attr, FileType::Directory));
-            }
+        // Try O(1) lookup for file first (most common case)
+        if let Some(file_info) = self.handle.block_on(ops.find_file(&dir_id, name))? {
+            let inode = self.inodes.get_or_insert(
+                child_path,
+                InodeKind::File {
+                    dir_id: dir_id.clone(),
+                    name: name.to_string(),
+                },
+            );
+            let attr = self.make_file_attr(inode, encrypted_to_plaintext_size_or_zero(file_info.encrypted_size));
+            self.attr_cache.insert(inode, attr);
+            return Ok((inode, attr, FileType::RegularFile));
         }
 
-        // Search files
-        for file_info in files {
-            if file_info.name == name {
-                let child_path = parent_path.join(name);
-                let inode = self.inodes.get_or_insert(
-                    child_path,
-                    InodeKind::File {
-                        dir_id: dir_id.clone(),
-                        name: name.to_string(),
-                    },
-                );
-                let attr = self.make_file_attr(inode, encrypted_to_plaintext_size_or_zero(file_info.encrypted_size));
-                self.attr_cache.insert(inode, attr);
-                return Ok((inode, attr, FileType::RegularFile));
-            }
+        // Try O(1) lookup for directory
+        if let Some(dir_info) = self.handle.block_on(ops.find_directory(&dir_id, name))? {
+            let correct_kind = InodeKind::Directory {
+                dir_id: dir_info.directory_id.clone(),
+            };
+            let inode = self.inodes.get_or_insert(child_path, correct_kind.clone());
+            // Always update the kind to ensure correct DirId (may have been placeholder)
+            self.inodes.update_kind(inode, correct_kind);
+            let attr = self.make_dir_attr(inode);
+            self.attr_cache.insert(inode, attr);
+            return Ok((inode, attr, FileType::Directory));
         }
 
-        // Search symlinks
-        for symlink_info in symlinks {
-            if symlink_info.name == name {
-                let child_path = parent_path.join(name);
-                let inode = self.inodes.get_or_insert(
-                    child_path,
-                    InodeKind::Symlink {
-                        dir_id: dir_id.clone(),
-                        name: name.to_string(),
-                    },
-                );
-                let attr = self.make_symlink_attr(inode, symlink_info.target.len() as u64);
-                self.attr_cache.insert(inode, attr);
-                return Ok((inode, attr, FileType::Symlink));
-            }
+        // Try O(1) lookup for symlink
+        if let Some(symlink_info) = self.handle.block_on(ops.find_symlink(&dir_id, name))? {
+            let inode = self.inodes.get_or_insert(
+                child_path,
+                InodeKind::Symlink {
+                    dir_id: dir_id.clone(),
+                    name: name.to_string(),
+                },
+            );
+            let attr = self.make_symlink_attr(inode, symlink_info.target.len() as u64);
+            self.attr_cache.insert(inode, attr);
+            return Ok((inode, attr, FileType::Symlink));
         }
 
         // Not found
@@ -355,36 +406,27 @@ impl CryptomatorFS {
         let ops = self.ops_clone();
 
         // Single blocking call with parallel I/O internally
-        let (files, dirs, symlinks) = self.runtime.block_on(ops.list_all(dir_id))?;
+        let (files, dirs, symlinks) = self.handle.block_on(ops.list_all(dir_id))?;
 
-        let mut entries = Vec::with_capacity(files.len() + dirs.len() + symlinks.len());
-
-        // Add directories
-        for dir_info in dirs {
-            entries.push(DirListingEntry {
+        // Build entries using iterator chain instead of three separate loops
+        let entries: Vec<DirListingEntry> = dirs
+            .into_iter()
+            .map(|d| DirListingEntry {
                 inode: 0, // Will be resolved on lookup
                 file_type: FileType::Directory,
-                name: dir_info.name,
-            });
-        }
-
-        // Add files
-        for file_info in files {
-            entries.push(DirListingEntry {
+                name: d.name,
+            })
+            .chain(files.into_iter().map(|f| DirListingEntry {
                 inode: 0,
                 file_type: FileType::RegularFile,
-                name: file_info.name,
-            });
-        }
-
-        // Add symlinks
-        for symlink_info in symlinks {
-            entries.push(DirListingEntry {
+                name: f.name,
+            }))
+            .chain(symlinks.into_iter().map(|s| DirListingEntry {
                 inode: 0,
                 file_type: FileType::Symlink,
-                name: symlink_info.name,
-            });
-        }
+                name: s.name,
+            }))
+            .collect();
 
         Ok(entries)
     }
@@ -533,22 +575,17 @@ impl Filesystem for CryptomatorFS {
             InodeKind::Root => self.make_dir_attr(ino),
             InodeKind::Directory { .. } => self.make_dir_attr(ino),
             InodeKind::File { dir_id, name } => {
-                // Get file size from vault
+                // Get file size from vault using O(1) lookup instead of O(n) list+search
                 let ops = self.ops_clone();
                 let dir_id = dir_id.clone();
                 let name = name.clone();
                 drop(entry);
 
-                match self.runtime.block_on(ops.list_files(&dir_id)) {
-                    Ok(files) => {
-                        let file_info = files.into_iter().find(|f| f.name == name);
-                        match file_info {
-                            Some(info) => self.make_file_attr(ino, encrypted_to_plaintext_size_or_zero(info.encrypted_size)),
-                            None => {
-                                reply.error(libc::ENOENT);
-                                return;
-                            }
-                        }
+                match self.handle.block_on(ops.find_file(&dir_id, &name)) {
+                    Ok(Some(info)) => self.make_file_attr(ino, encrypted_to_plaintext_size_or_zero(info.encrypted_size)),
+                    Ok(None) => {
+                        reply.error(libc::ENOENT);
+                        return;
                     }
                     Err(e) => {
                         reply.error(crate::error::vault_error_to_errno(&e));
@@ -563,7 +600,7 @@ impl Filesystem for CryptomatorFS {
                 let name = name.clone();
                 drop(entry);
 
-                match self.runtime.block_on(ops.read_symlink(&dir_id, &name)) {
+                match self.handle.block_on(ops.read_symlink(&dir_id, &name)) {
                     Ok(target) => self.make_symlink_attr(ino, target.len() as u64),
                     Err(e) => {
                         reply.error(crate::error::vault_error_to_errno(&e));
@@ -599,7 +636,7 @@ impl Filesystem for CryptomatorFS {
 
         let ops = self.ops_clone();
 
-        match self.runtime.block_on(ops.read_symlink(&dir_id, &name)) {
+        match self.handle.block_on(ops.read_symlink(&dir_id, &name)) {
             Ok(target) => {
                 reply.data(target.as_bytes());
             }
@@ -667,7 +704,7 @@ impl Filesystem for CryptomatorFS {
                 Vec::new()
             } else {
                 // Read existing content if file exists
-                match self.runtime.block_on(ops.read_file(&dir_id, &name)) {
+                match self.handle.block_on(ops.read_file(&dir_id, &name)) {
                     Ok(file) => file.content,
                     Err(_) => Vec::new(), // File doesn't exist, start empty
                 }
@@ -675,13 +712,15 @@ impl Filesystem for CryptomatorFS {
 
             let buffer = WriteBuffer::new(dir_id, name, existing_content);
             let fh = self.handle_table.insert_auto(FuseHandle::WriteBuffer(buffer));
+            self.stats.record_file_open();
             reply.opened(fh, 0);
         } else {
             // Open for reading - open_file returns VaultFileReader
-            match self.runtime.block_on(ops.open_file(&dir_id, &name)) {
+            match self.handle.block_on(ops.open_file(&dir_id, &name)) {
                 Ok(reader) => {
                     // Store reader in handle table and return the handle ID
                     let fh = self.handle_table.insert_auto(FuseHandle::Reader(Box::new(reader)));
+                    self.stats.record_file_open();
                     reply.opened(fh, 0);
                 }
                 Err(e) => {
@@ -716,14 +755,24 @@ impl Filesystem for CryptomatorFS {
         match &mut *handle {
             FuseHandle::Reader(reader) => {
                 // Read from streaming reader
+                self.stats.start_read();
+                let start = Instant::now();
                 match self
-                    .runtime
+                    .handle
                     .block_on(reader.read_range(offset as u64, size as usize))
                 {
                     Ok(data) => {
+                        let elapsed = start.elapsed();
+                        let bytes_read = data.len() as u64;
+                        self.stats.finish_read();
+                        self.stats.record_read(bytes_read);
+                        self.stats.record_read_latency(elapsed);
+                        self.stats.record_decrypted(bytes_read);
                         reply.data(&data);
                     }
                     Err(e) => {
+                        self.stats.finish_read();
+                        self.stats.record_read_latency(start.elapsed());
                         error!(error = %e, "Read failed");
                         reply.error(libc::EIO);
                     }
@@ -732,6 +781,7 @@ impl Filesystem for CryptomatorFS {
             FuseHandle::WriteBuffer(buffer) => {
                 // Read from write buffer (for read-after-write in same handle)
                 let data = buffer.read(offset as u64, size as usize);
+                self.stats.record_read(data.len() as u64);
                 reply.data(data);
             }
         }
@@ -780,6 +830,7 @@ impl Filesystem for CryptomatorFS {
         match handle {
             FuseHandle::Reader(_) => {
                 // Reader just needs to be dropped
+                self.stats.record_file_close();
                 debug!(fh = fh, "Reader released");
             }
             FuseHandle::WriteBuffer(buffer) => {
@@ -790,20 +841,33 @@ impl Filesystem for CryptomatorFS {
                     let dir_id = buffer.dir_id().clone();
                     let filename = buffer.filename().to_string();
                     let content = buffer.into_content();
+                    let content_len = content.len();
 
-                    match self.runtime.block_on(ops.write_file(&dir_id, &filename, &content)) {
+                    self.stats.start_write();
+                    let start = Instant::now();
+                    match self.handle.block_on(ops.write_file(&dir_id, &filename, &content)) {
                         Ok(_) => {
-                            debug!(fh = fh, filename = %filename, size = content.len(), "WriteBuffer flushed");
+                            let elapsed = start.elapsed();
+                            self.stats.finish_write();
+                            self.stats.record_write(content_len as u64);
+                            self.stats.record_write_latency(elapsed);
+                            self.stats.record_encrypted(content_len as u64);
+                            debug!(fh = fh, filename = %filename, size = content_len, "WriteBuffer flushed");
                             // Invalidate attr cache since file changed
                             self.attr_cache.invalidate(ino);
+                            self.stats.record_file_close();
                         }
                         Err(e) => {
+                            self.stats.finish_write();
+                            self.stats.record_write_latency(start.elapsed());
                             error!(error = %e, "Failed to write buffer back to vault");
+                            self.stats.record_file_close();
                             reply.error(crate::error::write_error_to_errno(&e));
                             return;
                         }
                     }
                 } else {
+                    self.stats.record_file_close();
                     debug!(fh = fh, "WriteBuffer released (not dirty)");
                 }
             }
@@ -826,6 +890,7 @@ impl Filesystem for CryptomatorFS {
 
         match &entry.kind {
             InodeKind::Root | InodeKind::Directory { .. } => {
+                self.stats.record_dir_open();
                 reply.opened(0, 0);
             }
             _ => {
@@ -1016,7 +1081,7 @@ impl Filesystem for CryptomatorFS {
         let ops = self.ops_clone();
 
         // Single blocking call with parallel I/O internally
-        let (files, dirs, symlinks) = match self.runtime.block_on(ops.list_all(&dir_id)) {
+        let (files, dirs, symlinks) = match self.handle.block_on(ops.list_all(&dir_id)) {
             Ok(result) => result,
             Err(e) => {
                 reply.error(crate::error::vault_error_to_errno(&e));
@@ -1024,35 +1089,24 @@ impl Filesystem for CryptomatorFS {
             }
         };
 
-        // Build entries with sizes
-        let mut all_entries: Vec<(String, FileType, u64, Option<DirId>)> =
-            Vec::with_capacity(2 + files.len() + dirs.len() + symlinks.len());
-
-        // Add . and ..
-        all_entries.push((".".to_string(), FileType::Directory, 0, None));
-        all_entries.push(("..".to_string(), FileType::Directory, 0, None));
-
-        // Add directories
-        for dir_info in dirs {
-            all_entries.push((
-                dir_info.name,
-                FileType::Directory,
-                0,
-                Some(dir_info.directory_id),
-            ));
-        }
-
-        // Add files with sizes
-        for file_info in files {
-            let plaintext_size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
-            all_entries.push((file_info.name, FileType::RegularFile, plaintext_size, None));
-        }
-
-        // Add symlinks
-        for symlink_info in symlinks {
-            let target_len = symlink_info.target.len() as u64;
-            all_entries.push((symlink_info.name, FileType::Symlink, target_len, None));
-        }
+        // Build entries with sizes using iterator chain instead of three separate loops
+        let all_entries: Vec<(String, FileType, u64, Option<DirId>)> = [
+            (".".to_string(), FileType::Directory, 0, None),
+            ("..".to_string(), FileType::Directory, 0, None),
+        ]
+        .into_iter()
+        .chain(dirs.into_iter().map(|d| {
+            (d.name, FileType::Directory, 0, Some(d.directory_id))
+        }))
+        .chain(files.into_iter().map(|f| {
+            let plaintext_size = encrypted_to_plaintext_size_or_zero(f.encrypted_size);
+            (f.name, FileType::RegularFile, plaintext_size, None)
+        }))
+        .chain(symlinks.into_iter().map(|s| {
+            let target_len = s.target.len() as u64;
+            (s.name, FileType::Symlink, target_len, None)
+        }))
+        .collect();
 
         // Skip to offset and return entries with attributes
         for (i, (name, file_type, size, maybe_subdir_id)) in
@@ -1108,6 +1162,7 @@ impl Filesystem for CryptomatorFS {
     }
 
     fn releasedir(&mut self, _req: &Request<'_>, _ino: u64, _fh: u64, _flags: i32, reply: ReplyEmpty) {
+        self.stats.record_dir_close();
         reply.ok();
     }
 
@@ -1275,7 +1330,7 @@ impl Filesystem for CryptomatorFS {
                     let ops = self.ops_clone();
 
                     // Read existing content (or empty if file doesn't exist)
-                    let mut content = match self.runtime.block_on(ops.read_file(&dir_id, &name)) {
+                    let mut content = match self.handle.block_on(ops.read_file(&dir_id, &name)) {
                         Ok(file) => file.content,
                         Err(_) => Vec::new(),
                     };
@@ -1286,7 +1341,7 @@ impl Filesystem for CryptomatorFS {
                     // Write back
                     let ops = self.ops_clone();
 
-                    match self.runtime.block_on(ops.write_file(&dir_id, &name, &content)) {
+                    match self.handle.block_on(ops.write_file(&dir_id, &name, &content)) {
                         Ok(_) => {
                             let attr = self.make_file_attr(ino, new_size);
                             self.attr_cache.insert(ino, attr);
@@ -1319,7 +1374,7 @@ impl Filesystem for CryptomatorFS {
             let attr = match &entry.kind {
                 InodeKind::Root | InodeKind::Directory { .. } => self.make_dir_attr(ino),
                 InodeKind::File { dir_id, name } => {
-                    // First check attr cache - avoids O(n) list_files call
+                    // First check attr cache - avoids I/O
                     if let Some(cached) = self.attr_cache.get(ino) {
                         drop(entry);
                         cached.value
@@ -1330,15 +1385,15 @@ impl Filesystem for CryptomatorFS {
 
                         let ops = self.ops_clone();
 
-                        // Cache miss - fall back to list_files
-                        match self.runtime.block_on(ops.list_files(&dir_id)) {
-                            Ok(files) => {
-                                let file_size = files
-                                    .iter()
-                                    .find(|f| f.name == name)
-                                    .map(|f| encrypted_to_plaintext_size_or_zero(f.encrypted_size))
-                                    .unwrap_or(0);
+                        // Cache miss - use O(1) find_file lookup
+                        match self.handle.block_on(ops.find_file(&dir_id, &name)) {
+                            Ok(Some(file_info)) => {
+                                let file_size = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
                                 self.make_file_attr(ino, file_size)
+                            }
+                            Ok(None) => {
+                                // File not found - use size 0
+                                self.make_file_attr(ino, 0)
                             }
                             Err(e) => {
                                 reply.error(crate::error::vault_error_to_errno(&e));
@@ -1360,7 +1415,7 @@ impl Filesystem for CryptomatorFS {
                         let ops = self.ops_clone();
 
                         // Cache miss - fall back to read_symlink
-                        match self.runtime.block_on(ops.read_symlink(&dir_id, &name)) {
+                        match self.handle.block_on(ops.read_symlink(&dir_id, &name)) {
                             Ok(target) => self.make_symlink_attr(ino, target.len() as u64),
                             Err(e) => {
                                 reply.error(crate::error::vault_error_to_errno(&e));
@@ -1548,7 +1603,11 @@ impl Filesystem for CryptomatorFS {
         };
 
         // Write data at offset (WriteBuffer handles buffer expansion)
+        self.stats.start_write();
         let bytes_written = buffer.write(offset as u64, data);
+        self.stats.finish_write();
+        self.stats.record_write(bytes_written as u64);
+        self.stats.record_encrypted(bytes_written as u64);
 
         // Invalidate attr cache for this inode
         self.attr_cache.invalidate(ino);
@@ -1597,7 +1656,7 @@ impl Filesystem for CryptomatorFS {
 
         // Create directory
         match self
-            .runtime
+            .handle
             .block_on(ops.create_directory(&parent_dir_id, name_str))
         {
             Ok(new_dir_id) => {
@@ -1672,7 +1731,7 @@ impl Filesystem for CryptomatorFS {
         let ops = self.ops_clone();
 
         // Try to delete as file first
-        match self.runtime.block_on(ops.delete_file(&dir_id, name_str)) {
+        match self.handle.block_on(ops.delete_file(&dir_id, name_str)) {
             Ok(()) => {
                 // Invalidate caches
                 let child_path = parent_path.join(name_str);
@@ -1684,7 +1743,7 @@ impl Filesystem for CryptomatorFS {
                 // Try as symlink
                 let ops = self.ops_clone();
 
-                match self.runtime.block_on(ops.delete_symlink(&dir_id, name_str)) {
+                match self.handle.block_on(ops.delete_symlink(&dir_id, name_str)) {
                     Ok(()) => {
                         let child_path = parent_path.join(name_str);
                         self.inodes.invalidate_path(&child_path);
@@ -1746,7 +1805,7 @@ impl Filesystem for CryptomatorFS {
 
         // Delete directory
         match self
-            .runtime
+            .handle
             .block_on(ops.delete_directory(&parent_dir_id, name_str))
         {
             Ok(()) => {
@@ -1811,7 +1870,7 @@ impl Filesystem for CryptomatorFS {
 
         // Create symlink
         match self
-            .runtime
+            .handle
             .block_on(ops.create_symlink(&dir_id, name_str, target_str))
         {
             Ok(()) => {
@@ -1951,20 +2010,35 @@ impl Filesystem for CryptomatorFS {
                 return;
             }
 
-            // RENAME_NOREPLACE: fail if target exists
+            // RENAME_NOREPLACE: fail if target exists (check file, dir, and symlink)
             if _flags & libc::RENAME_NOREPLACE != 0 {
-                // Check if target exists by listing destination directory
-                match self.runtime.block_on(ops.list_files(&dest_dir_id)) {
-                    Ok(files) => {
-                        if files.iter().any(|f| f.name == newname_str) {
-                            reply.error(libc::EEXIST);
+                // Use O(1) lookups to check if target exists as file, directory, or symlink
+                let target_exists = match self.handle.block_on(ops.find_file(&dest_dir_id, newname_str)) {
+                    Ok(Some(_)) => true,
+                    Ok(None) => match self.handle.block_on(ops.find_directory(&dest_dir_id, newname_str)) {
+                        Ok(Some(_)) => true,
+                        Ok(None) => match self.handle.block_on(ops.find_symlink(&dest_dir_id, newname_str)) {
+                            Ok(Some(_)) => true,
+                            Ok(None) => false,
+                            Err(e) => {
+                                reply.error(e.to_errno());
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            reply.error(e.to_errno());
                             return;
                         }
-                    }
+                    },
                     Err(e) => {
                         reply.error(e.to_errno());
                         return;
                     }
+                };
+
+                if target_exists {
+                    reply.error(libc::EEXIST);
+                    return;
                 }
             }
         }
@@ -1972,15 +2046,15 @@ impl Filesystem for CryptomatorFS {
         // Perform rename/move atomically
         let result = if parent == newparent {
             // Same directory - just rename
-            self.runtime
+            self.handle
                 .block_on(ops.rename_file(&src_dir_id, name_str, newname_str))
         } else if name_str == newname_str {
             // Different directories, same name - just move
-            self.runtime
+            self.handle
                 .block_on(ops.move_file(&src_dir_id, name_str, &dest_dir_id))
         } else {
             // Different directories, different name - atomic move+rename
-            self.runtime
+            self.handle
                 .block_on(ops.move_and_rename_file(&src_dir_id, name_str, &dest_dir_id, newname_str))
         };
 
@@ -2081,7 +2155,7 @@ impl Filesystem for CryptomatorFS {
         let ops = self.ops_clone();
 
         // Read existing content
-        let mut content = match self.runtime.block_on(ops.read_file(&dir_id, &name)) {
+        let mut content = match self.handle.block_on(ops.read_file(&dir_id, &name)) {
             Ok(file) => file.content,
             Err(_) => Vec::new(),
         };
@@ -2093,7 +2167,7 @@ impl Filesystem for CryptomatorFS {
             // Write back
             let ops = self.ops_clone();
 
-            match self.runtime.block_on(ops.write_file(&dir_id, &name, &content)) {
+            match self.handle.block_on(ops.write_file(&dir_id, &name, &content)) {
                 Ok(_) => {
                     self.attr_cache.invalidate(ino);
                     reply.ok();
@@ -2143,7 +2217,7 @@ impl Filesystem for CryptomatorFS {
             match &mut *handle {
                 FuseHandle::Reader(reader) => {
                     match self
-                        .runtime
+                        .handle
                         .block_on(reader.read_range(offset_in as u64, len as usize))
                     {
                         Ok(data) => data,
@@ -2225,15 +2299,14 @@ impl Filesystem for CryptomatorFS {
                             0
                         }
                     } else {
-                        // Fall back to listing files
+                        // Fall back to O(1) find_file lookup
                         let ops = self.ops_clone();
 
-                        match self.runtime.block_on(ops.list_files(&dir_id)) {
-                            Ok(files) => files
-                                .iter()
-                                .find(|f| f.name == name)
-                                .map(|f| encrypted_to_plaintext_size_or_zero(f.encrypted_size))
-                                .unwrap_or(0),
+                        match self.handle.block_on(ops.find_file(&dir_id, &name)) {
+                            Ok(Some(file_info)) => {
+                                encrypted_to_plaintext_size_or_zero(file_info.encrypted_size)
+                            }
+                            Ok(None) => 0,
                             Err(e) => {
                                 reply.error(crate::error::vault_error_to_errno(&e));
                                 return;

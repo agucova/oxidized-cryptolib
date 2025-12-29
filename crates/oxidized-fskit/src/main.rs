@@ -59,14 +59,16 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "tokio-console")]
     {
-        // With tokio-console: layer console subscriber with fmt output
+        // console_subscriber::spawn() returns a layer with its own built-in filter
+        // for tokio instrumentation. We use per-layer filtering so the fmt layer
+        // gets our custom filter while console uses its own.
+        use tracing_subscriber::Layer;
         let console_layer = console_subscriber::spawn();
         tracing_subscriber::registry()
             .with(console_layer)
-            .with(filter)
-            .with(tracing_subscriber::fmt::layer())
+            .with(tracing_subscriber::fmt::layer().with_filter(filter))
             .init();
-        info!("tokio-console enabled, connect with: tokio-console");
+        info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
     }
 
     #[cfg(not(feature = "tokio-console"))]

@@ -2826,3 +2826,212 @@ fn test_find_file_case_sensitive() {
     assert!(vault_ops.find_directory(&DirId::root(), "mydir").unwrap().is_none());
     assert!(vault_ops.find_directory(&DirId::root(), "MYDIR").unwrap().is_none());
 }
+
+// ==================== find_symlink() tests ====================
+
+#[test]
+fn test_find_symlink_exists() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_symlink(&DirId::root(), "target_link", "/path/to/target").unwrap();
+    vault_ops.create_symlink(&DirId::root(), "other_link", "/path/to/other").unwrap();
+
+    let result = vault_ops.find_symlink(&DirId::root(), "target_link").unwrap();
+
+    assert!(result.is_some());
+    let symlink_info = result.unwrap();
+    assert_eq!(symlink_info.name, "target_link");
+    assert_eq!(symlink_info.target, "/path/to/target");
+}
+
+#[test]
+fn test_find_symlink_not_exists() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_symlink(&DirId::root(), "exists_link", "/target").unwrap();
+
+    let result = vault_ops.find_symlink(&DirId::root(), "missing_link").unwrap();
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_symlink_in_subdirectory() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let sub_id = vault_ops.create_directory(&DirId::root(), "subdir").unwrap();
+    vault_ops.create_symlink(&sub_id, "nested_link", "/deep/target").unwrap();
+
+    // Should find in subdirectory
+    let result = vault_ops.find_symlink(&sub_id, "nested_link").unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().name, "nested_link");
+
+    // Should not find in root
+    let root_result = vault_ops.find_symlink(&DirId::root(), "nested_link").unwrap();
+    assert!(root_result.is_none());
+}
+
+#[test]
+fn test_find_symlink_empty_directory() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    let result = vault_ops.find_symlink(&DirId::root(), "any_link").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_symlink_does_not_match_files() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Create a file with a name
+    vault_ops.write_file(&DirId::root(), "myname", b"content").unwrap();
+
+    // find_symlink should NOT find it
+    let result = vault_ops.find_symlink(&DirId::root(), "myname").unwrap();
+    assert!(result.is_none(), "find_symlink should not match files");
+}
+
+#[test]
+fn test_find_symlink_does_not_match_directories() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Create a directory with a name
+    vault_ops.create_directory(&DirId::root(), "myname").unwrap();
+
+    // find_symlink should NOT find it
+    let result = vault_ops.find_symlink(&DirId::root(), "myname").unwrap();
+    assert!(result.is_none(), "find_symlink should not match directories");
+}
+
+#[test]
+fn test_find_symlink_case_sensitive() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_symlink(&DirId::root(), "MyLink", "/target").unwrap();
+
+    // Exact match should work
+    assert!(vault_ops.find_symlink(&DirId::root(), "MyLink").unwrap().is_some());
+
+    // Different case should not match
+    assert!(vault_ops.find_symlink(&DirId::root(), "mylink").unwrap().is_none());
+    assert!(vault_ops.find_symlink(&DirId::root(), "MYLINK").unwrap().is_none());
+}
+
+#[test]
+fn test_find_symlink_unicode_name() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_symlink(&DirId::root(), "日本語リンク", "/japanese/target").unwrap();
+    vault_ops.create_symlink(&DirId::root(), "émoji-🔗", "/emoji/target").unwrap();
+
+    let jp_result = vault_ops.find_symlink(&DirId::root(), "日本語リンク").unwrap();
+    assert!(jp_result.is_some());
+
+    let emoji_result = vault_ops.find_symlink(&DirId::root(), "émoji-🔗").unwrap();
+    assert!(emoji_result.is_some());
+}
+
+// ==================== find_* with invalid directory ID tests ====================
+
+#[test]
+fn test_find_file_invalid_directory_id() {
+    let (vault_path, master_key) = VaultBuilder::new()
+        .add_file("exists.txt", b"content")
+        .build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Looking in a nonexistent directory should return None (empty result), not error
+    let fake_dir_id = DirId::from_raw("this-is-not-a-real-directory-id");
+    let result = vault_ops.find_file(&fake_dir_id, "any.txt").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_directory_invalid_directory_id() {
+    let (vault_path, master_key) = VaultBuilder::new()
+        .add_directory("existing_dir")
+        .build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    // Looking in a nonexistent directory should return None, not error
+    let fake_dir_id = DirId::from_raw("this-is-not-a-real-directory-id");
+    let result = vault_ops.find_directory(&fake_dir_id, "any_dir").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_symlink_invalid_directory_id() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    let vault_ops = VaultOperations::new(&vault_path, master_key);
+
+    vault_ops.create_symlink(&DirId::root(), "link", "/target").unwrap();
+
+    // Looking in a nonexistent directory should return None, not error
+    let fake_dir_id = DirId::from_raw("this-is-not-a-real-directory-id");
+    let result = vault_ops.find_symlink(&fake_dir_id, "link").unwrap();
+    assert!(result.is_none());
+}
+
+// ==================== find_* with shortened names (.c9s) tests ====================
+
+#[test]
+fn test_find_file_shortened_name() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    // Use a low threshold to force shortening
+    let vault_ops = VaultOperations::with_shortening_threshold(&vault_path, master_key, 50);
+
+    // Create a file with a very long name that will be shortened (> 50 chars base64 encoded)
+    let long_name = "this_is_a_very_long_filename_that_will_definitely_exceed_the_threshold.txt";
+    vault_ops.write_file(&DirId::root(), long_name, b"shortened content").unwrap();
+
+    // Find it using the optimized lookup
+    let found = vault_ops.find_file(&DirId::root(), long_name).unwrap();
+    assert!(found.is_some(), "Shortened file should be found");
+    let info = found.unwrap();
+    assert_eq!(info.name, long_name);
+    assert!(info.is_shortened, "File should be marked as shortened");
+}
+
+#[test]
+fn test_find_directory_shortened_name() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    // Use a low threshold to force shortening
+    let vault_ops = VaultOperations::with_shortening_threshold(&vault_path, master_key, 50);
+
+    // Create a directory with a very long name
+    let long_name = "this_is_a_very_long_directory_name_that_will_exceed_threshold";
+    vault_ops.create_directory(&DirId::root(), long_name).unwrap();
+
+    // Find it using the optimized lookup
+    let found = vault_ops.find_directory(&DirId::root(), long_name).unwrap();
+    assert!(found.is_some(), "Shortened directory should be found");
+    let info = found.unwrap();
+    assert_eq!(info.name, long_name);
+}
+
+#[test]
+fn test_find_symlink_shortened_name() {
+    let (vault_path, master_key) = VaultBuilder::new().build();
+    // Use a low threshold to force shortening
+    let vault_ops = VaultOperations::with_shortening_threshold(&vault_path, master_key, 50);
+
+    // Create a symlink with a very long name
+    let long_name = "this_is_a_very_long_symlink_name_that_will_definitely_exceed_threshold";
+    vault_ops.create_symlink(&DirId::root(), long_name, "/some/target").unwrap();
+
+    // Find it using the optimized lookup
+    let found = vault_ops.find_symlink(&DirId::root(), long_name).unwrap();
+    assert!(found.is_some(), "Shortened symlink should be found");
+    let info = found.unwrap();
+    assert_eq!(info.name, long_name);
+    assert!(info.is_shortened, "Symlink should be marked as shortened");
+}

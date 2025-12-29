@@ -2,6 +2,8 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{Icon, IconName, IconSize};
+
 /// Bottom toolbar with vault management buttons
 #[component]
 pub fn Toolbar(
@@ -11,29 +13,38 @@ pub fn Toolbar(
 ) -> Element {
     rsx! {
         div {
-            class: "flex gap-2 py-3 px-4 border-t border-gray-100 dark:border-neutral-800 bg-gray-50 dark:bg-neutral-900",
+            class: "sidebar-toolbar",
 
             // New vault button (create from scratch)
             button {
-                class: "btn-success btn-sm",
+                class: "btn-primary btn-sm",
                 onclick: move |_| on_new_vault.call(()),
-                span { "✨" }
+                span {
+                    class: "icon-container",
+                    Icon { name: IconName::Plus, size: IconSize(14) }
+                }
                 span { "New" }
             }
 
             // Add existing vault button
             button {
-                class: "btn-primary btn-sm",
+                class: "btn-secondary btn-sm",
                 onclick: move |_| on_add_vault.call(()),
-                span { "+" }
                 span { "Add" }
             }
 
+            // Spacer
+            div { class: "flex-1" }
+
             // Settings button
             button {
-                class: "btn-secondary btn-sm px-2.5 py-1.5",
+                class: "btn-ghost btn-icon btn-sm",
                 onclick: move |_| on_settings.call(()),
-                "⚙️"
+                title: "Settings",
+                span {
+                    class: "icon-container w-full h-full",
+                    Icon { name: IconName::Gear, size: IconSize(16) }
+                }
             }
         }
     }

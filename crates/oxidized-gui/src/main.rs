@@ -3,20 +3,30 @@
 //! A Dioxus-based desktop application for managing Cryptomator vaults with
 //! support for multiple filesystem backends (FUSE, FSKit).
 
-#![forbid(unsafe_code)]
+// Allow unsafe code for objc2 interop (SF Symbols on macOS)
+#![cfg_attr(not(target_os = "macos"), forbid(unsafe_code))]
 
 mod app;
 mod backend;
 mod components;
 mod dialogs;
 mod error;
+mod icons;
+mod menu;
+mod platform;
 mod state;
 mod tray;
+mod windows;
+
+pub use platform::{current_platform, Platform};
 
 use crossbeam_channel::Receiver;
 use std::sync::OnceLock;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+#[cfg(feature = "tokio-console")]
+use tracing_subscriber::layer::SubscriberExt;
 
+use menu::MenuBarEvent;
 use tray::{TrayEvent, TrayManager};
 
 /// Global tray event receiver for the app to poll
@@ -27,8 +37,30 @@ pub fn tray_receiver() -> Option<&'static Receiver<TrayEvent>> {
     TRAY_RECEIVER.get()
 }
 
+/// Get the global menu event receiver
+pub fn menu_receiver() -> Option<&'static Receiver<MenuBarEvent>> {
+    menu::menu_receiver()
+}
+
 fn main() {
     // Initialize tracing for logging
+    #[cfg(feature = "tokio-console")]
+    {
+        // console_subscriber::spawn() returns a layer with its own built-in filter
+        // for tokio instrumentation. We use per-layer filtering so the fmt layer
+        // gets our custom filter while console uses its own.
+        use tracing_subscriber::Layer;
+        let console_layer = console_subscriber::spawn();
+        let fmt_filter = EnvFilter::from_default_env()
+            .add_directive("oxidized_gui=info".parse().unwrap());
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(fmt::layer().with_filter(fmt_filter))
+            .init();
+        tracing::info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:6669");
+    }
+
+    #[cfg(not(feature = "tokio-console"))]
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env().add_directive("oxidized_gui=info".parse().unwrap()))
@@ -40,6 +72,14 @@ fn main() {
     if let Err(e) = ctrlc::set_handler(|| backend::cleanup_and_exit()) {
         tracing::warn!("Failed to set signal handler: {}", e);
     }
+
+    // Initialize the menu event channel
+    menu::init_menu_events();
+    tracing::info!("Menu event handler initialized");
+
+    // Build the custom menu bar
+    let custom_menu = menu::build_menu_bar();
+    tracing::info!("Custom menu bar built");
 
     // Initialize the system tray
     let _tray_manager = match TrayManager::new() {
@@ -55,19 +95,28 @@ fn main() {
         }
     };
 
+    // Build desktop config
+    let mut config = dioxus::desktop::Config::new()
+        .with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title("Oxidized Vault")
+                .with_inner_size(dioxus::desktop::LogicalSize::new(900.0, 600.0))
+                .with_min_inner_size(dioxus::desktop::LogicalSize::new(600.0, 400.0))
+                .with_resizable(true),
+        )
+        .with_menu(custom_menu)
+        .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides);
+
+    // Register SF Symbol protocol on macOS
+    #[cfg(target_os = "macos")]
+    {
+        config = config.with_custom_protocol("sfsymbol", icons::handle_sfsymbol_request);
+        tracing::info!("SF Symbol protocol registered");
+    }
+
     // Launch the Dioxus desktop application
     dioxus::LaunchBuilder::new()
-        .with_cfg(
-            dioxus::desktop::Config::new()
-                .with_window(
-                    dioxus::desktop::WindowBuilder::new()
-                        .with_title("Oxidized Vault")
-                        .with_inner_size(dioxus::desktop::LogicalSize::new(900.0, 600.0))
-                        .with_min_inner_size(dioxus::desktop::LogicalSize::new(600.0, 400.0))
-                        .with_resizable(true),
-                )
-                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
-        )
+        .with_cfg(config)
         .launch(app::App);
 
     // Fallback cleanup if launch() returns normally (shouldn't happen with WindowHides)

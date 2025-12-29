@@ -38,19 +38,32 @@ cargo bench -p oxidized-cryptolib --bench timing_leaks -- --continuous key_unwra
 
 ## Async Debugging with tokio-console
 
-Both `oxidized-fuse` and `oxidized-fskit` support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection.
+All mount backends (`oxidized-fuse`, `oxidized-fskit`, `oxidized-webdav`, `oxidized-nfs`) and the GUI support [tokio-console](https://github.com/tokio-rs/console) for real-time async task introspection.
 
 ```bash
-# Build with console support
+# Build a specific backend with console support
 cargo build -p oxidized-fuse --features tokio-console
 cargo build -p oxidized-fskit --features tokio-console
+cargo build -p oxidized-webdav --features tokio-console
+cargo build -p oxidized-nfs --features tokio-console
 
-# Terminal 1: Run the mount
+# Or build CLI/GUI with console support (forwards to all enabled backends)
+cargo build -p oxidized-cli --features fuse,tokio-console
+cargo build -p oxidized-gui --features fuse,tokio-console
+
+# Terminal 1: Run the mount or GUI
 ./target/debug/oxmount ~/vault /mnt/point
+# or
+./target/debug/oxvault
 
-# Terminal 2: Connect console
+# Terminal 2: Connect console (default port 6669)
 tokio-console
 ```
+
+**Requirements** (already configured in this repo):
+- `tokio_unstable` cfg flag: Set via `.cargo/config.toml`
+- `tokio/tracing` feature: Enabled by the `tokio-console` feature flag
+- Per-layer filtering: `console_subscriber::spawn()` returns a layer with its own built-in filter; don't apply a global `EnvFilter` that might block tokio instrumentation events
 
 **What you can observe**:
 - Active async tasks and their states

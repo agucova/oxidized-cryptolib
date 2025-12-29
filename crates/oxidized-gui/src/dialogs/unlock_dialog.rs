@@ -2,43 +2,68 @@
 
 use dioxus::prelude::*;
 
-/// State for the unlock dialog
-#[derive(Clone, PartialEq)]
-#[derive(Default)]
-pub enum UnlockState {
-    /// Waiting for user input
-    #[default]
-    Idle,
-    /// Currently unlocking
-    Unlocking,
-    /// Unlock failed with error message
-    Error(String),
-}
+/// Result of an unlock operation
+pub type UnlockResult = Result<(), String>;
 
 /// Props for the unlock dialog
 #[derive(Props, Clone, PartialEq)]
 pub struct UnlockDialogProps {
     /// Vault name to display
     pub vault_name: String,
-    /// Called when unlock succeeds with the password
+    /// Called when unlock is attempted with the password
+    /// The dialog will manage its own visual state while waiting
     pub on_unlock: EventHandler<String>,
     /// Called when dialog is cancelled
     pub on_cancel: EventHandler<()>,
-    /// Current state of the unlock process
+    /// Called when unlock completes (success or failure)
+    /// If None, dialog stays in unlocking state until closed
     #[props(default)]
-    pub state: UnlockState,
+    pub unlock_result: Option<UnlockResult>,
 }
 
+/// State for the unlock dialog
+#[derive(Clone, PartialEq, Default)]
+pub enum DialogState {
+    #[default]
+    Idle,
+    Unlocking,
+    Error(String),
+}
 
 /// Password unlock dialog modal
+///
+/// This component manages its own visual state (idle/unlocking/error) internally
+/// to avoid DOM diffing issues when parent components re-render.
 #[component]
 pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
     let mut password = use_signal(String::new);
     let mut show_password = use_signal(|| false);
+    let mut dialog_state = use_signal(|| DialogState::Idle);
 
-    let is_unlocking = matches!(props.state, UnlockState::Unlocking);
-    let error_message = match &props.state {
-        UnlockState::Error(msg) => Some(msg.clone()),
+    // Track the last result we processed to detect changes
+    let mut last_result = use_signal(|| None::<UnlockResult>);
+
+    // Sync external result with internal state when it changes
+    // We compare with the previous value to detect actual changes
+    if props.unlock_result != *last_result.read() {
+        last_result.set(props.unlock_result.clone());
+        if let Some(result) = &props.unlock_result {
+            match result {
+                Ok(()) => {
+                    // Success - parent should close the dialog
+                    dialog_state.set(DialogState::Idle);
+                }
+                Err(msg) => {
+                    tracing::info!("[UNLOCK_DIALOG] Received error, updating dialog state: {}", msg);
+                    dialog_state.set(DialogState::Error(msg.clone()));
+                }
+            }
+        }
+    }
+
+    let is_unlocking = matches!(dialog_state(), DialogState::Unlocking);
+    let error_message = match dialog_state() {
+        DialogState::Error(msg) => Some(msg),
         _ => None,
     };
 
@@ -47,6 +72,8 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
         move |_| {
             let pw = password();
             if !pw.is_empty() {
+                // Set internal state to unlocking BEFORE calling parent
+                dialog_state.set(DialogState::Unlocking);
                 on_unlock.call(pw);
             }
         }
@@ -57,25 +84,35 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
         move |e: KeyboardEvent| {
             if e.key() == Key::Enter {
                 let pw = password();
-                if !pw.is_empty() {
+                if !pw.is_empty() && !matches!(dialog_state(), DialogState::Unlocking) {
+                    dialog_state.set(DialogState::Unlocking);
                     on_unlock.call(pw);
                 }
             }
         }
     };
 
+    // Determine button text/content based on state - rendered as separate variables
+    // to avoid conditional rendering issues in the button element
+    let button_disabled = is_unlocking || password().is_empty();
+    let cancel_disabled = is_unlocking;
+
     rsx! {
         // Backdrop
         div {
             class: "dialog-backdrop",
-            onclick: move |_| props.on_cancel.call(()),
+            onclick: move |_| {
+                if !is_unlocking {
+                    props.on_cancel.call(())
+                }
+            },
 
             // Dialog
             div {
                 class: "dialog w-[400px]",
                 onclick: move |e| e.stop_propagation(),
 
-                // Header
+                // Body
                 div {
                     class: "dialog-body",
 
@@ -125,26 +162,31 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
                         }
                     }
 
-                    // Buttons
+                    // Buttons - use stable structure to prevent DOM diffing issues
                     div {
                         class: "flex gap-3 justify-end",
 
                         button {
+                            key: "cancel-btn",
                             class: "btn-secondary",
-                            disabled: is_unlocking,
+                            disabled: cancel_disabled,
                             onclick: move |_| props.on_cancel.call(()),
                             "Cancel"
                         }
 
+                        // Primary button with stable structure
                         button {
+                            key: "unlock-btn",
                             class: "btn-primary",
-                            disabled: is_unlocking || password().is_empty(),
+                            disabled: button_disabled,
                             onclick: handle_submit,
 
+                            // Spinner - always present but hidden when not unlocking
+                            span {
+                                class: if is_unlocking { "spinner-sm" } else { "hidden" },
+                            }
+                            // Text changes based on state
                             if is_unlocking {
-                                span {
-                                    class: "spinner-sm",
-                                }
                                 "Unlocking..."
                             } else {
                                 "Unlock"
@@ -156,3 +198,4 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
         }
     }
 }
+

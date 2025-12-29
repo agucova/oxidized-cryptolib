@@ -17,11 +17,16 @@ dioxus = { version = "0.7", features = ["desktop"] }
 
 # Backend integration
 oxidized-cryptolib = { path = "../oxidized-cryptolib" }
+oxidized-mount-common = { path = "../oxidized-mount-common" }
 
 # Mount backends (all optional for cross-platform support)
 oxidized-fuse = { path = "../oxidized-fuse", optional = true }
 oxidized-fskit = { path = "../oxidized-fskit", optional = true }
+oxidized-nfs = { path = "../oxidized-nfs", optional = true }
 oxidized-webdav = { path = "../oxidized-webdav", optional = true }
+
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -45,7 +50,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror.workspace = true
 ctrlc = "3.5.1"
-image = { version = "0.25.9", features = ["png"] }
+image = { version = "0.25.9", features = ["png", "tiff"] }
 
 [features]
 # No default backend - platform-specific features should be enabled at build time
@@ -64,8 +69,32 @@ fskit = ["dep:oxidized-fskit", "oxidized-fskit/setup"]
 # WebDAV backend (cross-platform, no kernel extensions required)
 webdav = ["dep:oxidized-webdav"]
 
+# NFS backend (Unix only, no kernel extensions required)
+nfs = ["dep:oxidized-nfs"]
+
 # All Unix backends
-unix-backends = ["fuse", "fskit", "webdav"]
+unix-backends = ["fuse", "fskit", "nfs", "webdav"]
+
+# Enable tokio-console for async debugging (forwards to all backends)
+tokio-console = [
+    "dep:console-subscriber",
+    "tokio/tracing",
+    "oxidized-fuse?/tokio-console",
+    "oxidized-fskit?/tokio-console",
+    "oxidized-nfs?/tokio-console",
+    "oxidized-webdav?/tokio-console",
+]
+
+# macOS-only: SF Symbols support via AppKit
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSImage",
+    "NSBitmapImageRep",
+    "NSGraphicsContext",
+    "NSImageRep",
+] }
 
 [dev-dependencies]
 tempfile = "3"

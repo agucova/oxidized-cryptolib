@@ -37,6 +37,17 @@ macos-defaults = ["fuse", "fskit", "webdav"]
 linux-defaults = ["fuse", "webdav"]
 windows-defaults = ["webdav"]
 
+# Enable tokio-console for async debugging (forwards to all backends)
+tokio-console = [
+    "dep:console-subscriber",
+    "dep:tokio",
+    "tokio/tracing",
+    "oxidized-fuse?/tokio-console",
+    "oxidized-fskit?/tokio-console",
+    "oxidized-webdav?/tokio-console",
+    "oxidized-nfs?/tokio-console",
+]
+
 [dependencies]
 oxidized-cryptolib.workspace = true
 clap.workspace = true
@@ -55,6 +66,10 @@ oxidized-fuse = { path = "../oxidized-fuse", optional = true }
 oxidized-fskit = { path = "../oxidized-fskit", optional = true }
 oxidized-webdav = { path = "../oxidized-webdav", optional = true }
 oxidized-nfs = { path = "../oxidized-nfs", optional = true }
+
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 directories = "6.0.0"
 chrono = { version = "0.4.42", features = ["serde"] }

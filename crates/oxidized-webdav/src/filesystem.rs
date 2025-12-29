@@ -15,7 +15,7 @@ use dav_server::fs::{
 use futures::stream;
 use oxidized_cryptolib::vault::operations_async::VaultOperationsAsync;
 use oxidized_cryptolib::vault::DirId;
-use oxidized_mount_common::{HandleTable, TtlCache, WriteBuffer};
+use oxidized_mount_common::{HandleTable, TtlCache, VaultStats, WriteBuffer};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, instrument, trace};
@@ -38,15 +38,25 @@ pub struct CryptomatorWebDav {
     write_buffers: Arc<WriteBufferTable>,
     /// Metadata cache to reduce vault operations.
     metadata_cache: Arc<MetadataCache>,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 impl CryptomatorWebDav {
     /// Create a new WebDAV filesystem from vault operations.
     pub fn new(ops: Arc<VaultOperationsAsync>) -> Self {
+        // Create stats first so we can connect caches to it
+        let stats = Arc::new(VaultStats::new());
+
+        // Create metadata cache and connect it to stats for hit/miss tracking
+        let mut metadata_cache = TtlCache::with_defaults();
+        metadata_cache.set_stats(stats.cache_stats());
+
         Self {
             ops,
             write_buffers: Arc::new(HandleTable::new()),
-            metadata_cache: Arc::new(TtlCache::with_defaults()),
+            metadata_cache: Arc::new(metadata_cache),
+            stats,
         }
     }
 
@@ -57,6 +67,11 @@ impl CryptomatorWebDav {
             .into_shared();
 
         Ok(Self::new(ops))
+    }
+
+    /// Get the statistics for this filesystem.
+    pub fn stats(&self) -> Arc<VaultStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Parse a WebDAV path to a vault path string.
@@ -207,6 +222,7 @@ impl DavFileSystem for CryptomatorWebDav {
                     self.ops.clone(),
                     vault_path.clone(),
                     self.metadata_cache.clone(),
+                    self.stats.clone(),
                 );
                 return Ok(Box::new(file) as Box<dyn DavFile>);
             }
@@ -242,6 +258,7 @@ impl DavFileSystem for CryptomatorWebDav {
                     self.ops.clone(),
                     vault_path.clone(),
                     self.metadata_cache.clone(),
+                    self.stats.clone(),
                 );
                 Ok(Box::new(file) as Box<dyn DavFile>)
             } else {
@@ -252,7 +269,7 @@ impl DavFileSystem for CryptomatorWebDav {
                     .open_file(&dir_id, &filename)
                     .await
                     .map_err(vault_error_to_fs_error)?;
-                let file = CryptomatorFile::reader(reader, filename);
+                let file = CryptomatorFile::reader(reader, filename, self.stats.clone());
                 Ok(Box::new(file) as Box<dyn DavFile>)
             }
         })
@@ -402,24 +419,55 @@ impl DavFileSystem for CryptomatorWebDav {
             let (from_dir_id, from_name) = self.resolve_path(&from_path).await?;
             let (to_dir_id, to_name) = self.resolve_path(&to_path).await?;
 
-            if from_dir_id == to_dir_id && from_name != to_name {
-                // Same directory, just rename
+            // Determine if source is a directory or file
+            let source_meta = self.find_entry(&from_path).await?;
+
+            if source_meta.is_dir() {
+                // Directory operations
+                if from_dir_id != to_dir_id {
+                    // Cross-directory move not supported for directories
+                    debug!("Cross-directory move not supported for directories");
+                    return Err(FsError::NotImplemented);
+                }
+                // Same directory rename
                 self.ops
-                    .rename_file(&from_dir_id, &from_name, &to_name)
-                    .await
-                    .map_err(write_error_to_fs_error)?;
-            } else if from_name == to_name {
-                // Different directory, same name - move
-                self.ops
-                    .move_file(&from_dir_id, &from_name, &to_dir_id)
+                    .rename_directory(&from_dir_id, &from_name, &to_name)
                     .await
                     .map_err(write_error_to_fs_error)?;
             } else {
-                // Different directory and name - move and rename
-                self.ops
-                    .move_and_rename_file(&from_dir_id, &from_name, &to_dir_id, &to_name)
-                    .await
-                    .map_err(write_error_to_fs_error)?;
+                // File operations
+                // dav-server doesn't delete destination files for us when Overwrite: T is set,
+                // so we need to delete the destination if it exists.
+                // (dav-server only deletes destination directories, not files)
+                if let Ok(dest_meta) = self.find_entry(&to_path).await {
+                    if dest_meta.is_file() {
+                        debug!(dest = %to_path, "Deleting existing destination file for overwrite");
+                        self.ops
+                            .delete_file(&to_dir_id, &to_name)
+                            .await
+                            .map_err(write_error_to_fs_error)?;
+                    }
+                }
+
+                if from_dir_id == to_dir_id && from_name != to_name {
+                    // Same directory, just rename
+                    self.ops
+                        .rename_file(&from_dir_id, &from_name, &to_name)
+                        .await
+                        .map_err(write_error_to_fs_error)?;
+                } else if from_name == to_name {
+                    // Different directory, same name - move
+                    self.ops
+                        .move_file(&from_dir_id, &from_name, &to_dir_id)
+                        .await
+                        .map_err(write_error_to_fs_error)?;
+                } else {
+                    // Different directory and name - move and rename
+                    self.ops
+                        .move_and_rename_file(&from_dir_id, &from_name, &to_dir_id, &to_name)
+                        .await
+                        .map_err(write_error_to_fs_error)?;
+                }
             }
 
             // Invalidate cache for both source and destination

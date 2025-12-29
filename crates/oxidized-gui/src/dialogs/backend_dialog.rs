@@ -51,12 +51,12 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
 
             // Dialog
             div {
-                class: "dialog w-[450px]",
+                class: "dialog w-[450px] flex flex-col",
                 onclick: move |e| e.stop_propagation(),
 
-                // Header
+                // Header (fixed)
                 div {
-                    class: "dialog-body",
+                    class: "px-6 pt-5 pb-4",
 
                     h2 {
                         class: "mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100",
@@ -64,9 +64,14 @@ pub fn BackendDialog(props: BackendDialogProps) -> Element {
                     }
 
                     p {
-                        class: "mb-4 text-sm text-gray-600 dark:text-gray-400",
+                        class: "text-sm text-gray-600 dark:text-gray-400",
                         "Choose which filesystem backend to use for mounting this vault."
                     }
+                }
+
+                // Scrollable body
+                div {
+                    class: "flex-1 min-h-0 overflow-y-auto px-6 pb-4",
 
                     // Mount state alert
                     if is_mounted {

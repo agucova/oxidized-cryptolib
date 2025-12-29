@@ -115,6 +115,8 @@ in
     cargo-fuzz
     cargo-nextest
     dioxus-cli
+    openssl
+    pkg-config
   ]
   # Add pjdfstest and fsstress on Linux (requires FUSE which is native there)
   ++ lib.optionals stdenv.isLinux [

@@ -152,6 +152,9 @@ async fn run_server(listener: TcpListener, handler: Arc<DavHandler>) {
     }
 }
 
+/// Timeout for auto-mount operations (15 seconds).
+const AUTO_MOUNT_TIMEOUT_SECS: u64 = 15;
+
 /// Attempt to auto-mount via macOS mount_webdav command.
 #[cfg(target_os = "macos")]
 pub async fn auto_mount_macos(
@@ -159,19 +162,36 @@ pub async fn auto_mount_macos(
     mountpoint: &std::path::Path,
 ) -> Result<(), std::io::Error> {
     use tokio::process::Command;
+    use tokio::time::{timeout, Duration};
 
     debug!(url = %url, mountpoint = %mountpoint.display(), "Attempting auto-mount on macOS");
 
     // Create mountpoint if it doesn't exist
     tokio::fs::create_dir_all(mountpoint).await?;
 
-    // Use mount_webdav command
-    let status = Command::new("mount_webdav")
+    // Use mount_webdav command with timeout
+    // The -S flag suppresses authentication dialogs
+    let mount_future = Command::new("mount_webdav")
         .arg("-S") // Suppress authentication dialog
         .arg(url)
         .arg(mountpoint)
-        .status()
-        .await?;
+        .status();
+
+    let status = match timeout(Duration::from_secs(AUTO_MOUNT_TIMEOUT_SECS), mount_future).await {
+        Ok(result) => result?,
+        Err(_) => {
+            warn!(
+                url = %url,
+                mountpoint = %mountpoint.display(),
+                timeout_secs = AUTO_MOUNT_TIMEOUT_SECS,
+                "Auto-mount timed out"
+            );
+            return Err(std::io::Error::other(format!(
+                "mount_webdav timed out after {}s",
+                AUTO_MOUNT_TIMEOUT_SECS
+            )));
+        }
+    };
 
     if status.success() {
         info!(mountpoint = %mountpoint.display(), "Auto-mount successful");
@@ -212,18 +232,151 @@ pub fn unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error>
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Force unmount a macOS WebDAV mount, even if busy.
+#[cfg(target_os = "macos")]
+pub fn force_unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::process::Command;
+
+    debug!(mountpoint = %mountpoint.display(), "Force unmounting on macOS");
+
+    // Try diskutil unmount force first (most reliable)
+    let result = Command::new("diskutil")
+        .args(["unmount", "force"])
+        .arg(mountpoint)
+        .output()?;
+
+    if result.status.success() {
+        return Ok(());
+    }
+
+    debug!(
+        "diskutil unmount force failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    // Fallback to umount -f
+    let status = Command::new("umount").arg("-f").arg(mountpoint).status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("force unmount failed"))
+    }
+}
+
+/// Attempt to unmount on Linux (for manually mounted WebDAV shares).
+#[cfg(target_os = "linux")]
+pub fn unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::process::Command;
+
+    debug!(mountpoint = %mountpoint.display(), "Unmounting on Linux");
+
+    let status = Command::new("umount").arg(mountpoint).status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("unmount failed"))
+    }
+}
+
+/// Force unmount on Linux.
+#[cfg(target_os = "linux")]
+pub fn force_unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::process::Command;
+
+    debug!(mountpoint = %mountpoint.display(), "Force unmounting on Linux");
+
+    // Try lazy unmount first (detaches immediately, cleanup happens later)
+    let status = Command::new("umount").arg("-l").arg(mountpoint).status()?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    // Fallback to force unmount
+    let status = Command::new("umount").arg("-f").arg(mountpoint).status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("force unmount failed"))
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub async fn auto_mount_macos(
     _url: &str,
     _mountpoint: &std::path::Path,
 ) -> Result<(), std::io::Error> {
-    // No-op on non-macOS
+    // No auto-mount on Linux - user mounts manually via davfs2 or file manager
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Attempt to unmount on Windows (for mapped network drives).
+#[cfg(target_os = "windows")]
+pub fn unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::process::Command;
+
+    debug!(mountpoint = %mountpoint.display(), "Unmounting on Windows");
+
+    // Use net use to disconnect the mapped drive
+    let status = Command::new("net")
+        .args(["use", "/delete"])
+        .arg(mountpoint)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("unmount failed"))
+    }
+}
+
+/// Force unmount on Windows.
+#[cfg(target_os = "windows")]
+pub fn force_unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::process::Command;
+
+    debug!(mountpoint = %mountpoint.display(), "Force unmounting on Windows");
+
+    // Use /y to force without prompting
+    let status = Command::new("net")
+        .args(["use", "/delete", "/y"])
+        .arg(mountpoint)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("force unmount failed"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub async fn auto_mount_macos(
+    _url: &str,
+    _mountpoint: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    // TODO: Could implement auto-mount via `net use` on Windows
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub async fn auto_mount_macos(
+    _url: &str,
+    _mountpoint: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub fn unmount_macos(_mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
-    // No-op on non-macOS
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub fn force_unmount_macos(_mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 

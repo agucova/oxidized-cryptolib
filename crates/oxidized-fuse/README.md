@@ -105,7 +105,7 @@ For applications that need to manage mounts programmatically, use the `FuseBacke
 
 ```rust
 use oxidized_fuse::FuseBackend;
-use oxidized_cryptolib::MountBackend;
+use oxidized_mount_common::MountBackend;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {

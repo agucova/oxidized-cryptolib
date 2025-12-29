@@ -70,6 +70,27 @@ impl std::fmt::Display for Implementation {
     }
 }
 
+impl Implementation {
+    /// Check if this backend is expected to be slow for bulk operations.
+    ///
+    /// WebDAV and NFS operate over network protocols (even locally) and have
+    /// higher per-operation overhead than kernel-level backends like FUSE/FSKit.
+    pub fn is_network_backend(&self) -> bool {
+        matches!(self, Self::OxidizedWebDav | Self::OxidizedNfs)
+    }
+
+    /// Get the maximum recommended directory size for this backend.
+    ///
+    /// Network backends use smaller sizes to keep benchmarks reasonable.
+    pub fn max_directory_size(&self) -> usize {
+        if self.is_network_backend() {
+            100 // Max 100 files for network backends
+        } else {
+            1000 // Full 1000 files for kernel backends
+        }
+    }
+}
+
 /// Benchmark suite to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BenchmarkSuite {

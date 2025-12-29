@@ -3,6 +3,7 @@
 use crate::bench::Benchmark;
 use crate::config::{FileSize, OperationType};
 use anyhow::Result;
+use oxidized_mount_common::safe_sync;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
@@ -76,7 +77,7 @@ impl Benchmark for SequentialWriteBenchmark {
         }
 
         if self.include_fsync {
-            file.sync_all()?;
+            safe_sync(&file)?;
         }
 
         let elapsed = start.elapsed();
@@ -149,7 +150,7 @@ impl Benchmark for RandomWriteBenchmark {
 
         let mut file = File::create(&file_path)?;
         file.write_all(&content)?;
-        file.sync_all()?;
+        safe_sync(&file)?;
 
         Ok(())
     }
@@ -179,7 +180,7 @@ impl Benchmark for RandomWriteBenchmark {
             file.write_all(&buffer)?;
         }
 
-        file.sync_all()?;
+        safe_sync(&file)?;
 
         Ok(start.elapsed())
     }

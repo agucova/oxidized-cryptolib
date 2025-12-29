@@ -9,7 +9,7 @@ mod change_password_dialog;
 mod confirm_dialog;
 mod create_vault_dialog;
 mod error_dialog;
-mod settings_dialog;
+mod force_lock_dialog;
 mod unlock_dialog;
 
 #[cfg(all(target_os = "macos", feature = "fskit"))]
@@ -21,8 +21,8 @@ pub use change_password_dialog::ChangePasswordDialog;
 pub use confirm_dialog::ConfirmDialog;
 pub use create_vault_dialog::CreateVaultDialog;
 pub use error_dialog::ErrorDialog;
-pub use settings_dialog::SettingsDialog;
-pub use unlock_dialog::{UnlockDialog, UnlockState};
+pub use force_lock_dialog::ForceLockDialog;
+pub use unlock_dialog::UnlockDialog;
 
 #[cfg(all(target_os = "macos", feature = "fskit"))]
 pub use fskit_setup_dialog::FSKitSetupDialog;

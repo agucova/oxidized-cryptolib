@@ -7,8 +7,8 @@ mod external;
 
 pub use external::ExternalMount;
 
-// Re-export MountBackend types from cryptolib
-pub use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+// Re-export MountBackend types from mount-common
+pub use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle};
 
 // Re-export backend implementations
 pub use oxidized_fuse::{FuseBackend, FuseMountHandle};
@@ -21,6 +21,7 @@ use crate::config::Implementation;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Global FUSE backend instance
 static FUSE_BACKEND: OnceLock<FuseBackend> = OnceLock::new();
@@ -162,9 +163,43 @@ pub fn mount_implementation(
         }
         Implementation::OxidizedWebDav => {
             let backend = webdav_backend();
+            tracing::debug!("Starting WebDAV mount at {}", mount_point.display());
             let handle = backend
                 .mount("bench", vault_path, password, mount_point)
                 .with_context(|| format!("Failed to mount WebDAV at {}", mount_point.display()))?;
+
+            // Verify the mount actually worked (WebDAV auto-mount can fail silently)
+            // Wait a moment for the mount to stabilize
+            tracing::debug!("WebDAV mount returned, waiting for stabilization...");
+            std::thread::sleep(Duration::from_millis(500));
+
+            let is_mp = is_mount_point(mount_point).unwrap_or(false);
+            tracing::debug!("is_mount_point({}) = {}", mount_point.display(), is_mp);
+
+            if !is_mp {
+                // Try reading the directory to see if it's accessible
+                match std::fs::read_dir(mount_point) {
+                    Ok(_) => {
+                        // Directory is readable but not a mount point - auto-mount failed
+                        tracing::error!("WebDAV auto-mount failed - directory readable but not a mount point");
+                        anyhow::bail!(
+                            "WebDAV auto-mount failed at {}. The WebDAV server is running but macOS mount_webdav failed. \
+                            You may need to mount manually via Finder (Cmd+K). Check system logs for details.",
+                            mount_point.display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("WebDAV mount not accessible: {}", e);
+                        anyhow::bail!(
+                            "WebDAV mount at {} is not accessible: {}",
+                            mount_point.display(),
+                            e
+                        );
+                    }
+                }
+            }
+
+            tracing::info!("WebDAV mount verified at {}", mount_point.display());
             Ok(BenchMount {
                 handle: Some(handle),
                 external_mount_point: None,
@@ -195,12 +230,108 @@ pub fn mount_implementation(
     }
 }
 
-/// Ensure a mount point directory exists.
+/// Ensure a mount point directory exists, cleaning up any stale mounts first.
 pub fn ensure_mount_point(path: &Path) -> Result<()> {
+    // If the path exists and is a mount point from a previous interrupted run, unmount it
+    if path.exists() && is_mount_point(path).unwrap_or(false) {
+        tracing::warn!(
+            "Detected stale mount at {}, attempting cleanup...",
+            path.display()
+        );
+        cleanup_stale_mount(path)?;
+    }
+
     if !path.exists() {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+/// Attempt to unmount a stale mount point from a previous interrupted run.
+#[cfg(target_os = "macos")]
+fn cleanup_stale_mount(path: &Path) -> Result<()> {
+    use std::process::Command;
+
+    // Try diskutil unmount force first (most reliable on macOS)
+    let output = Command::new("diskutil")
+        .args(["unmount", "force"])
+        .arg(path)
+        .output()
+        .context("Failed to run diskutil")?;
+
+    if output.status.success() {
+        tracing::info!("Successfully unmounted stale mount at {}", path.display());
+        // Give the system a moment to release the mount
+        std::thread::sleep(Duration::from_millis(200));
+        return Ok(());
+    }
+
+    // Fallback to umount -f
+    let output = Command::new("umount")
+        .arg("-f")
+        .arg(path)
+        .output()
+        .context("Failed to run umount")?;
+
+    if output.status.success() {
+        tracing::info!("Successfully unmounted stale mount at {}", path.display());
+        std::thread::sleep(Duration::from_millis(200));
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    anyhow::bail!(
+        "Failed to unmount stale mount at {}: {}",
+        path.display(),
+        stderr
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_stale_mount(path: &Path) -> Result<()> {
+    use std::process::Command;
+
+    // Try fusermount first (for FUSE mounts)
+    let output = Command::new("fusermount")
+        .args(["-uz"])
+        .arg(path)
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            tracing::info!("Successfully unmounted stale FUSE mount at {}", path.display());
+            std::thread::sleep(Duration::from_millis(200));
+            return Ok(());
+        }
+    }
+
+    // Fallback to lazy umount
+    let output = Command::new("umount")
+        .arg("-l")
+        .arg(path)
+        .output()
+        .context("Failed to run umount")?;
+
+    if output.status.success() {
+        tracing::info!("Successfully unmounted stale mount at {}", path.display());
+        std::thread::sleep(Duration::from_millis(200));
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    anyhow::bail!(
+        "Failed to unmount stale mount at {}: {}",
+        path.display(),
+        stderr
+    );
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn cleanup_stale_mount(path: &Path) -> Result<()> {
+    anyhow::bail!(
+        "Cannot cleanup stale mount at {} on this platform",
+        path.display()
+    );
 }
 
 /// Check if a path is a mount point (different device from parent).

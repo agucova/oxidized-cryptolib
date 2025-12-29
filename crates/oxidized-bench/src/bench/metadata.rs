@@ -52,19 +52,38 @@ impl Benchmark for DirectoryListingBenchmark {
         let dir_path = self.test_dir_path(mount_point);
 
         // Create directory
+        let start = Instant::now();
         fs::create_dir_all(&dir_path)?;
+        tracing::debug!("Created directory in {:?}", start.elapsed());
 
         // Create files
         let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let file_start = Instant::now();
         for i in 0..self.num_files {
             let file_path = dir_path.join(format!("file_{:05}.txt", i));
+            let iter_start = Instant::now();
             let mut file = File::create(&file_path)?;
 
             // Small content (1KB)
             let mut content = vec![0u8; 1024];
             rng.fill_bytes(&mut content);
             file.write_all(&content)?;
+
+            // Log every 100 files or if any single file takes > 100ms
+            let iter_elapsed = iter_start.elapsed();
+            if i % 100 == 0 || iter_elapsed > Duration::from_millis(100) {
+                tracing::debug!(
+                    "File {}/{}: {:?} (total: {:?})",
+                    i + 1, self.num_files, iter_elapsed, file_start.elapsed()
+                );
+            }
         }
+        tracing::info!(
+            "Created {} files in {:?} ({:?}/file avg)",
+            self.num_files,
+            file_start.elapsed(),
+            file_start.elapsed() / self.num_files as u32
+        );
 
         Ok(())
     }
@@ -77,6 +96,14 @@ impl Benchmark for DirectoryListingBenchmark {
         let mut count = 0;
         for entry in fs::read_dir(&dir_path)? {
             let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip macOS AppleDouble/resource fork files (._*)
+            // These are automatically created for extended attributes
+            if name.starts_with("._") {
+                continue;
+            }
+
             std::hint::black_box(entry.file_name());
 
             if self.include_stat {

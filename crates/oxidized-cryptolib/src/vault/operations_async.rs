@@ -47,7 +47,10 @@ use crate::{
     vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
     vault::handles::VaultHandleTable,
     vault::locks::{VaultLockManager, VaultLockRegistry},
-    vault::ops::{calculate_directory_lookup_paths, calculate_file_lookup_paths, VaultCore},
+    vault::ops::{
+        calculate_directory_lookup_paths, calculate_file_lookup_paths,
+        calculate_symlink_lookup_paths, VaultCore,
+    },
     vault::path::{DirId, VaultPath},
 };
 use std::path::{Path, PathBuf};
@@ -167,6 +170,50 @@ impl VaultOperationsAsync {
             shortening_threshold,
             cipher_combo,
         ))
+    }
+
+    /// Open an existing vault using a pre-validated password.
+    ///
+    /// This is the second phase of the two-phase unlock flow. Use this method
+    /// after successfully calling [`PasswordValidator::validate()`] to create
+    /// vault operations without re-validating the password.
+    ///
+    /// This approach provides:
+    /// - Fast feedback on wrong passwords (validation phase)
+    /// - Timeout protection against stale mounts (validation phase)
+    /// - Clean separation between password validation and mount operations
+    ///
+    /// # Arguments
+    ///
+    /// * `validated` - A validated password from `PasswordValidator::validate()`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use oxidized_cryptolib::vault::{PasswordValidator, VaultOperationsAsync};
+    /// use std::time::Duration;
+    ///
+    /// // Phase 1: Validate password (can timeout, fast error on wrong password)
+    /// let validator = PasswordValidator::new(&vault_path);
+    /// let validated = validator.validate("password", Duration::from_secs(5))?;
+    ///
+    /// // Phase 2: Create operations (uses already-validated key, no re-validation)
+    /// let ops = VaultOperationsAsync::from_validated(validated);
+    /// ```
+    #[instrument(level = "info", skip(validated), fields(vault_path = %validated.vault_path().display()))]
+    pub fn from_validated(validated: super::password::ValidatedPassword) -> Self {
+        info!(
+            cipher_combo = ?validated.cipher_combo(),
+            shortening_threshold = validated.shortening_threshold(),
+            "Creating VaultOperationsAsync from validated password"
+        );
+
+        Self::with_options_arc(
+            validated.vault_path(),
+            validated.master_key(),
+            validated.shortening_threshold(),
+            validated.cipher_combo(),
+        )
     }
 
     /// Create a new async vault operations instance with default SIV_GCM cipher.
@@ -748,6 +795,74 @@ impl VaultOperationsAsync {
                 context: VaultOpContext::new()
                     .with_filename(dir_name)
                     .with_dir_id(parent_directory_id.as_str())
+                    .with_encrypted_path(&paths.content_path),
+            }),
+        }
+    }
+
+    /// Find a symlink by name in a directory using O(1) path lookup.
+    ///
+    /// Instead of listing all symlinks and searching linearly, this method
+    /// calculates the expected encrypted path directly and checks if it exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The parent directory's ID
+    /// * `symlink_name` - The decrypted name of the symlink to find
+    ///
+    /// # Returns
+    ///
+    /// `Some(VaultSymlinkInfo)` if found, `None` if not found.
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str(), symlink_name = %symlink_name))]
+    pub async fn find_symlink(
+        &self,
+        directory_id: &DirId,
+        symlink_name: &str,
+    ) -> Result<Option<VaultSymlinkInfo>, VaultOperationError> {
+        let _guard = self.lock_manager.directory_read(directory_id).await;
+        trace!("Acquired directory read lock for find_symlink");
+        self.find_symlink_unlocked(directory_id, symlink_name).await
+    }
+
+    /// Internal implementation of find_symlink without locking.
+    async fn find_symlink_unlocked(
+        &self,
+        directory_id: &DirId,
+        symlink_name: &str,
+    ) -> Result<Option<VaultSymlinkInfo>, VaultOperationError> {
+        let storage_path = self.calculate_directory_storage_path(directory_id)?;
+
+        // Encrypt the symlink name to get the expected path
+        let encrypted_name = encrypt_filename(symlink_name, directory_id.as_str(), &self.master_key)?;
+
+        // Calculate paths using shared helper
+        let paths = calculate_symlink_lookup_paths(
+            &storage_path,
+            &encrypted_name,
+            self.core.shortening_threshold(),
+        );
+
+        // Perform async I/O to check if symlink exists and read its target
+        match fs::read(&paths.content_path).await {
+            Ok(encrypted_data) => {
+                let target = decrypt_symlink_target(&encrypted_data, &self.master_key)?;
+                trace!(target_len = target.len(), shortened = paths.is_shortened, "Found symlink");
+                Ok(Some(VaultSymlinkInfo {
+                    name: symlink_name.to_string(),
+                    target,
+                    encrypted_path: paths.entry_path,
+                    is_shortened: paths.is_shortened,
+                }))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                trace!(shortened = paths.is_shortened, "Symlink not found");
+                Ok(None)
+            }
+            Err(e) => Err(VaultOperationError::Io {
+                source: e,
+                context: VaultOpContext::new()
+                    .with_filename(symlink_name)
+                    .with_dir_id(directory_id.as_str())
                     .with_encrypted_path(&paths.content_path),
             }),
         }

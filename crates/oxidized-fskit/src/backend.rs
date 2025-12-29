@@ -4,8 +4,9 @@
 
 use crate::CryptomatorFSKit;
 use fskit_rs::MountOptions;
-use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle, VaultStats};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
@@ -16,6 +17,8 @@ pub struct FSKitMountHandle {
     /// The mount session (boxed to hide the private fskit_rs::Session type)
     _session: Box<dyn std::any::Any + Send + Sync>,
     mountpoint: PathBuf,
+    /// Statistics for monitoring vault activity
+    stats: Arc<VaultStats>,
     /// Keep runtime alive to prevent session from being dropped
     #[allow(dead_code)]
     runtime: Runtime,
@@ -25,9 +28,39 @@ pub struct FSKitMountHandle {
 // The runtime itself is Send + Sync
 unsafe impl Sync for FSKitMountHandle {}
 
+impl FSKitMountHandle {
+    /// Force unmount the filesystem using system tools.
+    fn force_unmount_impl(&self) {
+        // Use diskutil unmount force on macOS
+        let result = std::process::Command::new("diskutil")
+            .args(["unmount", "force"])
+            .arg(&self.mountpoint)
+            .output();
+
+        match result {
+            Ok(output) if output.status.success() => {
+                tracing::debug!("Force unmount via diskutil succeeded");
+            }
+            Ok(output) => {
+                tracing::debug!(
+                    "diskutil unmount force failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(e) => {
+                tracing::debug!("Failed to run diskutil: {}", e);
+            }
+        }
+    }
+}
+
 impl MountHandle for FSKitMountHandle {
     fn mountpoint(&self) -> &Path {
         &self.mountpoint
+    }
+
+    fn stats(&self) -> Option<Arc<VaultStats>> {
+        Some(Arc::clone(&self.stats))
     }
 
     fn unmount(self: Box<Self>) -> Result<(), MountError> {
@@ -36,6 +69,22 @@ impl MountHandle for FSKitMountHandle {
             "Unmounting FSKit filesystem at {}",
             self.mountpoint.display()
         );
+        Ok(())
+    }
+
+    fn force_unmount(self: Box<Self>) -> Result<(), MountError> {
+        tracing::debug!(
+            "Force unmounting FSKit filesystem at {}",
+            self.mountpoint.display()
+        );
+
+        // Force unmount using OS tools first
+        self.force_unmount_impl();
+
+        // Brief pause to let the force unmount take effect
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Session will be dropped when self is dropped
         Ok(())
     }
 }
@@ -185,6 +234,9 @@ impl MountBackend for FSKitBackend {
         let fs = CryptomatorFSKit::new(vault_path, password)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
+        // Capture stats before mounting (mount takes ownership of fs)
+        let stats = fs.stats();
+
         // Configure mount options
         let opts = MountOptions {
             mount_point: mountpoint.to_path_buf(),
@@ -207,6 +259,7 @@ impl MountBackend for FSKitBackend {
         Ok(Box::new(FSKitMountHandle {
             _session: Box::new(session),
             mountpoint: mountpoint.to_path_buf(),
+            stats,
             runtime,
         }))
     }

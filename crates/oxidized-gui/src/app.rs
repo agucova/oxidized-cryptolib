@@ -4,10 +4,12 @@ use dioxus::prelude::*;
 
 use crate::backend::{cleanup_and_exit, mount_manager};
 use crate::components::{EmptyState, Sidebar, VaultDetail};
-use crate::dialogs::{AddVaultDialog, CreateVaultDialog, SettingsDialog};
+use crate::dialogs::{AddVaultDialog, CreateVaultDialog};
+use crate::menu::MenuBarEvent;
 use crate::state::{use_app_state, AppState, VaultConfig, VaultState};
 use crate::tray::menu::VaultAction;
 use crate::tray::{update_tray_menu, TrayEvent};
+use crate::windows::{SettingsWindow, StatsWindow, StatsWindowProps};
 
 #[cfg(all(target_os = "macos", feature = "fskit"))]
 use crate::dialogs::FSKitSetupDialog;
@@ -24,11 +26,11 @@ pub fn App() -> Element {
     let mut selected_vault = use_signal(|| None::<String>);
     let mut show_add_vault_dialog = use_signal(|| false);
     let mut show_create_vault_dialog = use_signal(|| false);
-    let mut show_settings_dialog = use_signal(|| false);
 
-    // Get theme class based on user preference
+    // Get theme and platform classes for styling
     let theme_class = app_state.read().config.theme.css_class().unwrap_or("");
-    let root_class = format!("flex h-screen bg-white dark:bg-neutral-900 {}", theme_class);
+    let platform_class = crate::current_platform().css_class();
+    let root_class = format!("app-root {} {}", theme_class, platform_class);
 
     rsx! {
         // Include Tailwind CSS
@@ -44,12 +46,12 @@ pub fn App() -> Element {
                 on_select: move |id: String| selected_vault.set(Some(id)),
                 on_add_vault: move |_| show_add_vault_dialog.set(true),
                 on_new_vault: move |_| show_create_vault_dialog.set(true),
-                on_settings: move |_| show_settings_dialog.set(true),
+                on_settings: move |_| open_settings_window(),
             }
 
             // Right panel with vault details or empty state
             div {
-                class: "flex-1 bg-gray-50 dark:bg-neutral-800 p-6 overflow-y-auto",
+                class: "content-panel",
 
                 if let Some(vault_id) = selected_vault() {
                     VaultDetail {
@@ -79,7 +81,9 @@ pub fn App() -> Element {
                         .file_name()
                         .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "New Vault".to_string());
-                    let config = VaultConfig::new(name, path);
+                    // Use the default backend from settings
+                    let default_backend = app_state.read().config.default_backend;
+                    let config = VaultConfig::with_backend(name, path, default_backend);
                     let id = config.id.clone();
                     app_state.write().add_vault(config);
                     selected_vault.set(Some(id));
@@ -89,25 +93,64 @@ pub fn App() -> Element {
             }
         }
 
-        // Settings dialog
-        if show_settings_dialog() {
-            SettingsDialog {
-                on_close: move |_| show_settings_dialog.set(false),
-            }
-        }
-
         // FSKit setup wizard (macOS only, conditionally compiled)
         FSKitSetupWrapper {}
 
         // Tray event handler
         TrayEventHandler {
-            on_show_settings: move |_| show_settings_dialog.set(true),
             on_select_vault: move |id: String| selected_vault.set(Some(id)),
+        }
+
+        // Menu bar event handler
+        MenuEventHandler {
+            on_add_vault: move |_| show_add_vault_dialog.set(true),
+            on_new_vault: move |_| show_create_vault_dialog.set(true),
         }
 
         // Tray menu updater - keeps tray menu in sync with vault state
         TrayMenuUpdater {}
     }
+}
+
+/// Open the settings window in a separate window
+fn open_settings_window() {
+    let window = dioxus::desktop::window();
+    let dom = VirtualDom::new(SettingsWindow);
+    // Build a menu for this window to maintain consistent menu bar
+    let menu = crate::menu::build_menu_bar();
+    let cfg = dioxus::desktop::Config::new()
+        .with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title("Settings")
+                .with_inner_size(dioxus::desktop::LogicalSize::new(580.0, 620.0))
+                .with_min_inner_size(dioxus::desktop::LogicalSize::new(480.0, 500.0))
+                .with_resizable(true),
+        )
+        .with_menu(menu);
+    window.new_window(dom, cfg);
+}
+
+/// Open the statistics window for a vault in a separate window
+pub fn open_stats_window(vault_id: String, vault_name: String) {
+    let window = dioxus::desktop::window();
+    let props = StatsWindowProps { vault_id, vault_name: vault_name.clone() };
+    let dom = VirtualDom::new_with_props(StatsWindow, props);
+    // Build a menu for this window to maintain consistent menu bar
+    let menu = crate::menu::build_menu_bar();
+    // Include CSS in head - workaround for asset loading in secondary windows with props
+    let css_path = asset!("/assets/tailwind.css");
+    let custom_head = format!(r#"<link rel="stylesheet" href="{}" />"#, css_path);
+    let cfg = dioxus::desktop::Config::new()
+        .with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title(format!("Statistics - {}", vault_name))
+                .with_inner_size(dioxus::desktop::LogicalSize::new(480.0, 520.0))
+                .with_min_inner_size(dioxus::desktop::LogicalSize::new(400.0, 400.0))
+                .with_resizable(true),
+        )
+        .with_custom_head(custom_head)
+        .with_menu(menu);
+    window.new_window(dom, cfg);
 }
 
 /// Wrapper component for FSKit setup dialog
@@ -169,10 +212,7 @@ fn FSKitSetupWrapper() -> Element {
 
 /// Component that handles tray menu events
 #[component]
-fn TrayEventHandler(
-    on_show_settings: EventHandler<()>,
-    on_select_vault: EventHandler<String>,
-) -> Element {
+fn TrayEventHandler(on_select_vault: EventHandler<String>) -> Element {
     let mut app_state = use_app_state();
 
     // Poll for tray events
@@ -183,7 +223,7 @@ fn TrayEventHandler(
                 // Check for tray events
                 if let Some(receiver) = crate::tray_receiver() {
                     while let Ok(event) = receiver.try_recv() {
-                        handle_tray_event(event, &mut app_state, &on_show_settings, &on_select_vault);
+                        handle_tray_event(event, &mut app_state, &on_select_vault);
                     }
                 }
                 // Wait a bit before polling again
@@ -199,7 +239,6 @@ fn TrayEventHandler(
 fn handle_tray_event(
     event: TrayEvent,
     app_state: &mut Signal<AppState>,
-    on_show_settings: &EventHandler<()>,
     on_select_vault: &EventHandler<String>,
 ) {
     match event {
@@ -214,11 +253,8 @@ fn handle_tray_event(
             }
         }
         TrayEvent::Settings => {
-            // Show settings dialog and bring window to front
-            let window = dioxus::desktop::window();
-            window.set_visible(true);
-            window.set_focus();
-            on_show_settings.call(());
+            // Open settings in a new window
+            open_settings_window();
         }
         TrayEvent::Vault(action) => {
             handle_vault_action(action, app_state, on_select_vault);
@@ -265,6 +301,29 @@ fn handle_vault_action(
                 }
             });
         }
+        VaultAction::ForceLock(vault_id) => {
+            // Force unmount the vault
+            let vault_id_clone = vault_id.clone();
+            let mut app_state = *app_state;
+            spawn(async move {
+                let manager = mount_manager();
+                let result =
+                    tokio::task::spawn_blocking(move || manager.force_unmount(&vault_id)).await;
+
+                match result {
+                    Ok(Ok(())) => {
+                        tracing::info!("Vault {} force locked via tray", vault_id_clone);
+                        app_state.write().set_vault_state(&vault_id_clone, VaultState::Locked);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("Failed to force lock vault via tray: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::error!("Force lock task panicked: {}", e);
+                    }
+                }
+            });
+        }
         VaultAction::Reveal(vault_id) => {
             // Open the vault location in file manager
             if let Some(vault) = app_state.read().get_vault(&vault_id) {
@@ -296,4 +355,80 @@ fn TrayMenuUpdater() -> Element {
     });
 
     rsx! {}
+}
+
+/// Component that handles menu bar events
+#[component]
+fn MenuEventHandler(on_add_vault: EventHandler<()>, on_new_vault: EventHandler<()>) -> Element {
+    // Poll for menu events
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                // Check for menu events
+                if let Some(receiver) = crate::menu_receiver() {
+                    while let Ok(event) = receiver.try_recv() {
+                        handle_menu_event(event, &on_add_vault, &on_new_vault);
+                    }
+                }
+                // Wait a bit before polling again
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+    });
+
+    rsx! {}
+}
+
+/// Handle a single menu bar event
+fn handle_menu_event(
+    event: MenuBarEvent,
+    on_add_vault: &EventHandler<()>,
+    on_new_vault: &EventHandler<()>,
+) {
+    match event {
+        MenuBarEvent::AddVault => {
+            let window = dioxus::desktop::window();
+            window.set_visible(true);
+            window.set_focus();
+            on_add_vault.call(());
+        }
+        MenuBarEvent::NewVault => {
+            let window = dioxus::desktop::window();
+            window.set_visible(true);
+            window.set_focus();
+            on_new_vault.call(());
+        }
+        MenuBarEvent::CloseWindow => {
+            let window = dioxus::desktop::window();
+            window.set_visible(false);
+        }
+        MenuBarEvent::Preferences => {
+            // Open settings in a new window
+            open_settings_window();
+        }
+        MenuBarEvent::Refresh => {
+            // Trigger a UI refresh - currently a no-op since Dioxus handles reactivity
+            tracing::debug!("Menu: Refresh triggered");
+        }
+        MenuBarEvent::Documentation => {
+            let _ = open::that("https://github.com/agucova/oxidized-cryptolib#readme");
+        }
+        MenuBarEvent::ReportIssue => {
+            let _ = open::that("https://github.com/agucova/oxidized-cryptolib/issues/new");
+        }
+        // Vault-specific actions would need the selected vault ID
+        // For now, these are handled via the VaultDetail panel
+        MenuBarEvent::UnlockVault
+        | MenuBarEvent::LockVault
+        | MenuBarEvent::RevealVault
+        | MenuBarEvent::ChangePassword
+        | MenuBarEvent::ChangeBackend
+        | MenuBarEvent::RemoveVault => {
+            tracing::debug!("Menu: Vault action {:?} - handled via VaultDetail", event);
+        }
+        // Window actions are handled by the system
+        MenuBarEvent::Minimize | MenuBarEvent::Zoom => {}
+        // Standard macOS items (About and Quit handled by system)
+        MenuBarEvent::About | MenuBarEvent::Quit => {}
+    }
 }

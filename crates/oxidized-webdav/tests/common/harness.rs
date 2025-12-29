@@ -11,6 +11,25 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 
+/// URL-encode a path component for use in Destination headers.
+/// This handles non-ASCII characters which must be percent-encoded in URIs.
+fn url_encode_path(path: &str) -> String {
+    let mut result = String::with_capacity(path.len() * 3);
+    for c in path.chars() {
+        // ASCII printable characters that are allowed in URI paths without encoding
+        // (except for '?' and '#' which would start query/fragment)
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/' | ':' | '@' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=') {
+            result.push(c);
+        } else {
+            // Percent-encode the UTF-8 bytes
+            for byte in c.to_string().as_bytes() {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
+}
+
 /// Test password for temporary vaults.
 pub const TEST_PASSWORD: &str = "test-password-12345";
 
@@ -140,6 +159,12 @@ impl TestServer {
         format!("{}{}", self.base_url, path)
     }
 
+    /// Build a URL-encoded URL for use in Destination headers.
+    /// Non-ASCII characters must be percent-encoded in HTTP headers.
+    fn url_encoded(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, url_encode_path(path))
+    }
+
     // ========== HTTP Convenience Methods ==========
 
     /// GET a file's contents.
@@ -252,7 +277,7 @@ impl TestServer {
     pub async fn copy(&self, from: &str, to: &str, overwrite: bool) -> Response {
         self.client
             .request(Method::from_bytes(b"COPY").unwrap(), self.url(from))
-            .header("Destination", self.url(to))
+            .header("Destination", self.url_encoded(to))
             .header("Overwrite", if overwrite { "T" } else { "F" })
             .send()
             .await
@@ -277,7 +302,7 @@ impl TestServer {
     pub async fn move_(&self, from: &str, to: &str, overwrite: bool) -> Response {
         self.client
             .request(Method::from_bytes(b"MOVE").unwrap(), self.url(from))
-            .header("Destination", self.url(to))
+            .header("Destination", self.url_encoded(to))
             .header("Overwrite", if overwrite { "T" } else { "F" })
             .send()
             .await

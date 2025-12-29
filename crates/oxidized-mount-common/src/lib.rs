@@ -5,6 +5,15 @@
 //!
 //! # Components
 //!
+//! ## Backend Abstraction
+//!
+//! - [`MountBackend`] - Trait for mounting mechanisms (FUSE, FSKit, WebDAV, NFS)
+//! - [`MountHandle`] - Handle to control a mounted filesystem's lifecycle
+//! - [`BackendType`] - Enum of available backend types
+//! - [`MountError`] - Error type for mount operations
+//!
+//! ## Implementation Utilities
+//!
 //! - [`WriteBuffer`] - Read-modify-write buffer for random-access file writes
 //! - [`TtlCache`] - Generic TTL-based cache with optional negative caching
 //! - [`VaultErrorCategory`] - Error classification for vault operations
@@ -70,12 +79,29 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+mod backend;
 mod error_category;
 mod handle_table;
+mod mount_utils;
+mod process_detection;
 pub mod stats;
+mod timeout_fs;
 mod ttl_cache;
 mod write_buffer;
 
+// Backend abstraction exports
+pub use backend::{
+    first_available_backend, list_backend_info, safe_sync, select_backend, BackendInfo,
+    BackendType, MountBackend, MountError, MountHandle,
+};
+pub use mount_utils::{
+    check_mountpoint_status, find_available_mountpoint, is_directory_readable, is_on_fuse_mount,
+    is_path_accessible, MountPointError, MountPointStatus, DEFAULT_ACCESS_TIMEOUT,
+};
+pub use process_detection::{find_processes_using_mount, ProcessInfo};
+pub use timeout_fs::{TimeoutFs, DEFAULT_FS_TIMEOUT};
+
+// Implementation utility exports
 pub use error_category::{io_error_to_errno, VaultErrorCategory};
 pub use handle_table::HandleTable;
 pub use stats::{ActivityStatus, CacheStats, VaultStats, VaultStatsSnapshot, format_bytes};

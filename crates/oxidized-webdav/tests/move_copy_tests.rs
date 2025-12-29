@@ -94,9 +94,14 @@ async fn test_move_file_overwrite_true() {
     server.put_ok("/dest.txt", b"original dest".to_vec()).await;
 
     let resp = server.move_("/source.txt", "/dest.txt", true).await;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    eprintln!("DEBUG: MOVE status={}, body={}", status, body);
     assert!(
-        resp.status().is_success() || resp.status() == StatusCode::NO_CONTENT,
-        "MOVE with overwrite=true failed"
+        status.is_success() || status == StatusCode::NO_CONTENT,
+        "MOVE with overwrite=true failed with status {}: {}",
+        status,
+        body
     );
 
     assert_not_found(&server, "/source.txt").await;
@@ -423,7 +428,15 @@ async fn test_move_unicode_filename() {
     server.put_ok("/文件.txt", content.to_vec()).await;
 
     let resp = server.move_("/文件.txt", "/档案.txt", false).await;
-    assert!(resp.status().is_success() || resp.status() == StatusCode::CREATED);
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    eprintln!("DEBUG: Unicode MOVE status: {}, body: {}", status, body);
+    assert!(
+        status.is_success() || status == StatusCode::CREATED,
+        "Unicode MOVE failed with status {}: {}",
+        status,
+        body
+    );
 
     assert_not_found(&server, "/文件.txt").await;
     assert_file_content(&server, "/档案.txt", content).await;

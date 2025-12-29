@@ -118,6 +118,50 @@ pub fn calculate_directory_lookup_paths(
     }
 }
 
+/// Calculate paths for looking up a symlink by its encrypted name.
+///
+/// For regular symlinks (.c9r format):
+/// - `entry_path` = `storage_path/{encrypted_name}.c9r`
+/// - `content_path` = `storage_path/{encrypted_name}.c9r/symlink.c9r`
+///
+/// For shortened symlinks (.c9s format):
+/// - `entry_path` = `storage_path/{hash}.c9s`
+/// - `content_path` = `storage_path/{hash}.c9s/symlink.c9r`
+///
+/// # Arguments
+///
+/// * `storage_path` - The parent directory's storage path (from `calculate_directory_storage_path`)
+/// * `encrypted_name` - The encrypted symlink name to look up
+/// * `shortening_threshold` - Names longer than this use .c9s format
+pub fn calculate_symlink_lookup_paths(
+    storage_path: &Path,
+    encrypted_name: &str,
+    shortening_threshold: usize,
+) -> EntryPaths {
+    let is_shortened = encrypted_name.len() > shortening_threshold;
+
+    if is_shortened {
+        let hash = create_c9s_filename(encrypted_name);
+        let entry_path = storage_path.join(format!("{hash}.c9s"));
+        let content_path = entry_path.join("symlink.c9r");
+        EntryPaths {
+            encrypted_name: encrypted_name.to_string(),
+            is_shortened: true,
+            entry_path,
+            content_path,
+        }
+    } else {
+        let entry_path = storage_path.join(format!("{encrypted_name}.c9r"));
+        let content_path = entry_path.join("symlink.c9r");
+        EntryPaths {
+            encrypted_name: encrypted_name.to_string(),
+            is_shortened: false,
+            entry_path,
+            content_path,
+        }
+    }
+}
+
 // ============================================================================
 // Directory Storage Path Calculation
 // ============================================================================

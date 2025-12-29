@@ -33,6 +33,9 @@ dashmap = "6"
 pin-project-lite = "0.2"
 oxidized-mount-common = { version = "0.1.0", path = "../oxidized-mount-common" }
 
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -42,3 +45,5 @@ tokio-test = "0.4"
 
 [features]
 default = []
+# Enable tokio-console for async debugging (run `tokio-console` in another terminal)
+tokio-console = ["dep:console-subscriber", "tokio/tracing"]

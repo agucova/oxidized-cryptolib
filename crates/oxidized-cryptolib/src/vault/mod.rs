@@ -5,6 +5,7 @@ pub mod creator;
 pub mod master_key;
 pub mod operations;
 pub mod ops;
+pub mod password;
 pub mod path;
 
 #[cfg(feature = "async")]
@@ -30,6 +31,9 @@ pub use creator::{VaultCreationError, VaultCreator};
 pub use master_key::{
     change_password, change_password_with_pepper, create_masterkey_file,
     create_masterkey_file_with_pepper, ChangePasswordError, MasterKeyCreationError, MasterKeyFile,
+};
+pub use password::{
+    PasswordValidationError, PasswordValidator, ValidatedPassword, DEFAULT_VALIDATION_TIMEOUT,
 };
 pub use operations::{
     debug_read_files_in_tree, DirEntry, VaultDirectoryInfo, VaultFileInfo, VaultOperationError,

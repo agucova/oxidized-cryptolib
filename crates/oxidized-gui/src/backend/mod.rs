@@ -12,22 +12,25 @@
 //!
 //! - `fuse`: FUSE backend (Linux, macOS) - requires macFUSE or libfuse
 //! - `fskit`: FSKit backend (macOS 15.4+) - native Apple framework
+//! - `nfs`: NFS backend (Linux, macOS) - no kernel extensions needed
 //! - `webdav`: WebDAV backend (all platforms) - no kernel extensions needed
 
 #![allow(dead_code)] // MountManager APIs for future use
 
 mod fuse;
 mod fskit;
+mod nfs;
 mod webdav;
 
 pub use fuse::FuseBackend;
 pub use fskit::FSKitBackend;
+pub use nfs::NfsBackend;
 pub use webdav::WebDavBackend;
 
-// Re-export traits and types from cryptolib
-pub use oxidized_cryptolib::{
-    BackendInfo, BackendType, MountBackend, MountError, MountHandle,
-    first_available_backend, list_backend_info, select_backend,
+// Re-export traits and types from mount-common
+pub use oxidized_mount_common::{
+    ActivityStatus, BackendInfo, BackendType, MountBackend, MountError, MountHandle, VaultStats,
+    first_available_backend, format_bytes, list_backend_info, select_backend,
 };
 
 use std::collections::HashMap;
@@ -67,6 +70,8 @@ impl MountManager {
                 Box::new(FSKitBackend::new()),
                 // FUSE as second choice (cross-platform Unix)
                 Box::new(FuseBackend::new()),
+                // NFS as third choice (no kernel extensions, Unix only)
+                Box::new(NfsBackend::new()),
                 // WebDAV as fallback (works everywhere, no kernel extensions)
                 Box::new(WebDavBackend::new()),
             ],
@@ -111,12 +116,9 @@ impl MountManager {
         // Use shared selection logic
         let backend = self.get_backend(backend_type)?;
 
-        // Create mount point directory if it doesn't exist
-        if !mountpoint.exists() {
-            std::fs::create_dir_all(mountpoint)?;
-        }
-
         // Mount using the selected backend
+        // The backend handles directory creation and stale mount detection
+        // with timeout protection internally
         let handle = backend.mount(vault_id, vault_path, password, mountpoint)?;
         let mp = handle.mountpoint().to_path_buf();
 
@@ -148,12 +150,9 @@ impl MountManager {
     ) -> Result<PathBuf, MountError> {
         let backend = first_available_backend(&self.backends)?;
 
-        // Create mount point directory if it doesn't exist
-        if !mountpoint.exists() {
-            std::fs::create_dir_all(mountpoint)?;
-        }
-
         // Mount using the selected backend
+        // The backend handles directory creation and stale mount detection
+        // with timeout protection internally
         let handle = backend.mount(vault_id, vault_path, password, mountpoint)?;
         let mp = handle.mountpoint().to_path_buf();
 
@@ -185,6 +184,23 @@ impl MountManager {
         }
     }
 
+    /// Force unmount a vault, even if files are open
+    ///
+    /// This uses OS-level force unmount mechanisms which may cause data loss
+    /// in applications with unsaved changes.
+    pub fn force_unmount(&self, vault_id: &str) -> Result<(), MountError> {
+        let mut mounts = self.mounts.lock().unwrap();
+
+        if let Some(handle) = mounts.remove(vault_id) {
+            let mountpoint = handle.mountpoint().to_path_buf();
+            handle.force_unmount()?;
+            tracing::info!("Force unmounted vault {} from {}", vault_id, mountpoint.display());
+            Ok(())
+        } else {
+            Err(MountError::NotMounted)
+        }
+    }
+
     /// Check if a vault is currently mounted
     pub fn is_mounted(&self, vault_id: &str) -> bool {
         let mounts = self.mounts.lock().unwrap();
@@ -195,6 +211,14 @@ impl MountManager {
     pub fn get_mountpoint(&self, vault_id: &str) -> Option<PathBuf> {
         let mounts = self.mounts.lock().unwrap();
         mounts.get(vault_id).map(|h| h.mountpoint().to_path_buf())
+    }
+
+    /// Get statistics for a mounted vault
+    ///
+    /// Returns None if the vault is not mounted or the backend doesn't support stats.
+    pub fn get_stats(&self, vault_id: &str) -> Option<Arc<VaultStats>> {
+        let mounts = self.mounts.lock().unwrap();
+        mounts.get(vault_id).and_then(|h| h.stats())
     }
 
     /// Unmount all vaults (called on shutdown)

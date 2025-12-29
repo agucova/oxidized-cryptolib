@@ -15,7 +15,7 @@ use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use oxidized_cryptolib::fs::streaming::encrypted_to_plaintext_size_or_zero_for_cipher;
 use oxidized_cryptolib::vault::operations_async::VaultOperationsAsync;
 use oxidized_cryptolib::vault::path::{DirId, VaultPath};
-use oxidized_mount_common::WriteBuffer;
+use oxidized_mount_common::{VaultStats, WriteBuffer};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, trace};
@@ -49,6 +49,8 @@ pub struct CryptomatorNFS {
     uid: u32,
     /// GID for all files (from process).
     gid: u32,
+    /// Statistics for monitoring vault activity.
+    stats: Arc<VaultStats>,
 }
 
 impl CryptomatorNFS {
@@ -66,7 +68,13 @@ impl CryptomatorNFS {
             generation,
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
+            stats: Arc::new(VaultStats::new()),
         }
+    }
+
+    /// Get the statistics for this filesystem.
+    pub fn stats(&self) -> Arc<VaultStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Flush a write buffer to the vault.
@@ -78,10 +86,15 @@ impl CryptomatorNFS {
             let len = buffer.len();
             if buffer.is_dirty() {
                 debug!(id, len, "Flushing write buffer to vault");
-                self.ops
+                self.stats.start_write();
+                let result = self.ops
                     .write_file(buffer.dir_id(), buffer.filename(), buffer.content())
                     .await
-                    .map_err(|e| vault_error_to_nfsstat(&e))?;
+                    .map_err(|e| vault_error_to_nfsstat(&e));
+                self.stats.finish_write();
+                result?;
+                // Record encrypted bytes written to vault
+                self.stats.record_encrypted(len);
             }
             Ok(len)
         } else {
@@ -283,8 +296,8 @@ impl NFSFileSystem for CryptomatorNFS {
             return Ok(self.inodes.get_or_insert(child_path, kind));
         }
 
-        // Try as symlink - check by attempting to read it
-        if self.ops.read_symlink(&dir_id, name).await.is_ok() {
+        // Try as symlink - use O(1) lookup instead of reading the full target
+        if self.ops.find_symlink(&dir_id, name).await.ok().flatten().is_some() {
             let kind = InodeKind::Symlink {
                 dir_id: dir_id.clone(),
                 name: name.to_string(),
@@ -321,13 +334,14 @@ impl NFSFileSystem for CryptomatorNFS {
                 Ok(self.file_attr(id, size))
             }
             InodeKind::Symlink { dir_id, name } => {
-                // Get symlink target length
-                let target = self
+                // Get symlink target length using O(1) lookup
+                let symlink_info = self
                     .ops
-                    .read_symlink(dir_id, name)
+                    .find_symlink(dir_id, name)
                     .await
-                    .map_err(|e| vault_error_to_nfsstat(&e))?;
-                Ok(self.symlink_attr(id, target.len() as u64))
+                    .map_err(|e| vault_error_to_nfsstat(&e))?
+                    .ok_or(nfsstat3::NFS3ERR_NOENT)?;
+                Ok(self.symlink_attr(id, symlink_info.target.len() as u64))
             }
         }
     }
@@ -394,12 +408,15 @@ impl NFSFileSystem for CryptomatorNFS {
             self.flush_buffer(id).await?;
         }
 
-        let decrypted = self
+        self.stats.start_read();
+        let result = self
             .ops
             .read_file(&dir_id, &name)
             .await
-            .map_err(|e| vault_error_to_nfsstat(&e))?;
+            .map_err(|e| vault_error_to_nfsstat(&e));
+        self.stats.finish_read();
 
+        let decrypted = result?;
         let content = &decrypted.content;
         let start = offset as usize;
         let end = (offset as usize + count as usize).min(content.len());
@@ -410,6 +427,10 @@ impl NFSFileSystem for CryptomatorNFS {
 
         let data = content[start..end].to_vec();
         let eof = end >= content.len();
+
+        // Record bytes read and decrypted
+        self.stats.record_read(data.len() as u64);
+        self.stats.record_decrypted(data.len() as u64);
 
         Ok((data, eof))
     }
@@ -429,6 +450,9 @@ impl NFSFileSystem for CryptomatorNFS {
         // Write to buffer
         buffer.write(offset, data);
         let new_size = buffer.len();
+
+        // Record bytes written
+        self.stats.record_write(data.len() as u64);
 
         // Return attributes with updated size
         // Note: We don't flush here - let read() or setattr() handle that
@@ -534,8 +558,8 @@ impl NFSFileSystem for CryptomatorNFS {
                 .delete_file(&dir_id, name)
                 .await
                 .map_err(|e| vault_error_to_nfsstat(&e))?;
-        } else if self.ops.read_symlink(&dir_id, name).await.is_ok() {
-            // It's a symlink
+        } else if self.ops.find_symlink(&dir_id, name).await.ok().flatten().is_some() {
+            // It's a symlink - use O(1) lookup
             self.ops
                 .delete_symlink(&dir_id, name)
                 .await

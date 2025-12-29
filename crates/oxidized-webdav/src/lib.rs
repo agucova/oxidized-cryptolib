@@ -21,7 +21,7 @@
 //!
 //! ```ignore
 //! use oxidized_webdav::WebDavBackend;
-//! use oxidized_cryptolib::mount::MountBackend;
+//! use oxidized_mount_common::MountBackend;
 //!
 //! let backend = WebDavBackend::new();
 //!

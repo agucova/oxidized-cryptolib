@@ -19,31 +19,32 @@ pub fn Sidebar(
 
     rsx! {
         div {
-            class: "w-[280px] min-w-[280px] bg-white dark:bg-neutral-900 border-r border-gray-200 dark:border-neutral-700 flex flex-col",
+            class: "sidebar",
 
             // Header
             div {
-                class: "p-4 border-b border-gray-100 dark:border-neutral-800",
+                class: "sidebar-header border-b border-gray-200/70 dark:border-neutral-800",
                 h1 {
-                    class: "text-lg font-semibold text-gray-900 dark:text-gray-100",
+                    class: "text-[15px] font-semibold text-gray-900 dark:text-gray-100",
                     "Vaults"
                 }
             }
 
             // Vault list
             div {
-                class: "flex-1 overflow-y-auto p-2",
+                class: "flex-1 overflow-y-auto py-2",
 
                 if vaults.is_empty() {
+                    // Empty state
                     div {
-                        class: "py-6 px-4 text-center",
+                        class: "py-8 px-4 text-center",
                         p {
-                            class: "mb-2 text-sm text-gray-600 dark:text-gray-400",
+                            class: "text-[13px] text-gray-600 dark:text-gray-400 mb-1",
                             "No vaults configured"
                         }
                         p {
-                            class: "text-xs text-gray-500",
-                            "Click + to add a vault"
+                            class: "text-[11px] text-gray-500 dark:text-gray-500",
+                            "Click \"New\" or \"Add\" to get started"
                         }
                     }
                 } else {

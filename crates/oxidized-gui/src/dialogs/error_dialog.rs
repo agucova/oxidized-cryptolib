@@ -5,6 +5,7 @@
 use dioxus::prelude::*;
 
 use crate::error::UserFacingError;
+use crate::icons::{Icon, IconColor, IconName, IconSize};
 
 /// Props for the error dialog
 #[derive(Props, Clone, PartialEq)]
@@ -40,8 +41,8 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
                     div {
                         class: "w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0",
                         span {
-                            class: "text-2xl",
-                            "❌"
+                            class: "icon-container",
+                            Icon { name: IconName::XCircle, size: IconSize(28), color: IconColor::Danger }
                         }
                     }
 
@@ -68,8 +69,8 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
                             class: "alert-info",
 
                             span {
-                                class: "text-base shrink-0",
-                                "💡"
+                                class: "icon-container shrink-0",
+                                Icon { name: IconName::InfoCircle, size: IconSize(18), color: IconColor::Accent }
                             }
 
                             p {

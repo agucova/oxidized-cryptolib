@@ -7,7 +7,13 @@ use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Maximum time allowed for a single benchmark run iteration.
+const RUN_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per iteration
+
+/// Maximum time for setup phase (creating test files).
+const SETUP_TIMEOUT: Duration = Duration::from_secs(120); // 2 minutes
 
 /// Cache clearing strategy based on available privileges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +187,13 @@ impl BenchmarkRunner {
                     anyhow::bail!("Interrupted");
                 }
 
+                // Skip benchmarks that exceed this backend's limits
+                if let Some(skip_reason) = self.should_skip_benchmark(benchmark.as_ref(), impl_type) {
+                    tracing::info!("Skipping {} for {}: {}", benchmark.name(), impl_type, skip_reason);
+                    progress.inc(1);
+                    continue;
+                }
+
                 progress.set_message(format!("{} - {}", impl_type, benchmark.name()));
 
                 let result = self.run_single_benchmark(
@@ -314,10 +327,22 @@ impl BenchmarkRunner {
         // Brief pause to let filesystem settle after cleanup
         std::thread::sleep(Duration::from_millis(100));
 
-        // Setup
+        // Setup with timeout check
+        let setup_start = Instant::now();
         benchmark
             .setup(mount_point)
             .with_context(|| format!("Setup failed for {}", benchmark.name()))?;
+
+        let setup_elapsed = setup_start.elapsed();
+        if setup_elapsed > SETUP_TIMEOUT {
+            anyhow::bail!(
+                "Setup for {} took {:?}, exceeding timeout of {:?}",
+                benchmark.name(),
+                setup_elapsed,
+                SETUP_TIMEOUT
+            );
+        }
+        tracing::debug!("Setup completed in {:?}", setup_elapsed);
 
         // Brief pause to let filesystem sync after setup
         std::thread::sleep(Duration::from_millis(100));
@@ -330,15 +355,40 @@ impl BenchmarkRunner {
             let _ = benchmark.run(mount_point);
         }
 
-        // Actual measurements
+        // Actual measurements with timeout enforcement
         let iterations = self.config.effective_iterations();
+        let mut timeout_count = 0;
         for i in 0..iterations {
             if self.should_stop() {
                 break;
             }
 
+            let iter_start = Instant::now();
             match benchmark.run(mount_point) {
                 Ok(duration) => {
+                    let wall_time = iter_start.elapsed();
+
+                    // Check if this iteration took too long
+                    if wall_time > RUN_TIMEOUT {
+                        timeout_count += 1;
+                        tracing::warn!(
+                            "Iteration {} of {} took {:?} (exceeds {:?} timeout)",
+                            i + 1,
+                            benchmark.name(),
+                            wall_time,
+                            RUN_TIMEOUT
+                        );
+                        // If too many timeouts, abort this benchmark
+                        if timeout_count >= 3 {
+                            tracing::error!(
+                                "Aborting {} after {} timeout violations",
+                                benchmark.name(),
+                                timeout_count
+                            );
+                            break;
+                        }
+                    }
+
                     result.add_sample(duration);
 
                     // Track bytes for throughput calculation

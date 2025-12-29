@@ -23,7 +23,7 @@ pub use oxidized_fskit::FSKitBackend;
 // When the fskit feature is disabled, provide a stub implementation
 #[cfg(not(feature = "fskit"))]
 mod stub {
-    use oxidized_cryptolib::{BackendType, MountBackend, MountError, MountHandle};
+    use oxidized_mount_common::{BackendType, MountBackend, MountError, MountHandle};
     use std::path::Path;
 
     /// FSKit-based mounting backend (stub)
@@ -100,7 +100,7 @@ pub use stub::FSKitBackend;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxidized_cryptolib::MountBackend;
+    use oxidized_mount_common::MountBackend;
 
     #[test]
     fn fskit_backend_id() {

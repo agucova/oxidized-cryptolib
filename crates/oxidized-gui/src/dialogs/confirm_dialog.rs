@@ -4,6 +4,8 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{Icon, IconColor, IconName, IconSize};
+
 /// Props for the confirmation dialog
 #[derive(Props, Clone, PartialEq)]
 pub struct ConfirmDialogProps {
@@ -70,8 +72,8 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
                             class: "alert-warning mt-4",
 
                             span {
-                                class: "text-base shrink-0",
-                                "⚠️"
+                                class: "icon-container shrink-0",
+                                Icon { name: IconName::Warning, size: IconSize(18), color: IconColor::Warning }
                             }
 
                             p {

@@ -638,8 +638,10 @@ mod tests {
         let masterkey_file: MasterKeyFile = serde_json::from_str(&json).unwrap();
 
         // Verify default parameters match Java implementation
+        // Note: cost param depends on OXCRYPT_FAST_KDF env var (1024 for fast, 32768 for production)
+        let expected_cost_param = if is_fast_kdf_enabled() { 1024 } else { 32768 };
         assert_eq!(masterkey_file.scrypt_salt.len(), 8, "Salt should be 8 bytes");
-        assert_eq!(masterkey_file.scrypt_cost_param, 32768, "Cost param should be 2^15");
+        assert_eq!(masterkey_file.scrypt_cost_param, expected_cost_param, "Cost param mismatch");
         assert_eq!(masterkey_file.scrypt_block_size, 8, "Block size should be 8");
         assert_eq!(masterkey_file.version, 999, "Version should be 999");
     }

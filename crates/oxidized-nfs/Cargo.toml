@@ -43,9 +43,14 @@ zeroize = "1"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "fs", "mount"] }
 
+# Optional: tokio-console for async debugging
+console-subscriber = { workspace = true, optional = true }
+
 [features]
 # Enable NFS integration tests
 nfs-tests = []
+# Enable tokio-console for async debugging (run `tokio-console` in another terminal)
+tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 
 [dev-dependencies]
 tempfile = "3"

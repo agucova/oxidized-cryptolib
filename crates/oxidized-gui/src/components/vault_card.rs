@@ -2,25 +2,33 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{ManagedVault, VaultState};
+use crate::icons::{Icon, IconName, IconSize};
+use crate::state::ManagedVault;
 
 /// A card component displaying a vault's name, path, and status
 #[component]
 pub fn VaultCard(vault: ManagedVault, is_selected: bool, on_click: EventHandler<()>) -> Element {
+    let is_mounted = vault.state.is_mounted();
+
+    // Card container classes using new design system
     let card_class = if is_selected {
-        "p-3 my-1 rounded-lg cursor-pointer transition-all bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800"
+        "vault-card vault-card-selected"
     } else {
-        "p-3 my-1 rounded-lg cursor-pointer transition-all bg-white dark:bg-neutral-800 border border-transparent hover:bg-gray-50 dark:hover:bg-neutral-700"
+        "vault-card"
     };
 
-    let status_icon_class = match &vault.state {
-        VaultState::Locked => "inline-flex items-center justify-center w-7 h-7 text-sm bg-gray-100 dark:bg-neutral-700 rounded-md",
-        VaultState::Mounted { .. } => "inline-flex items-center justify-center w-7 h-7 text-sm bg-green-100 dark:bg-green-900/30 rounded-md",
+    // Icon container classes
+    let icon_class = if is_mounted {
+        "vault-icon vault-icon-mounted"
+    } else {
+        "vault-icon vault-icon-locked"
     };
 
-    let status_icon = match &vault.state {
-        VaultState::Locked => "🔒",
-        VaultState::Mounted { .. } => "📂",
+    // Status icon
+    let icon_name = if is_mounted {
+        IconName::LockOpen
+    } else {
+        IconName::Lock
     };
 
     // Truncate path for display, using ~/ for home directory
@@ -46,36 +54,36 @@ pub fn VaultCard(vault: ManagedVault, is_selected: bool, on_click: EventHandler<
             class: "{card_class}",
             onclick: move |_| on_click.call(()),
 
-            // Header with icon and name
+            // Icon
             div {
-                class: "flex items-center gap-2 mb-1",
-
-                // Status icon with background
+                class: "{icon_class}",
                 span {
-                    class: "{status_icon_class}",
-                    "{status_icon}"
+                    class: "icon-container w-full h-full",
+                    Icon { name: icon_name, size: IconSize(20) }
                 }
+            }
 
-                span {
-                    class: "text-sm font-medium text-gray-900 dark:text-gray-100 flex-1 overflow-hidden text-ellipsis whitespace-nowrap",
+            // Content
+            div {
+                class: "flex-1 min-w-0",
+
+                // Name
+                p {
+                    class: "text-[13px] font-medium text-gray-900 dark:text-gray-100 truncate leading-snug",
                     "{vault.config.name}"
                 }
+
+                // Path
+                p {
+                    class: "text-[11px] text-gray-500 dark:text-gray-400 truncate mt-0.5",
+                    "{display_path}"
+                }
             }
 
-            // Path
-            div {
-                class: "text-xs text-gray-500 dark:text-gray-500 overflow-hidden text-ellipsis whitespace-nowrap ml-9",
-                "{display_path}"
-            }
-
-            // Status indicator for mounted vaults
-            if vault.state.is_mounted() {
-                if let Some(_mountpoint) = vault.state.mountpoint() {
-                    div {
-                        class: "text-xs text-green-600 dark:text-green-400 mt-2 ml-9 flex items-center gap-1",
-                        span { class: "w-1.5 h-1.5 bg-green-500 rounded-full" }
-                        "Mounted"
-                    }
+            // Mounted indicator dot (pulsing)
+            if is_mounted {
+                span {
+                    class: "vault-mounted-dot"
                 }
             }
         }
