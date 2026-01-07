@@ -78,7 +78,8 @@ impl LockMetrics {
     #[inline]
     pub fn record_blocking_task(&self, duration_ns: u64) {
         self.blocking_tasks.fetch_add(1, Ordering::Relaxed);
-        self.blocking_time_ns.fetch_add(duration_ns, Ordering::Relaxed);
+        self.blocking_time_ns
+            .fetch_add(duration_ns, Ordering::Relaxed);
     }
 
     /// Record a file handle insertion
@@ -171,13 +172,23 @@ impl LockMetricsSnapshot {
         println!("{}", "=".repeat(70));
 
         println!("\nFast Path Performance:");
-        println!("  Hits:   {:>10} ({:>5.1}% of attempts)",
+        println!(
+            "  Hits:   {:>10} ({:>5.1}% of attempts)",
             self.fast_path_hits,
-            if total_attempts > 0 { self.fast_path_hits as f64 / total_attempts as f64 * 100.0 } else { 0.0 }
+            if total_attempts > 0 {
+                self.fast_path_hits as f64 / total_attempts as f64 * 100.0
+            } else {
+                0.0
+            }
         );
-        println!("  Misses: {:>10} ({:>5.1}% of attempts)",
+        println!(
+            "  Misses: {:>10} ({:>5.1}% of attempts)",
             self.fast_path_misses,
-            if total_attempts > 0 { self.fast_path_misses as f64 / total_attempts as f64 * 100.0 } else { 0.0 }
+            if total_attempts > 0 {
+                self.fast_path_misses as f64 / total_attempts as f64 * 100.0
+            } else {
+                0.0
+            }
         );
         println!("  Hit Rate: {:.1}%", hit_rate);
 
@@ -187,7 +198,10 @@ impl LockMetricsSnapshot {
         println!("\nLock Requests:");
         println!("  Directory: {:>10}", self.directory_lock_requests);
         println!("  File:      {:>10}", self.file_lock_requests);
-        println!("  Total:     {:>10}", self.directory_lock_requests + self.file_lock_requests);
+        println!(
+            "  Total:     {:>10}",
+            self.directory_lock_requests + self.file_lock_requests
+        );
 
         println!("\nBlocking Tasks (spawn_blocking):");
         println!("  Count:     {:>10}", self.blocking_tasks);
@@ -202,8 +216,10 @@ impl LockMetricsSnapshot {
         println!("  Insertions: {:>10}", self.handle_insertions);
         println!("  Retrievals: {:>10}", self.handle_retrievals);
         println!("  Removals:   {:>10}", self.handle_removals);
-        println!("  Net Open:   {:>10}",
-            self.handle_insertions.saturating_sub(self.handle_removals));
+        println!(
+            "  Net Open:   {:>10}",
+            self.handle_insertions.saturating_sub(self.handle_removals)
+        );
 
         println!("\n{}", "=".repeat(70));
     }

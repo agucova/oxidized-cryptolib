@@ -86,7 +86,9 @@ fn test_list_file_as_directory() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("not_a_dir.txt", b"content").expect("write failed");
+    mount
+        .write("not_a_dir.txt", b"content")
+        .expect("write failed");
 
     let result = mount.list("not_a_dir.txt");
     assert!(result.is_err());
@@ -178,7 +180,9 @@ fn test_rmdir_non_empty() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("non_empty").expect("mkdir failed");
-    mount.write("non_empty/file.txt", b"content").expect("write failed");
+    mount
+        .write("non_empty/file.txt", b"content")
+        .expect("write failed");
 
     let result = mount.rmdir("non_empty");
     assert!(result.is_err());
@@ -224,7 +228,9 @@ fn test_mkdir_where_file_exists() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("existing_file", b"content").expect("write failed");
+    mount
+        .write("existing_file", b"content")
+        .expect("write failed");
 
     let result = mount.mkdir("existing_file");
     assert!(result.is_err());
@@ -243,7 +249,9 @@ fn test_read_link_on_regular_file() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("regular.txt", b"content").expect("write failed");
+    mount
+        .write("regular.txt", b"content")
+        .expect("write failed");
 
     let result = mount.read_link("regular.txt");
     assert!(result.is_err());
@@ -302,7 +310,9 @@ fn test_double_slash_normalized() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("dir").expect("mkdir failed");
-    mount.write("dir/file.txt", b"content").expect("write failed");
+    mount
+        .write("dir/file.txt", b"content")
+        .expect("write failed");
 
     // Double slash should be normalized
     let content = mount.read("dir//file.txt").expect("read should work");
@@ -341,10 +351,14 @@ fn test_self_and_parent_in_path() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("dir").expect("mkdir failed");
-    mount.write("dir/file.txt", b"content").expect("write failed");
+    mount
+        .write("dir/file.txt", b"content")
+        .expect("write failed");
 
     // dir/./../dir/./file.txt should resolve to dir/file.txt
-    let content = mount.read("dir/./../dir/./file.txt").expect("read should work");
+    let content = mount
+        .read("dir/./../dir/./file.txt")
+        .expect("read should work");
     assert_eq!(content, b"content");
 }
 

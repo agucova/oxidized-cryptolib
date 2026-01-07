@@ -7,10 +7,10 @@ mod common;
 
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::file::{
+    DecryptedFile, FileContext, FileDecryptionError, FileEncryptionError, FileError,
     decrypt_dir_id_backup, decrypt_file, decrypt_file_content, decrypt_file_content_with_context,
     decrypt_file_header, decrypt_file_header_with_context, decrypt_file_with_context,
-    encrypt_dir_id_backup, encrypt_file_content, encrypt_file_header, DecryptedFile,
-    FileContext, FileDecryptionError, FileEncryptionError, FileError,
+    encrypt_dir_id_backup, encrypt_file_content, encrypt_file_header,
 };
 use rand::RngCore;
 use std::io;
@@ -52,7 +52,10 @@ fn test_file_context_display_with_empty_dir_id() {
     // Empty dir_id (root) should display as <root>
     let context = FileContext::new().with_dir_id("");
     let display = format!("{context}");
-    assert!(display.contains("<root>"), "Expected '<root>', got: {display}");
+    assert!(
+        display.contains("<root>"),
+        "Expected '<root>', got: {display}"
+    );
 }
 
 #[test]
@@ -60,7 +63,10 @@ fn test_file_context_display_with_short_dir_id() {
     // Short dir_id (8 or fewer chars) should be shown in full
     let context = FileContext::new().with_dir_id("12345678");
     let display = format!("{context}");
-    assert!(display.contains("12345678"), "Expected full dir_id, got: {display}");
+    assert!(
+        display.contains("12345678"),
+        "Expected full dir_id, got: {display}"
+    );
 }
 
 #[test]
@@ -68,21 +74,30 @@ fn test_file_context_display_with_long_dir_id() {
     // Long dir_id (> 8 chars) should be truncated with "..."
     let context = FileContext::new().with_dir_id("123456789abcdef");
     let display = format!("{context}");
-    assert!(display.contains("12345678..."), "Expected truncated dir_id, got: {display}");
+    assert!(
+        display.contains("12345678..."),
+        "Expected truncated dir_id, got: {display}"
+    );
 }
 
 #[test]
 fn test_file_context_display_with_chunk() {
     let context = FileContext::new().with_chunk(5);
     let display = format!("{context}");
-    assert!(display.contains("chunk 5"), "Expected 'chunk 5', got: {display}");
+    assert!(
+        display.contains("chunk 5"),
+        "Expected 'chunk 5', got: {display}"
+    );
 }
 
 #[test]
 fn test_file_context_display_with_path() {
     let context = FileContext::new().with_path("/some/encrypted/path");
     let display = format!("{context}");
-    assert!(display.contains("/some/encrypted/path"), "Expected path, got: {display}");
+    assert!(
+        display.contains("/some/encrypted/path"),
+        "Expected path, got: {display}"
+    );
 }
 
 #[test]
@@ -95,8 +110,14 @@ fn test_file_context_display_combined() {
 
     let display = format!("{context}");
 
-    assert!(display.contains("file 'secret.txt'"), "Missing filename in: {display}");
-    assert!(display.contains("abcdefgh..."), "Missing truncated dir_id in: {display}");
+    assert!(
+        display.contains("file 'secret.txt'"),
+        "Missing filename in: {display}"
+    );
+    assert!(
+        display.contains("abcdefgh..."),
+        "Missing truncated dir_id in: {display}"
+    );
     assert!(display.contains("chunk 3"), "Missing chunk in: {display}");
     assert!(display.contains("AB/XYZ"), "Missing path in: {display}");
 }
@@ -204,15 +225,14 @@ fn test_incomplete_chunk_with_context() {
     let incomplete_chunk = vec![0u8; 15];
     let context = FileContext::new().with_filename("test.bin");
 
-    let result = decrypt_file_content_with_context(
-        &incomplete_chunk,
-        &content_key,
-        &header_nonce,
-        &context,
-    );
+    let result =
+        decrypt_file_content_with_context(&incomplete_chunk, &content_key, &header_nonce, &context);
 
     match result {
-        Err(FileDecryptionError::IncompleteChunk { context, actual_size }) => {
+        Err(FileDecryptionError::IncompleteChunk {
+            context,
+            actual_size,
+        }) => {
             assert_eq!(actual_size, 15);
             assert!(context.filename.as_deref() == Some("test.bin"));
             // The chunk number should be set to 0 (first chunk)
@@ -265,7 +285,12 @@ fn test_content_tampered_second_chunk() {
 
     match result {
         Err(FileDecryptionError::ContentDecryption { context }) => {
-            assert_eq!(context.chunk_number, Some(1), "Expected chunk 1, got: {:?}", context.chunk_number);
+            assert_eq!(
+                context.chunk_number,
+                Some(1),
+                "Expected chunk 1, got: {:?}",
+                context.chunk_number
+            );
         }
         other => panic!("Expected ContentDecryption error for chunk 1, got: {other:?}"),
     }
@@ -319,7 +344,10 @@ fn test_decrypt_dir_marker_file() {
 
     match result {
         Err(FileError::Decryption(FileDecryptionError::InvalidHeader { reason, .. })) => {
-            assert!(reason.contains("dir.c9r"), "Error should mention dir.c9r: {reason}");
+            assert!(
+                reason.contains("dir.c9r"),
+                "Error should mention dir.c9r: {reason}"
+            );
         }
         other => panic!("Expected InvalidHeader error about dir.c9r, got: {other:?}"),
     }
@@ -338,8 +366,14 @@ fn test_decrypt_file_too_small() {
 
     match result {
         Err(FileError::Decryption(FileDecryptionError::InvalidHeader { reason, .. })) => {
-            assert!(reason.contains("too small"), "Error should mention size: {reason}");
-            assert!(reason.contains("50"), "Error should mention actual size: {reason}");
+            assert!(
+                reason.contains("too small"),
+                "Error should mention size: {reason}"
+            );
+            assert!(
+                reason.contains("50"),
+                "Error should mention actual size: {reason}"
+            );
         }
         other => panic!("Expected InvalidHeader error about size, got: {other:?}"),
     }
@@ -355,7 +389,8 @@ fn test_decrypt_file_with_context_preserves_context() {
     let content_key = generate_content_key();
     let header = encrypt_file_header(&content_key, &master_key).unwrap();
     let header_nonce: [u8; 12] = header[..12].try_into().unwrap();
-    let encrypted_content = encrypt_file_content(b"Test content", &content_key, &header_nonce).unwrap();
+    let encrypted_content =
+        encrypt_file_content(b"Test content", &content_key, &header_nonce).unwrap();
 
     let mut file_data = header;
     file_data.extend_from_slice(&encrypted_content);
@@ -563,7 +598,10 @@ fn test_incomplete_chunk_with_context_transformation() {
     let transformed = original.with_context(new_context);
 
     match transformed {
-        FileDecryptionError::IncompleteChunk { context, actual_size } => {
+        FileDecryptionError::IncompleteChunk {
+            context,
+            actual_size,
+        } => {
             assert_eq!(actual_size, 15); // Size should be preserved
             assert_eq!(context.filename.as_deref(), Some("partial.bin"));
         }
@@ -704,11 +742,20 @@ fn test_decrypted_file_debug_short_content() {
     let debug_str = format!("{decrypted:?}");
 
     // Should contain the full content (< 100 bytes)
-    assert!(debug_str.contains("Hello, World!"), "Debug should show content: {debug_str}");
+    assert!(
+        debug_str.contains("Hello, World!"),
+        "Debug should show content: {debug_str}"
+    );
     // Should NOT contain "..." for short content
-    assert!(!debug_str.ends_with("...\""), "Short content should not be truncated: {debug_str}");
+    assert!(
+        !debug_str.ends_with("...\""),
+        "Short content should not be truncated: {debug_str}"
+    );
     // Content key should be redacted
-    assert!(debug_str.contains("[REDACTED]"), "Content key should be redacted: {debug_str}");
+    assert!(
+        debug_str.contains("[REDACTED]"),
+        "Content key should be redacted: {debug_str}"
+    );
 }
 
 #[test]
@@ -719,17 +766,20 @@ fn test_decrypted_file_debug_long_content() {
     };
 
     let content = vec![b'A'; 200]; // 200 bytes, > 100 byte limit
-    let decrypted = DecryptedFile {
-        header,
-        content,
-    };
+    let decrypted = DecryptedFile { header, content };
 
     let debug_str = format!("{decrypted:?}");
 
     // Should contain truncated content with "..."
-    assert!(debug_str.contains("..."), "Long content should be truncated: {debug_str}");
+    assert!(
+        debug_str.contains("..."),
+        "Long content should be truncated: {debug_str}"
+    );
     // Should contain the tag in hex
-    assert!(debug_str.contains("4242424242"), "Should show tag in hex: {debug_str}");
+    assert!(
+        debug_str.contains("4242424242"),
+        "Should show tag in hex: {debug_str}"
+    );
 }
 
 #[test]
@@ -747,7 +797,10 @@ fn test_decrypted_file_debug_empty_content() {
     let debug_str = format!("{decrypted:?}");
 
     // Should handle empty content gracefully
-    assert!(debug_str.contains("DecryptedFile"), "Should be a valid debug output: {debug_str}");
+    assert!(
+        debug_str.contains("DecryptedFile"),
+        "Should be a valid debug output: {debug_str}"
+    );
 }
 
 #[test]
@@ -759,15 +812,15 @@ fn test_decrypted_file_debug_binary_content() {
 
     // Binary content that's not valid UTF-8
     let content = vec![0xFF, 0xFE, 0x00, 0x01, 0x02];
-    let decrypted = DecryptedFile {
-        header,
-        content,
-    };
+    let decrypted = DecryptedFile { header, content };
 
     let debug_str = format!("{decrypted:?}");
 
     // Should handle binary content with lossy conversion
-    assert!(debug_str.contains("DecryptedFile"), "Should produce valid debug output: {debug_str}");
+    assert!(
+        debug_str.contains("DecryptedFile"),
+        "Should produce valid debug output: {debug_str}"
+    );
 }
 
 // =============================================================================
@@ -784,12 +837,20 @@ fn test_file_header_debug_redacts_key() {
     let debug_str = format!("{header:?}");
 
     // Content key should be redacted
-    assert!(debug_str.contains("[REDACTED]"), "Content key should be redacted: {debug_str}");
+    assert!(
+        debug_str.contains("[REDACTED]"),
+        "Content key should be redacted: {debug_str}"
+    );
     // Should NOT contain the actual key bytes
-    assert!(!debug_str.contains("42424242"), "Should not expose key bytes: {debug_str}");
+    assert!(
+        !debug_str.contains("42424242"),
+        "Should not expose key bytes: {debug_str}"
+    );
     // Tag should be shown in hex
-    assert!(debug_str.contains("abab") || debug_str.contains("ABAB"),
-            "Tag should be shown in hex: {debug_str}");
+    assert!(
+        debug_str.contains("abab") || debug_str.contains("ABAB"),
+        "Tag should be shown in hex: {debug_str}"
+    );
 }
 
 // =============================================================================
@@ -849,23 +910,35 @@ fn test_file_error_display() {
     let error = FileError::io_with_context(io_error, context);
 
     let display = format!("{error}");
-    assert!(display.contains("IO error"), "Should mention IO error: {display}");
-    assert!(display.contains("missing.txt"), "Should mention filename: {display}");
+    assert!(
+        display.contains("IO error"),
+        "Should mention IO error: {display}"
+    );
+    assert!(
+        display.contains("missing.txt"),
+        "Should mention filename: {display}"
+    );
 }
 
 #[test]
 fn test_file_decryption_error_display() {
-    let context = FileContext::new()
-        .with_filename("secret.bin")
-        .with_chunk(3);
+    let context = FileContext::new().with_filename("secret.bin").with_chunk(3);
 
     let error = FileDecryptionError::ContentDecryption { context };
     let display = format!("{error}");
 
-    assert!(display.contains("secret.bin"), "Should mention filename: {display}");
-    assert!(display.contains("chunk 3"), "Should mention chunk: {display}");
-    assert!(display.contains("authentication") || display.contains("tampering"),
-            "Should mention auth failure: {display}");
+    assert!(
+        display.contains("secret.bin"),
+        "Should mention filename: {display}"
+    );
+    assert!(
+        display.contains("chunk 3"),
+        "Should mention chunk: {display}"
+    );
+    assert!(
+        display.contains("authentication") || display.contains("tampering"),
+        "Should mention auth failure: {display}"
+    );
 }
 
 #[test]
@@ -877,6 +950,12 @@ fn test_file_encryption_error_display() {
     };
 
     let display = format!("{error}");
-    assert!(display.contains("output.bin"), "Should mention filename: {display}");
-    assert!(display.contains("test failure"), "Should mention reason: {display}");
+    assert!(
+        display.contains("output.bin"),
+        "Should mention filename: {display}"
+    );
+    assert!(
+        display.contains("test failure"),
+        "Should mention reason: {display}"
+    );
 }

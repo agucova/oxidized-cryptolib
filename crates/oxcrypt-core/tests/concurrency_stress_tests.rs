@@ -18,14 +18,12 @@
 #![cfg(feature = "async")]
 
 use oxcrypt_core::vault::{
-    handles::VaultHandleTable,
-    locks::VaultLockManager,
-    operations_async::VaultOperationsAsync,
+    handles::VaultHandleTable, locks::VaultLockManager, operations_async::VaultOperationsAsync,
     path::DirId,
 };
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::task::JoinSet;
 
@@ -78,7 +76,11 @@ fn setup_write_test_vault() -> (PathBuf, [u8; 32], [u8; 32]) {
 }
 
 /// Helper to create VaultOperationsAsync from components
-fn create_ops(vault_path: &std::path::Path, enc_key: &[u8; 32], mac_key: &[u8; 32]) -> Arc<VaultOperationsAsync> {
+fn create_ops(
+    vault_path: &std::path::Path,
+    enc_key: &[u8; 32],
+    mac_key: &[u8; 32],
+) -> Arc<VaultOperationsAsync> {
     use oxcrypt_core::crypto::keys::MasterKey;
     let master_key = Arc::new(MasterKey::new(*enc_key, *mac_key).unwrap());
     VaultOperationsAsync::new(vault_path, master_key).into_shared()
@@ -317,10 +319,9 @@ async fn concurrency_happy_concurrent_list_operations() {
     let root1 = root.clone();
     let root2 = root.clone();
 
-    let (result1, result2) = tokio::join!(
-        async { ops1.list_files(&root1).await },
-        async { ops2.list_files(&root2).await }
-    );
+    let (result1, result2) = tokio::join!(async { ops1.list_files(&root1).await }, async {
+        ops2.list_files(&root2).await
+    });
 
     let files1 = result1.unwrap();
     let files2 = result2.unwrap();
@@ -366,7 +367,10 @@ async fn concurrency_stress_lock_contention() {
     })
     .await;
 
-    assert!(result.is_ok(), "Stress test should complete without timeout");
+    assert!(
+        result.is_ok(),
+        "Stress test should complete without timeout"
+    );
 
     // All increments should have happened
     let final_count = counter.load(Ordering::SeqCst);

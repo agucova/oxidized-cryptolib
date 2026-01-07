@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 
 use std::{
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -11,11 +10,11 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
-    crypto::keys::{MasterKey, JwtValidationError, KeyAccessError},
     crypto::CryptoError,
+    crypto::keys::{JwtValidationError, KeyAccessError, MasterKey},
     fs::file::{
-        decrypt_file_content, decrypt_file_header, encrypt_file_content, encrypt_file_header,
-        DecryptedFile, FileContext, FileDecryptionError, FileEncryptionError,
+        DecryptedFile, FileContext, FileDecryptionError, FileEncryptionError, decrypt_file_content,
+        decrypt_file_header, encrypt_file_content, encrypt_file_header,
     },
     fs::file_ctrmac,
     vault::master_key::MasterKeyFile,
@@ -134,11 +133,12 @@ impl CipherCombo {
                 Ok(data)
             }
             CipherCombo::SivCtrMac => {
-                let header = file_ctrmac::encrypt_header(content_key, master_key)
-                    .map_err(|e| FileEncryptionError::HeaderEncryption {
+                let header = file_ctrmac::encrypt_header(content_key, master_key).map_err(|e| {
+                    FileEncryptionError::HeaderEncryption {
                         reason: format!("CTRMAC header encryption failed: {e}"),
                         context: FileContext::new(),
-                    })?;
+                    }
+                })?;
                 let header_nonce: [u8; file_ctrmac::NONCE_SIZE] =
                     header[0..file_ctrmac::NONCE_SIZE].try_into().unwrap();
 
@@ -203,11 +203,8 @@ impl CipherCombo {
                 let header = decrypt_file_header(&encrypted_data[..68], master_key)?;
                 // Header nonce is the first 12 bytes of the encrypted header
                 let header_nonce = &encrypted_data[0..12];
-                let content = decrypt_file_content(
-                    &encrypted_data[68..],
-                    &header.content_key,
-                    header_nonce,
-                )?;
+                let content =
+                    decrypt_file_content(&encrypted_data[68..], &header.content_key, header_nonce)?;
 
                 Ok(DecryptedFile { header, content })
             }
@@ -228,7 +225,9 @@ impl CipherCombo {
                     master_key,
                     &context,
                 )
-                .map_err(|_| FileDecryptionError::HeaderDecryption { context: context.clone() })?;
+                .map_err(|_| FileDecryptionError::HeaderDecryption {
+                    context: context.clone(),
+                })?;
 
                 let content = master_key
                     .with_mac_key(|mac_key| {
@@ -241,7 +240,9 @@ impl CipherCombo {
                         )
                     })
                     .map_err(FileDecryptionError::KeyAccess)?
-                    .map_err(|_| FileDecryptionError::ContentDecryption { context: context.clone() })?;
+                    .map_err(|_| FileDecryptionError::ContentDecryption {
+                        context: context.clone(),
+                    })?;
 
                 // Convert CTRMAC header to GCM-style FileHeader for uniform API
                 use crate::fs::file::FileHeader;
@@ -479,9 +480,7 @@ pub fn validate_vault_claims(
     }
 
     if claims.format != 8 {
-        return Err(ClaimValidationError::UnsupportedVaultFormat(
-            claims.format,
-        ));
+        return Err(ClaimValidationError::UnsupportedVaultFormat(claims.format));
     }
 
     Ok(claims)
@@ -536,11 +535,7 @@ mod tests {
         };
 
         let encoding_key = master_key.create_jwt_encoding_key().unwrap();
-        let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
-            &claims,
-            &encoding_key,
-        );
+        let token = jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &encoding_key);
 
         let validated_claims = validate_vault_claims(&token.unwrap(), &master_key).unwrap();
         assert_eq!(claims, validated_claims);
@@ -557,12 +552,8 @@ mod tests {
         };
 
         let encoding_key = master_key.create_jwt_encoding_key().unwrap();
-        let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
-            &claims,
-            &encoding_key,
-        )
-        .unwrap();
+        let token =
+            jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &encoding_key).unwrap();
 
         // Replace the base64 encoded cipher combo with a different one
         let tampered_token = {
@@ -579,8 +570,7 @@ mod tests {
         let result = validate_vault_claims(&tampered_token, &master_key);
         println!("{result:?}");
         match result {
-            Err(ClaimValidationError::JwtDecode(_) |
-ClaimValidationError::JwtValidation(_)) => (),
+            Err(ClaimValidationError::JwtDecode(_) | ClaimValidationError::JwtValidation(_)) => (),
             Ok(_) => panic!("Tampered token was validated successfully"),
             Err(e) => panic!("Unexpected error: {e:?}"),
         }
@@ -597,12 +587,8 @@ ClaimValidationError::JwtValidation(_)) => (),
         };
 
         let encoding_key = master_key.create_jwt_encoding_key().unwrap();
-        let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
-            &claims,
-            &encoding_key,
-        )
-        .unwrap();
+        let token =
+            jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &encoding_key).unwrap();
 
         let validated_claims = validate_vault_claims(&token, &master_key).unwrap();
         assert_eq!(validated_claims.shortening_threshold(), 150);

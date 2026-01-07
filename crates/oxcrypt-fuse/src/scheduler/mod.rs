@@ -25,7 +25,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! let scheduler = FuseScheduler::new(handle_table, vault_stats);
+//! let scheduler = FuseScheduler::new(handle_table, vault_stats, attr_cache, buffer_sizes);
 //!
 //! // In FUSE callback:
 //! if let Err(e) = scheduler.try_enqueue_read(request) {
@@ -53,26 +53,29 @@ pub use executor::{
     FsSyscallExecutor, SubmitError,
 };
 pub use lane::{
-    classify_metadata, classify_read, classify_structural, Lane, LaneCapacities, LaneDeadlines,
-    LaneReservations, BULK_READ_THRESHOLD,
+    BULK_READ_THRESHOLD, Lane, LaneCapacities, LaneDeadlines, LaneReservations, classify_metadata,
+    classify_read, classify_structural,
 };
+pub use per_file::{FileState, PerFileOrdering, PerFileStats};
 pub use queue::{AdmissionError, AggregatedLaneStats, LaneQueues, LaneStats, QueuedRequest};
 pub use read_cache::{ReadCache, ReadCacheConfig, ReadCacheKey, ReadCacheStats};
 pub use request::{
-    CopyRangeRequest, CopyRangeResult, FuseRequest, FuseResult, QueuedCopyRangeJob, QueuedJob,
-    QueuedReadJob, QueuedStructuralJob, ReadRequest, ReadResult, RequestId, RequestIdGenerator,
-    RequestState, SetattrParams, StructuralOp, StructuralReply, StructuralRequest, StructuralResult,
+    CopyRangeRequest, CopyRangeResult, DirectoryEntry, DirectoryEntryPlus, FuseRequest, FuseResult,
+    HazardousOp, HazardousOpHandler, HazardousReply, HazardousRequest, HazardousResult,
+    QueuedCopyRangeJob, QueuedHazardousJob, QueuedJob, QueuedReadJob, QueuedStructuralJob,
+    ReadRequest, ReadResult, RequestId, RequestIdGenerator, RequestState, SetattrParams,
+    StructuralOp, StructuralReply, StructuralRequest, StructuralResult,
 };
 pub use single_flight::{AttachResult, InFlightReads, ReadKey, SingleFlightStats};
-pub use per_file::{FileState, PerFileOrdering, PerFileStats};
 pub use stats::{SchedulerSnapshot, SchedulerStats};
 
+use crate::attr::AttrCache;
 use crate::handles::{FuseHandle, FuseHandleTable};
 use dashmap::DashMap;
 use fuser::{ReplyData, ReplyWrite};
 use oxcrypt_mount::VaultStats;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -86,6 +89,15 @@ pub const DEFAULT_WRITE_BUDGET_GLOBAL: u64 = 256 * 1024 * 1024;
 
 /// Default per-file write budget (32 MiB).
 pub const DEFAULT_WRITE_BUDGET_PER_FILE: u64 = 32 * 1024 * 1024;
+
+fn classify_hazardous(op: &HazardousOp) -> Lane {
+    match op {
+        HazardousOp::Readdir { .. } | HazardousOp::ReaddirPlus { .. } => Lane::Metadata,
+        HazardousOp::Release { .. } | HazardousOp::Flush { .. } | HazardousOp::Fsync { .. } => {
+            Lane::WriteStructural
+        }
+    }
+}
 
 /// Configuration for the scheduler.
 #[derive(Debug, Clone)]
@@ -110,6 +122,67 @@ pub struct SchedulerConfig {
     /// Per-file write budget in bytes (size of individual dirty write buffer).
     /// When exceeded for a file, writes to that file return EAGAIN.
     pub write_budget_per_file: u64,
+}
+
+/// Shared scheduler state for off-thread hazardous operations.
+#[derive(Clone)]
+pub struct SchedulerShared {
+    pending_writes_by_file: Arc<DashMap<u64, AtomicU64>>,
+    writes_complete_notify: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
+    write_bytes_global: Arc<AtomicU64>,
+    write_bytes_by_file: Arc<DashMap<u64, AtomicU64>>,
+    read_cache: Arc<ReadCache>,
+}
+
+impl SchedulerShared {
+    /// Check if there are pending writes to a file.
+    pub fn has_pending_writes(&self, ino: u64) -> bool {
+        self.pending_writes_by_file
+            .get(&ino)
+            .map(|c| c.load(Ordering::Acquire) > 0)
+            .unwrap_or(false)
+    }
+
+    /// Wait for pending writes to complete up to a timeout.
+    pub fn wait_pending_writes(&self, ino: u64, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let (lock, condvar) = &*self.writes_complete_notify;
+
+        loop {
+            let remaining = match deadline.checked_duration_since(Instant::now()) {
+                Some(r) => r,
+                None => return false,
+            };
+
+            if !self.has_pending_writes(ino) {
+                return true;
+            }
+
+            let guard = lock.lock().unwrap();
+            let _ = condvar.wait_timeout(guard, remaining).unwrap();
+        }
+    }
+
+    /// Release all tracked write bytes for a file.
+    pub fn release_all_file_write_bytes(&self, ino: u64) -> u64 {
+        let file_bytes = self
+            .write_bytes_by_file
+            .remove(&ino)
+            .map(|(_, counter)| counter.load(Ordering::Acquire))
+            .unwrap_or(0);
+
+        if file_bytes > 0 {
+            self.write_bytes_global
+                .fetch_sub(file_bytes, Ordering::Release);
+        }
+
+        file_bytes
+    }
+
+    /// Invalidate all cached read data for an inode.
+    pub fn invalidate_read_cache_inode(&self, ino: u64) {
+        self.read_cache.invalidate_inode(ino);
+    }
 }
 
 impl Default for SchedulerConfig {
@@ -147,6 +220,13 @@ impl SchedulerConfig {
     #[must_use]
     pub fn with_lane_deadlines(mut self, deadlines: LaneDeadlines) -> Self {
         self.lane_deadlines = deadlines;
+        self
+    }
+
+    /// Set lane reservations.
+    #[must_use]
+    pub fn with_lane_reservations(mut self, reservations: LaneReservations) -> Self {
+        self.lane_reservations = reservations;
         self
     }
 
@@ -235,6 +315,7 @@ pub struct SchedulerStatsCollector {
     read_cache: Arc<ReadCache>,
     in_flight: Arc<InFlightReads>,
     per_file: Arc<PerFileOrdering>,
+    lane_queues: Arc<LaneQueues<QueuedJob>>,
 }
 
 impl SchedulerStatsCollector {
@@ -251,6 +332,7 @@ impl SchedulerStatsCollector {
             self.read_cache.weighted_size(),
             self.in_flight.stats(),
             self.per_file.stats(),
+            &self.lane_queues,
         )
     }
 
@@ -275,6 +357,10 @@ impl SchedulerStatsCollector {
             late_completions: snapshot.late_completions,
             in_flight_total: snapshot.in_flight_by_lane.iter().sum(),
             in_flight_by_lane: snapshot.in_flight_by_lane,
+            queue_depth_total: snapshot.queue_depth_total,
+            queue_depth_by_lane: snapshot.queue_depth_by_lane,
+            oldest_queue_wait_ms: snapshot.oldest_queue_wait_ms,
+            last_dequeue_ms: snapshot.last_dequeue_ms,
             executor_jobs_submitted: snapshot.executor_jobs_submitted,
             executor_jobs_completed: snapshot.executor_jobs_completed,
             executor_jobs_failed: snapshot.executor_jobs_failed,
@@ -306,9 +392,43 @@ struct PendingRead {
     /// Lane for admission control tracking.
     lane: Lane,
     /// The FUSE reply handle.
-    reply: ReplyData,
+    reply: Option<ReplyData>,
     /// Request state for exactly-once reply.
     state: Arc<RequestState>,
+    /// True once the job is dispatched to the executor.
+    in_flight: AtomicBool,
+    /// Generation counter for deadline heap entry validation.
+    generation: u64,
+}
+
+/// Pending single-flight waiter awaiting broadcast result.
+struct PendingReadWaiter {
+    /// Inode for logging.
+    ino: u64,
+    /// Byte offset for logging.
+    offset: u64,
+    /// Requested size (for slicing).
+    size: usize,
+    /// Broadcast receiver for leader result.
+    receiver: tokio::sync::broadcast::Receiver<Result<bytes::Bytes, i32>>,
+    /// The FUSE reply handle.
+    reply: Option<ReplyData>,
+    /// Request state for exactly-once reply.
+    state: Arc<RequestState>,
+    /// Generation counter for deadline heap entry validation.
+    generation: u64,
+}
+
+/// Pending hazardous request awaiting executor result.
+struct PendingHazardous {
+    /// Lane for admission control tracking.
+    lane: Lane,
+    /// The FUSE reply handle.
+    reply: Option<HazardousReply>,
+    /// Request state for exactly-once reply.
+    state: Arc<RequestState>,
+    /// True once the job is dispatched to the executor.
+    in_flight: AtomicBool,
     /// Generation counter for deadline heap entry validation.
     generation: u64,
 }
@@ -320,17 +440,17 @@ struct PendingCopyRange {
     /// Destination file handle.
     fh_out: u64,
     /// Destination inode (for cache invalidation).
-    /// TODO: Pass attr_cache to dispatcher and invalidate on completion.
-    #[allow(dead_code)]
     ino_out: u64,
     /// Destination offset.
     offset_out: u64,
     /// Lane for admission control tracking.
     lane: Lane,
     /// The FUSE reply handle.
-    reply: ReplyWrite,
+    reply: Option<ReplyWrite>,
     /// Request state for exactly-once reply.
     state: Arc<RequestState>,
+    /// True once the job is dispatched to the executor.
+    in_flight: AtomicBool,
     /// Generation counter for deadline heap entry validation.
     generation: u64,
 }
@@ -342,9 +462,11 @@ struct PendingStructural {
     /// Lane for admission control tracking.
     lane: Lane,
     /// The FUSE reply handle.
-    reply: StructuralReply,
+    reply: Option<StructuralReply>,
     /// Request state for exactly-once reply.
     state: Arc<RequestState>,
+    /// True once the job is dispatched to the executor.
+    in_flight: AtomicBool,
     /// Generation counter for deadline heap entry validation.
     generation: u64,
 }
@@ -363,6 +485,10 @@ pub struct FuseScheduler {
     dispatcher: Arc<FairnessDispatcher>,
     /// Pending read requests awaiting results.
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
+    /// Pending single-flight waiters awaiting leader result.
+    pending_read_waiters: Arc<DashMap<RequestId, PendingReadWaiter>>,
+    /// Pending hazardous requests awaiting results.
+    pending_hazardous: Arc<DashMap<RequestId, PendingHazardous>>,
     /// Pending copy_file_range requests awaiting results.
     pending_copy_ranges: Arc<DashMap<RequestId, PendingCopyRange>>,
     /// Pending structural requests awaiting results.
@@ -371,6 +497,10 @@ pub struct FuseScheduler {
     deadline_heap: Arc<DeadlineHeap>,
     /// Handle table for restoring readers after async completion.
     handle_table: Arc<FuseHandleTable>,
+    /// Attribute cache for invalidation on async writes.
+    attr_cache: Arc<AttrCache>,
+    /// Tracks buffer sizes for mmap consistency.
+    buffer_sizes: Arc<DashMap<u64, u64>>,
     /// Per-file ordering for structural operations.
     per_file: Arc<PerFileOrdering>,
     /// Read cache for decrypted data.
@@ -406,17 +536,41 @@ pub struct FuseScheduler {
 
 impl FuseScheduler {
     /// Create a new scheduler with default configuration.
-    pub fn new(handle_table: Arc<FuseHandleTable>, vault_stats: Arc<VaultStats>) -> Self {
-        Self::with_config(SchedulerConfig::default(), handle_table, vault_stats)
+    pub fn new(
+        handle_table: Arc<FuseHandleTable>,
+        vault_stats: Arc<VaultStats>,
+        attr_cache: Arc<AttrCache>,
+        buffer_sizes: Arc<DashMap<u64, u64>>,
+    ) -> Self {
+        Self::with_config(
+            SchedulerConfig::default(),
+            handle_table,
+            vault_stats,
+            attr_cache,
+            buffer_sizes,
+        )
     }
 
     /// Create a new scheduler with custom configuration.
-    pub fn with_config(config: SchedulerConfig, handle_table: Arc<FuseHandleTable>, vault_stats: Arc<VaultStats>) -> Self {
+    pub fn with_config(
+        mut config: SchedulerConfig,
+        handle_table: Arc<FuseHandleTable>,
+        vault_stats: Arc<VaultStats>,
+        attr_cache: Arc<AttrCache>,
+        buffer_sizes: Arc<DashMap<u64, u64>>,
+    ) -> Self {
         let executor = Arc::new(FsSyscallExecutor::with_config(config.executor.clone()));
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let lane_queues = Arc::new(LaneQueues::new(&config.lane_capacities));
-        let dispatcher = Arc::new(FairnessDispatcher::with_config(config.dispatch.clone()));
+        let dispatch_config = config
+            .dispatch
+            .clone()
+            .with_reservations(&config.lane_reservations);
+        config.dispatch = dispatch_config.clone();
+        let dispatcher = Arc::new(FairnessDispatcher::with_config(dispatch_config));
         let pending_reads = Arc::new(DashMap::new());
+        let pending_read_waiters = Arc::new(DashMap::new());
+        let pending_hazardous = Arc::new(DashMap::new());
         let pending_copy_ranges = Arc::new(DashMap::new());
         let pending_structural = Arc::new(DashMap::new());
         let deadline_heap = Arc::new(DeadlineHeap::new());
@@ -425,7 +579,8 @@ impl FuseScheduler {
         let in_flight = Arc::new(InFlightReads::new());
         let stats = Arc::new(SchedulerStats::new());
         let pending_writes_by_file = Arc::new(DashMap::new());
-        let writes_complete_notify = Arc::new((std::sync::Mutex::new(()), std::sync::Condvar::new()));
+        let writes_complete_notify =
+            Arc::new((std::sync::Mutex::new(()), std::sync::Condvar::new()));
         let write_bytes_global = Arc::new(AtomicU64::new(0));
         let write_bytes_by_file = Arc::new(DashMap::new());
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -438,10 +593,14 @@ impl FuseScheduler {
             lane_queues,
             dispatcher,
             pending_reads,
+            pending_read_waiters,
+            pending_hazardous,
             pending_copy_ranges,
             pending_structural,
             deadline_heap,
             handle_table,
+            attr_cache,
+            buffer_sizes,
             per_file,
             read_cache,
             in_flight,
@@ -473,16 +632,22 @@ impl FuseScheduler {
         let lane_queues = Arc::clone(&self.lane_queues);
         let fairness_dispatcher = Arc::clone(&self.dispatcher);
         let pending_reads = Arc::clone(&self.pending_reads);
+        let pending_read_waiters = Arc::clone(&self.pending_read_waiters);
+        let pending_hazardous = Arc::clone(&self.pending_hazardous);
         let pending_copy_ranges = Arc::clone(&self.pending_copy_ranges);
         let pending_structural = Arc::clone(&self.pending_structural);
         let deadline_heap = Arc::clone(&self.deadline_heap);
         let handle_table = Arc::clone(&self.handle_table);
+        let attr_cache = Arc::clone(&self.attr_cache);
+        let buffer_sizes = Arc::clone(&self.buffer_sizes);
         let per_file = Arc::clone(&self.per_file);
         let read_cache = Arc::clone(&self.read_cache);
         let in_flight = Arc::clone(&self.in_flight);
         let stats = Arc::clone(&self.stats);
         let vault_stats = Arc::clone(&self.vault_stats);
         let pending_writes_by_file = Arc::clone(&self.pending_writes_by_file);
+        let write_bytes_global = Arc::clone(&self.write_bytes_global);
+        let write_bytes_by_file = Arc::clone(&self.write_bytes_by_file);
         let writes_complete_notify = Arc::clone(&self.writes_complete_notify);
         let shutdown = Arc::clone(&self.shutdown);
         let result_tx = self.result_tx.clone();
@@ -497,16 +662,22 @@ impl FuseScheduler {
                     lane_queues,
                     fairness_dispatcher,
                     pending_reads,
+                    pending_read_waiters,
+                    pending_hazardous,
                     pending_copy_ranges,
                     pending_structural,
                     deadline_heap,
                     handle_table,
                     per_file,
                     read_cache,
+                    attr_cache,
+                    buffer_sizes,
                     in_flight,
                     stats,
                     vault_stats,
                     pending_writes_by_file,
+                    write_bytes_global,
+                    write_bytes_by_file,
                     writes_complete_notify,
                     shutdown,
                 );
@@ -528,8 +699,8 @@ impl FuseScheduler {
     /// 3. **Executor** - Otherwise, submit to executor for async read
     ///
     /// On failure, the scheduler replies with an appropriate error code and
-    /// returns `Err`. The reader is consumed and cannot be recovered - the
-    /// file handle should be closed or subsequent reads will get EAGAIN.
+    /// returns `Err`. The reader is restored when possible; in-flight failures
+    /// may leave the handle loaned until completion or close.
     ///
     /// # Arguments
     ///
@@ -549,7 +720,7 @@ impl FuseScheduler {
         &self,
         ino: u64,
         fh: u64,
-        reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+        reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
         offset: u64,
         size: usize,
         reply: ReplyData,
@@ -582,79 +753,32 @@ impl FuseScheduler {
         let read_key = ReadKey::new(ino, offset, size);
         if self.config.enable_single_flight {
             match self.in_flight.try_attach(read_key) {
-                AttachResult::Waiter(mut rx) => {
+                AttachResult::Waiter(rx) => {
                     // Another read for the same data is in-flight, wait for it
                     trace!(ino, fh, offset, size, "Single-flight waiter attached");
 
-                    // Spawn a task to wait for the result and reply
                     // The reader is restored immediately since we won't use it
                     self.restore_reader(fh, reader);
 
-                    // Wait for result with timeout to prevent indefinite hangs
-                    // if the leader dies or a bug prevents completion.
-                    // Use the read_foreground deadline as the timeout for waiters.
-                    let stats = Arc::clone(&self.stats);
-                    let vault_stats = Arc::clone(&self.vault_stats);
-                    let timeout_duration = self.config.lane_deadlines.read_foreground;
-                    thread::spawn(move || {
-                        // Create a minimal runtime for the timeout operation
-                        let rt = match tokio::runtime::Builder::new_current_thread()
-                            .enable_time()
-                            .build()
-                        {
-                            Ok(rt) => rt,
-                            Err(e) => {
-                                tracing::error!("Failed to create waiter runtime: {}", e);
-                                reply.error(libc::EIO);
-                                stats.record_timeout();
-                                vault_stats.finish_read();
-                                vault_stats.record_error();
-                                return;
-                            }
-                        };
+                    let request_id = self.id_gen.next();
+                    let deadline =
+                        Instant::now() + self.config.lane_deadlines.get(classify_read(size));
+                    let generation = self.deadline_heap.insert(request_id, deadline);
 
-                        let result = rt.block_on(async {
-                            tokio::time::timeout(timeout_duration, rx.recv()).await
-                        });
+                    self.pending_read_waiters.insert(
+                        request_id,
+                        PendingReadWaiter {
+                            ino,
+                            offset,
+                            size,
+                            receiver: rx,
+                            reply: Some(reply),
+                            state: Arc::new(RequestState::new()),
+                            generation,
+                        },
+                    );
 
-                        match result {
-                            Ok(Ok(Ok(data))) => {
-                                let data = if data.len() > size {
-                                    &data[..size]
-                                } else {
-                                    &data[..]
-                                };
-                                reply.data(data);
-                                stats.record_accept();
-                                // Record stats for desktop client
-                                vault_stats.record_read(data.len() as u64);
-                                vault_stats.finish_read();
-                            }
-                            Ok(Ok(Err(errno))) => {
-                                reply.error(errno);
-                                stats.record_accept();
-                                vault_stats.finish_read();
-                                vault_stats.record_error();
-                            }
-                            Ok(Err(_)) => {
-                                // Channel closed / lagged - leader dropped without completing
-                                reply.error(libc::EIO);
-                                stats.record_accept();
-                                vault_stats.finish_read();
-                                vault_stats.record_error();
-                            }
-                            Err(_) => {
-                                // Timeout - leader took too long
-                                tracing::warn!(ino, offset, size, "Single-flight waiter timed out");
-                                reply.error(libc::ETIMEDOUT);
-                                stats.record_timeout();
-                                vault_stats.finish_read();
-                                vault_stats.record_error();
-                            }
-                        }
-                    });
-
-                    return Ok(RequestId::new(0)); // Placeholder for waiters
+                    return Ok(request_id);
                 }
                 AttachResult::Leader => {
                     // We're the leader, proceed to executor
@@ -693,32 +817,109 @@ impl FuseScheduler {
             return Err(EnqueueError::QueueFull);
         }
 
-        // Insert into deadline heap for timeout tracking
-        // Note: generation=0 since we don't track individual heap entries for queued requests
-        // The dispatcher will update this when it submits to executor
+        // Insert into deadline heap for timeout tracking (queued time counts)
         let state = Arc::new(RequestState::new());
+        let generation = self.deadline_heap.insert(request_id, deadline);
 
         // Store pending read with cache info for completion handler
         self.pending_reads.insert(
             request_id,
             PendingRead {
                 ino,
-                read_key: if self.config.enable_single_flight { Some(read_key) } else { None },
+                read_key: if self.config.enable_single_flight {
+                    Some(read_key)
+                } else {
+                    None
+                },
                 lane,
-                reply,
+                reply: Some(reply),
                 state,
-                generation: 0, // Will be set by dispatcher when submitted to executor
+                in_flight: AtomicBool::new(false),
+                generation,
             },
         );
 
         self.stats.record_accept();
-        trace!(?request_id, fh, offset, size, ?lane, "Read request enqueued to lane queue");
+        trace!(
+            ?request_id,
+            fh,
+            offset,
+            size,
+            ?lane,
+            "Read request enqueued to lane queue"
+        );
+
+        Ok(request_id)
+    }
+
+    /// Try to enqueue a hazardous operation (release/flush/fsync/readdir*).
+    ///
+    /// The operation will be executed off the FUSE callback thread.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_enqueue_hazardous(
+        &self,
+        op: HazardousOp,
+        reply: HazardousReply,
+        handler: Arc<dyn HazardousOpHandler>,
+    ) -> Result<RequestId, EnqueueError> {
+        if self.shutdown.load(Ordering::Acquire) {
+            reply.error(libc::ESHUTDOWN);
+            return Err(EnqueueError::Shutdown);
+        }
+
+        let request_id = self.id_gen.next();
+        let lane = classify_hazardous(&op);
+        let deadline = Instant::now() + self.config.lane_deadlines.get(lane);
+
+        let queued_job = QueuedJob::Hazardous(QueuedHazardousJob {
+            op,
+            handler,
+            deadline,
+        });
+
+        if let Err((e, _rejected_job)) = self.lane_queues.try_enqueue(lane, request_id, queued_job)
+        {
+            self.stats.record_reject(lane as usize);
+            reply.error(libc::EAGAIN);
+            debug!(
+                ?request_id,
+                ?lane,
+                "Lane queue full for hazardous op: {}",
+                e
+            );
+            return Err(EnqueueError::QueueFull);
+        }
+
+        let state = Arc::new(RequestState::new());
+        let generation = self.deadline_heap.insert(request_id, deadline);
+
+        self.pending_hazardous.insert(
+            request_id,
+            PendingHazardous {
+                lane,
+                reply: Some(reply),
+                state,
+                in_flight: AtomicBool::new(false),
+                generation,
+            },
+        );
+
+        self.stats.record_accept();
+        trace!(
+            ?request_id,
+            ?lane,
+            "Hazardous request enqueued to lane queue"
+        );
 
         Ok(request_id)
     }
 
     /// Restore a reader to the handle table.
-    fn restore_reader(&self, fh: u64, reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>) {
+    fn restore_reader(
+        &self,
+        fh: u64,
+        reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
+    ) {
         if let Some(mut handle) = self.handle_table.get_mut(&fh) {
             if matches!(*handle, FuseHandle::ReaderLoaned) {
                 *handle = FuseHandle::Reader(reader);
@@ -750,7 +951,7 @@ impl FuseScheduler {
     pub fn try_enqueue_copy_range(
         &self,
         fh_in: u64,
-        reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+        reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
         offset_in: u64,
         fh_out: u64,
         ino_out: u64,
@@ -759,6 +960,7 @@ impl FuseScheduler {
         reply: ReplyWrite,
     ) -> Result<RequestId, EnqueueError> {
         if self.shutdown.load(Ordering::Acquire) {
+            self.restore_reader(fh_in, reader);
             reply.error(libc::ESHUTDOWN);
             return Err(EnqueueError::Shutdown);
         }
@@ -801,6 +1003,7 @@ impl FuseScheduler {
             .fetch_add(1, Ordering::Release);
 
         let state = Arc::new(RequestState::new());
+        let generation = self.deadline_heap.insert(request_id, deadline);
 
         // Store pending copy range with destination info
         self.pending_copy_ranges.insert(
@@ -810,9 +1013,10 @@ impl FuseScheduler {
                 ino_out,
                 offset_out,
                 lane,
-                reply,
+                reply: Some(reply),
                 state,
-                generation: 0, // Will be set by dispatcher when submitted to executor
+                in_flight: AtomicBool::new(false),
+                generation,
             },
         );
 
@@ -848,7 +1052,7 @@ impl FuseScheduler {
     pub fn try_enqueue_structural(
         &self,
         op: StructuralOp,
-        ops: Arc<oxcrypt_core::vault::VaultOperationsAsync>,
+        ops: Arc<oxcrypt_core::vault::VaultOperations>,
         reply: StructuralReply,
     ) -> Result<RequestId, EnqueueError> {
         if self.shutdown.load(Ordering::Acquire) {
@@ -864,20 +1068,37 @@ impl FuseScheduler {
         // Check per-file ordering for all affected inodes
         // Structural ops must wait for prior ops on the same file to complete
         let affected_inodes = op.affected_inodes();
+        let mut waiters = Vec::new();
         for ino in &affected_inodes {
             match self.per_file.try_start(*ino, request_id) {
                 Ok(None) => {
                     // Can proceed immediately
-                    trace!(?request_id, ino, op = op.name(), "Per-file ordering: proceeding immediately");
+                    trace!(
+                        ?request_id,
+                        ino,
+                        op = op.name(),
+                        "Per-file ordering: proceeding immediately"
+                    );
                 }
-                Ok(Some(_rx)) => {
+                Ok(Some(rx)) => {
                     // Must wait - the queue will handle serialization
-                    // Note: we don't actually wait here because the lane queue handles ordering
-                    trace!(?request_id, ino, op = op.name(), "Per-file ordering: queuing behind prior op");
+                    trace!(
+                        ?request_id,
+                        ino,
+                        op = op.name(),
+                        "Per-file ordering: queuing behind prior op"
+                    );
+                    waiters.push(rx);
                 }
                 Err(errno) => {
                     // Prior operation failed - propagate error
-                    debug!(?request_id, ino, errno, op = op.name(), "Per-file ordering: prior op failed");
+                    debug!(
+                        ?request_id,
+                        ino,
+                        errno,
+                        op = op.name(),
+                        "Per-file ordering: prior op failed"
+                    );
                     reply.error(errno);
                     return Err(EnqueueError::PriorOpFailed { errno });
                 }
@@ -889,10 +1110,12 @@ impl FuseScheduler {
             op: op.clone(),
             ops,
             deadline,
+            waiters,
         });
 
         // Try to enqueue to lane queue
-        if let Err((e, _rejected_job)) = self.lane_queues.try_enqueue(lane, request_id, queued_job) {
+        if let Err((e, _rejected_job)) = self.lane_queues.try_enqueue(lane, request_id, queued_job)
+        {
             // Queue is full - reject request
             // Release per-file ordering since we didn't actually start
             for ino in &affected_inodes {
@@ -900,11 +1123,17 @@ impl FuseScheduler {
             }
             self.stats.record_reject(lane as usize);
             reply.error(libc::EAGAIN);
-            debug!(?request_id, ?lane, "Lane queue full for structural op: {}", e);
+            debug!(
+                ?request_id,
+                ?lane,
+                "Lane queue full for structural op: {}",
+                e
+            );
             return Err(EnqueueError::QueueFull);
         }
 
         let state = Arc::new(RequestState::new());
+        let generation = self.deadline_heap.insert(request_id, deadline);
 
         // Store pending structural request
         self.pending_structural.insert(
@@ -912,16 +1141,21 @@ impl FuseScheduler {
             PendingStructural {
                 op,
                 lane,
-                reply,
+                reply: Some(reply),
                 state,
-                generation: 0, // Will be set by dispatcher when submitted to executor
+                in_flight: AtomicBool::new(false),
+                generation,
             },
         );
 
         self.stats.record_accept();
         trace!(
             ?request_id,
-            op_name = self.pending_structural.get(&request_id).map(|p| p.op.name()).unwrap_or("unknown"),
+            op_name = self
+                .pending_structural
+                .get(&request_id)
+                .map(|p| p.op.name())
+                .unwrap_or("unknown"),
             ?lane,
             "Structural request enqueued to lane queue"
         );
@@ -1063,9 +1297,8 @@ impl FuseScheduler {
             if old_value == size {
                 // Value was exactly `size`, now 0 - try to remove entry
                 // Use remove_if to handle race with concurrent adds
-                self.write_bytes_by_file.remove_if(&ino, |_, c| {
-                    c.load(Ordering::Acquire) == 0
-                });
+                self.write_bytes_by_file
+                    .remove_if(&ino, |_, c| c.load(Ordering::Acquire) == 0);
             }
         }
     }
@@ -1088,7 +1321,8 @@ impl FuseScheduler {
 
         // Subtract from global counter (only what was actually tracked)
         if file_bytes > 0 {
-            self.write_bytes_global.fetch_sub(file_bytes, Ordering::Release);
+            self.write_bytes_global
+                .fetch_sub(file_bytes, Ordering::Release);
         }
 
         file_bytes
@@ -1107,9 +1341,25 @@ impl FuseScheduler {
             .unwrap_or(0)
     }
 
+    /// Invalidate all cached read data for an inode.
+    pub fn invalidate_read_cache_inode(&self, ino: u64) {
+        self.read_cache.invalidate_inode(ino);
+    }
+
     /// Get scheduler statistics.
     pub fn stats(&self) -> &Arc<SchedulerStats> {
         &self.stats
+    }
+
+    /// Get shared scheduler state for hazardous operations.
+    pub fn shared_state(&self) -> SchedulerShared {
+        SchedulerShared {
+            pending_writes_by_file: Arc::clone(&self.pending_writes_by_file),
+            writes_complete_notify: Arc::clone(&self.writes_complete_notify),
+            write_bytes_global: Arc::clone(&self.write_bytes_global),
+            write_bytes_by_file: Arc::clone(&self.write_bytes_by_file),
+            read_cache: Arc::clone(&self.read_cache),
+        }
     }
 
     /// Get a complete snapshot of all scheduler metrics.
@@ -1127,6 +1377,7 @@ impl FuseScheduler {
             self.read_cache.weighted_size(),
             self.in_flight.stats(),
             self.per_file.stats(),
+            &self.lane_queues,
         )
     }
 
@@ -1142,6 +1393,7 @@ impl FuseScheduler {
             read_cache: Arc::clone(&self.read_cache),
             in_flight: Arc::clone(&self.in_flight),
             per_file: Arc::clone(&self.per_file),
+            lane_queues: Arc::clone(&self.lane_queues),
         }
     }
 
@@ -1195,16 +1447,22 @@ fn dispatcher_loop(
     lane_queues: Arc<LaneQueues<QueuedJob>>,
     fairness_dispatcher: Arc<FairnessDispatcher>,
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
+    pending_read_waiters: Arc<DashMap<RequestId, PendingReadWaiter>>,
+    pending_hazardous: Arc<DashMap<RequestId, PendingHazardous>>,
     pending_copy_ranges: Arc<DashMap<RequestId, PendingCopyRange>>,
     pending_structural: Arc<DashMap<RequestId, PendingStructural>>,
     deadline_heap: Arc<DeadlineHeap>,
     handle_table: Arc<FuseHandleTable>,
     per_file: Arc<PerFileOrdering>,
     read_cache: Arc<ReadCache>,
+    attr_cache: Arc<AttrCache>,
+    buffer_sizes: Arc<DashMap<u64, u64>>,
     in_flight: Arc<InFlightReads>,
     stats: Arc<SchedulerStats>,
     vault_stats: Arc<VaultStats>,
     pending_writes_by_file: Arc<DashMap<u64, AtomicU64>>,
+    write_bytes_global: Arc<AtomicU64>,
+    write_bytes_by_file: Arc<DashMap<u64, AtomicU64>>,
     writes_complete_notify: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     shutdown: Arc<AtomicBool>,
 ) {
@@ -1213,6 +1471,9 @@ fn dispatcher_loop(
     // We need to poll multiple oneshot receivers. Use a simple approach:
     // collect receivers and poll them in rounds.
     let mut receivers: Vec<(RequestId, oneshot::Receiver<ExecutorResult>)> = Vec::new();
+
+    // Blocked structural jobs waiting for per-file ordering
+    let mut blocked_structural_jobs: Vec<(RequestId, QueuedStructuralJob, Lane)> = Vec::new();
 
     loop {
         let is_shutdown = shutdown.load(Ordering::Acquire);
@@ -1226,75 +1487,169 @@ fn dispatcher_loop(
         // Process expired deadlines from heap (efficient O(log n) per expiration)
         for (request_id, generation) in deadline_heap.pop_expired() {
             // Check pending reads first
-            if let Some(pending) = pending_reads.get(&request_id) {
+            if let Some(mut pending) = pending_reads.get_mut(&request_id) {
                 if pending.generation == generation && pending.state.claim_reply() {
                     let lane_index = pending.lane as usize;
+                    let dispatched = pending.in_flight.load(Ordering::Acquire);
+                    let read_key = pending.read_key;
+                    let reply = pending.reply.take();
                     warn!(?request_id, "Read request timed out");
-                    drop(pending);
-                    if let Some((_, pending)) = pending_reads.remove(&request_id) {
-                        pending.reply.error(libc::ETIMEDOUT);
-                        // Decrement in-flight counter for this lane
-                        stats.dec_in_flight(lane_index);
-                        stats.record_timeout();
-                        // Cancel single-flight if we were leader
-                        if let Some(key) = pending.read_key {
-                            in_flight.cancel(&key);
-                        }
+                    if let Some(reply) = reply {
+                        reply.error(libc::ETIMEDOUT);
                     }
+                    // Decrement in-flight counter for this lane only if dispatched
+                    if dispatched {
+                        stats.dec_in_flight(lane_index);
+                        pending.in_flight.store(false, Ordering::Release);
+                    }
+                    drop(pending);
+                    stats.record_timeout();
+                    // Cancel single-flight if we were leader
+                    if let Some(key) = read_key {
+                        in_flight.cancel(&key);
+                    }
+                }
+                continue;
+            }
+
+            // Check pending read waiters
+            if let Some(mut pending) = pending_read_waiters.get_mut(&request_id) {
+                if pending.generation == generation && pending.state.claim_reply() {
+                    let ino = pending.ino;
+                    let offset = pending.offset;
+                    let size = pending.size;
+                    let reply = pending.reply.take();
+                    warn!(
+                        ?request_id,
+                        ino, offset, size, "Single-flight waiter timed out"
+                    );
+                    if let Some(reply) = reply {
+                        reply.error(libc::ETIMEDOUT);
+                    }
+                    drop(pending);
+                    pending_read_waiters.remove(&request_id);
+                    stats.record_timeout();
+                    vault_stats.finish_read();
+                    vault_stats.record_error();
+                }
+                continue;
+            }
+
+            // Check pending hazardous ops
+            if let Some(mut pending) = pending_hazardous.get_mut(&request_id) {
+                if pending.generation == generation && pending.state.claim_reply() {
+                    let lane_index = pending.lane as usize;
+                    let dispatched = pending.in_flight.load(Ordering::Acquire);
+                    let reply = pending.reply.take();
+                    warn!(?request_id, "Hazardous request timed out");
+                    if let Some(reply) = reply {
+                        reply.error(libc::ETIMEDOUT);
+                    }
+                    if dispatched {
+                        stats.dec_in_flight(lane_index);
+                        pending.in_flight.store(false, Ordering::Release);
+                    }
+                    drop(pending);
+                    pending_hazardous.remove(&request_id);
+                    stats.record_timeout();
                 }
                 continue;
             }
 
             // Check pending copy ranges
-            if let Some(pending) = pending_copy_ranges.get(&request_id) {
+            if let Some(mut pending) = pending_copy_ranges.get_mut(&request_id) {
                 if pending.generation == generation && pending.state.claim_reply() {
                     let lane_index = pending.lane as usize;
+                    let dispatched = pending.in_flight.load(Ordering::Acquire);
                     let ino_out = pending.ino_out;
+                    let reply = pending.reply.take();
                     warn!(?request_id, "copy_file_range request timed out");
-                    drop(pending);
-                    if let Some((_, pending)) = pending_copy_ranges.remove(&request_id) {
-                        pending.reply.error(libc::ETIMEDOUT);
-                        // Decrement in-flight counter for this lane
-                        stats.dec_in_flight(lane_index);
-                        stats.record_timeout();
-                        // Decrement pending writes counter for barrier semantics
-                        // and clean up entry if it reaches zero to prevent unbounded DashMap growth
-                        if let Some(counter) = pending_writes_by_file.get(&ino_out) {
-                            if counter.fetch_sub(1, Ordering::Release) == 1 {
-                                // Was 1, now 0 - try to remove entry to prevent memory leak
-                                // Use remove_if to handle race with concurrent inserts
-                                pending_writes_by_file.remove_if(&ino_out, |_, c| {
-                                    c.load(Ordering::Acquire) == 0
-                                });
-                            }
-                        }
-                        // Notify any waiters that a write completed
-                        writes_complete_notify.1.notify_all();
+                    if let Some(reply) = reply {
+                        reply.error(libc::ETIMEDOUT);
                     }
+                    // Decrement in-flight counter for this lane only if dispatched
+                    if dispatched {
+                        stats.dec_in_flight(lane_index);
+                        pending.in_flight.store(false, Ordering::Release);
+                    }
+                    drop(pending);
+                    stats.record_timeout();
+                    // Decrement pending writes counter for barrier semantics
+                    // and clean up entry if it reaches zero to prevent unbounded DashMap growth
+                    if let Some(counter) = pending_writes_by_file.get(&ino_out) {
+                        if counter.fetch_sub(1, Ordering::Release) == 1 {
+                            // Was 1, now 0 - try to remove entry to prevent memory leak
+                            // Use remove_if to handle race with concurrent inserts
+                            pending_writes_by_file
+                                .remove_if(&ino_out, |_, c| c.load(Ordering::Acquire) == 0);
+                        }
+                    }
+                    // Notify any waiters that a write completed
+                    writes_complete_notify.1.notify_all();
                 }
                 continue;
             }
 
             // Check pending structural ops
-            if let Some(pending) = pending_structural.get(&request_id) {
+            if let Some(mut pending) = pending_structural.get_mut(&request_id) {
                 if pending.generation == generation && pending.state.claim_reply() {
                     let lane_index = pending.lane as usize;
+                    let dispatched = pending.in_flight.load(Ordering::Acquire);
                     let affected_inodes = pending.op.affected_inodes();
-                    warn!(?request_id, op = pending.op.name(), "Structural request timed out");
-                    drop(pending);
-                    if let Some((_, pending)) = pending_structural.remove(&request_id) {
-                        pending.reply.error(libc::ETIMEDOUT);
-                        // Decrement in-flight counter for this lane
+                    let reply = pending.reply.take();
+                    warn!(
+                        ?request_id,
+                        op = pending.op.name(),
+                        "Structural request timed out"
+                    );
+                    if let Some(reply) = reply {
+                        reply.error(libc::ETIMEDOUT);
+                    }
+                    // Decrement in-flight counter for this lane only if dispatched
+                    if dispatched {
                         stats.dec_in_flight(lane_index);
-                        stats.record_timeout();
-                        // Release per-file ordering for all affected inodes
-                        for ino in affected_inodes {
-                            per_file.complete(ino, Some(libc::ETIMEDOUT));
-                        }
+                        pending.in_flight.store(false, Ordering::Release);
+                    }
+                    drop(pending);
+                    stats.record_timeout();
+                    // Release per-file ordering for all affected inodes
+                    for ino in affected_inodes {
+                        per_file.complete(ino, Some(libc::ETIMEDOUT));
                     }
                 }
             }
             // If not found in any map, entry is stale (already completed)
+        }
+
+        // Check blocked structural jobs waiting for per-file ordering
+        let mut i = 0;
+        while i < blocked_structural_jobs.len() {
+            let is_ready = {
+                let job = &mut blocked_structural_jobs[i].1;
+                job.waiters.iter_mut().all(|rx| match rx.try_recv() {
+                    Ok(_) => true,
+                    Err(oneshot::error::TryRecvError::Closed) => true,
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                })
+            };
+
+            if is_ready {
+                let (request_id, job, lane) = blocked_structural_jobs.remove(i);
+                // Decrement in-flight count because dispatch_structural_job will increment it again
+                stats.dec_in_flight(lane as usize);
+                dispatch_structural_job(
+                    request_id,
+                    job,
+                    lane,
+                    &executor,
+                    &pending_structural,
+                    &per_file,
+                    &stats,
+                    &result_tx,
+                );
+            } else {
+                i += 1;
+            }
         }
 
         // === FAIRNESS DISPATCH: Dequeue from lane queues and submit to executor ===
@@ -1308,16 +1663,20 @@ fn dispatcher_loop(
                 stats.in_flight_by_lane[4].load(Ordering::Relaxed),
             ];
 
-            // Calculate free executor slots based on queue depth
-            // The executor has a bounded queue, so free slots = max capacity - current depth
-            let executor_queue_depth = executor.queue_depth();
-            // Default executor capacity is 16 threads, estimate free slots conservatively
-            let estimated_free_slots = 16usize.saturating_sub(executor_queue_depth as usize);
+            // Calculate free executor slots based on configured worker count and in-flight work.
+            // This avoids the previous hardcoded 16-thread assumption.
+            let executor_capacity = executor.io_threads();
+            let in_flight_total: usize = in_flight_counts.iter().map(|v| *v as usize).sum();
+            let estimated_free_slots = executor_capacity.saturating_sub(in_flight_total);
 
             // Try to dispatch jobs from lane queues using fairness policy
             // Dispatch multiple jobs per iteration to improve throughput
             for _ in 0..4 {
-                if let Some(queued) = fairness_dispatcher.try_dispatch(&lane_queues, &in_flight_counts, estimated_free_slots) {
+                if let Some(queued) = fairness_dispatcher.try_dispatch(
+                    &lane_queues,
+                    &in_flight_counts,
+                    estimated_free_slots,
+                ) {
                     let request_id = queued.id;
                     let lane = queued.lane;
 
@@ -1328,10 +1687,10 @@ fn dispatcher_loop(
                                 job,
                                 lane,
                                 &executor,
-                                &deadline_heap,
                                 &pending_reads,
                                 &stats,
                                 &in_flight,
+                                &handle_table,
                                 &result_tx,
                             );
                         }
@@ -1341,21 +1700,40 @@ fn dispatcher_loop(
                                 job,
                                 lane,
                                 &executor,
-                                &deadline_heap,
                                 &pending_copy_ranges,
+                                &pending_writes_by_file,
+                                &writes_complete_notify,
                                 &stats,
+                                &handle_table,
                                 &result_tx,
                             );
                         }
                         QueuedJob::Structural(job) => {
-                            dispatch_structural_job(
+                            if !job.waiters.is_empty() {
+                                // Job has pending waiters (per-file ordering)
+                                // Increment in-flight stats so fairness dispatcher knows we are busy
+                                stats.inc_in_flight(lane as usize);
+                                blocked_structural_jobs.push((request_id, job, lane));
+                            } else {
+                                dispatch_structural_job(
+                                    request_id,
+                                    job,
+                                    lane,
+                                    &executor,
+                                    &pending_structural,
+                                    &per_file,
+                                    &stats,
+                                    &result_tx,
+                                );
+                            }
+                        }
+                        QueuedJob::Hazardous(job) => {
+                            dispatch_hazardous_job(
                                 request_id,
                                 job,
                                 lane,
                                 &executor,
-                                &deadline_heap,
-                                &pending_structural,
-                                &per_file,
+                                &pending_hazardous,
                                 &stats,
                                 &result_tx,
                             );
@@ -1406,30 +1784,40 @@ fn dispatcher_loop(
             receivers.swap_remove(i);
 
             // Check if this is a pending read
-            if let Some((_, pending)) = pending_reads.remove(&request_id) {
+            if let Some((_, mut pending)) = pending_reads.remove(&request_id) {
                 let lane_index = pending.lane as usize;
                 if pending.state.claim_reply() {
-                    handle_read_completion(
-                        request_id,
-                        result,
-                        pending.ino,
-                        pending.read_key,
-                        pending.reply,
-                        &handle_table,
-                        &read_cache,
-                        &in_flight,
-                        &stats,
-                        &vault_stats,
-                    );
-                    // Decrement in-flight counter for this lane
-                    stats.dec_in_flight(lane_index);
+                    if let Some(reply) = pending.reply.take() {
+                        handle_read_completion(
+                            request_id,
+                            result,
+                            pending.ino,
+                            pending.read_key,
+                            reply,
+                            &handle_table,
+                            &read_cache,
+                            &in_flight,
+                            &stats,
+                            &vault_stats,
+                        );
+                    } else {
+                        restore_reader_from_result(request_id, result, &handle_table);
+                    }
+                    // Decrement in-flight counter for this lane if dispatched
+                    if pending.in_flight.load(Ordering::Acquire) {
+                        stats.dec_in_flight(lane_index);
+                    }
                 } else {
                     trace!(?request_id, "Read reply already claimed (timeout race)");
+                    restore_reader_from_result(request_id, result, &handle_table);
                     // Cancel single-flight if we were leader
                     if let Some(key) = pending.read_key {
                         in_flight.cancel(&key);
                     }
                     stats.record_late_completion();
+                    if pending.in_flight.load(Ordering::Acquire) {
+                        stats.dec_in_flight(lane_index);
+                    }
                     // Note: in-flight was already decremented by timeout handler
                 }
                 continue;
@@ -1440,30 +1828,48 @@ fn dispatcher_loop(
                 let lane_index = pending.lane as usize;
                 let ino_out = pending.ino_out;
                 if pending.state.claim_reply() {
-                    handle_copy_range_completion(
-                        request_id,
-                        result,
-                        pending,
-                        &handle_table,
-                    );
-                    // Decrement in-flight counter for this lane
-                    stats.dec_in_flight(lane_index);
+                    let was_in_flight = pending.in_flight.load(Ordering::Acquire);
+                    if pending.reply.is_some() {
+                        handle_copy_range_completion(
+                            request_id,
+                            result,
+                            pending,
+                            &handle_table,
+                            &read_cache,
+                            &attr_cache,
+                            &buffer_sizes,
+                            &write_bytes_global,
+                            &write_bytes_by_file,
+                        );
+                    } else {
+                        restore_reader_from_result(request_id, result, &handle_table);
+                    }
+                    // Decrement in-flight counter for this lane if dispatched
+                    if was_in_flight {
+                        stats.dec_in_flight(lane_index);
+                    }
                     // Decrement pending writes counter for barrier semantics
                     // and clean up entry if it reaches zero to prevent unbounded DashMap growth
                     if let Some(counter) = pending_writes_by_file.get(&ino_out) {
                         if counter.fetch_sub(1, Ordering::Release) == 1 {
                             // Was 1, now 0 - try to remove entry to prevent memory leak
                             // Use remove_if to handle race with concurrent inserts
-                            pending_writes_by_file.remove_if(&ino_out, |_, c| {
-                                c.load(Ordering::Acquire) == 0
-                            });
+                            pending_writes_by_file
+                                .remove_if(&ino_out, |_, c| c.load(Ordering::Acquire) == 0);
                         }
                     }
                     // Notify any waiters that a write completed
                     writes_complete_notify.1.notify_all();
                 } else {
-                    trace!(?request_id, "copy_file_range reply already claimed (timeout race)");
+                    trace!(
+                        ?request_id,
+                        "copy_file_range reply already claimed (timeout race)"
+                    );
+                    restore_reader_from_result(request_id, result, &handle_table);
                     stats.record_late_completion();
+                    if pending.in_flight.load(Ordering::Acquire) {
+                        stats.dec_in_flight(lane_index);
+                    }
                     // Note: in-flight and pending_writes were already decremented by timeout handler
                 }
                 continue;
@@ -1474,17 +1880,23 @@ fn dispatcher_loop(
                 let lane_index = pending.lane as usize;
                 let affected_inodes = pending.op.affected_inodes();
                 if pending.state.claim_reply() {
-                    handle_structural_completion(
-                        request_id,
-                        result,
-                        pending,
-                        &per_file,
-                    );
-                    // Decrement in-flight counter for this lane
-                    stats.dec_in_flight(lane_index);
+                    let was_in_flight = pending.in_flight.load(Ordering::Acquire);
+                    if pending.reply.is_some() {
+                        handle_structural_completion(request_id, result, pending, &per_file);
+                    }
+                    // Decrement in-flight counter for this lane if dispatched
+                    if was_in_flight {
+                        stats.dec_in_flight(lane_index);
+                    }
                 } else {
-                    trace!(?request_id, "Structural reply already claimed (timeout race)");
+                    trace!(
+                        ?request_id,
+                        "Structural reply already claimed (timeout race)"
+                    );
                     stats.record_late_completion();
+                    if pending.in_flight.load(Ordering::Acquire) {
+                        stats.dec_in_flight(lane_index);
+                    }
                     // Note: in-flight and per-file were already handled by timeout handler
                 }
                 // Release per-file ordering for all affected inodes
@@ -1492,6 +1904,100 @@ fn dispatcher_loop(
                 for ino in affected_inodes {
                     per_file.complete(ino, None);
                 }
+                continue;
+            }
+
+            // Check if this is a pending hazardous op
+            if let Some((_, pending)) = pending_hazardous.remove(&request_id) {
+                let lane_index = pending.lane as usize;
+                if pending.state.claim_reply() {
+                    let was_in_flight = pending.in_flight.load(Ordering::Acquire);
+                    if pending.reply.is_some() {
+                        handle_hazardous_completion(request_id, result, pending, &stats);
+                    }
+                    if was_in_flight {
+                        stats.dec_in_flight(lane_index);
+                    }
+                } else {
+                    trace!(
+                        ?request_id,
+                        "Hazardous reply already claimed (timeout race)"
+                    );
+                    stats.record_late_completion();
+                    if pending.in_flight.load(Ordering::Acquire) {
+                        stats.dec_in_flight(lane_index);
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Check for completed single-flight waiters (non-blocking)
+        let waiter_keys: Vec<_> = pending_read_waiters.iter().map(|e| *e.key()).collect();
+        for request_id in waiter_keys {
+            let mut should_remove = false;
+            if let Some(mut pending) = pending_read_waiters.get_mut(&request_id) {
+                match pending.receiver.try_recv() {
+                    Ok(result) => {
+                        let reply = pending.reply.take();
+                        let size = pending.size;
+                        let state = Arc::clone(&pending.state);
+                        should_remove = true;
+                        drop(pending);
+
+                        if let Some(reply) = reply {
+                            if state.claim_reply() {
+                                match result {
+                                    Ok(data) => {
+                                        let data = if data.len() > size {
+                                            data.slice(0..size)
+                                        } else {
+                                            data
+                                        };
+                                        reply.data(&data);
+                                        stats.record_accept();
+                                        vault_stats.record_read(data.len() as u64);
+                                        vault_stats.finish_read();
+                                    }
+                                    Err(errno) => {
+                                        reply.error(errno);
+                                        stats.record_accept();
+                                        vault_stats.finish_read();
+                                        vault_stats.record_error();
+                                    }
+                                }
+                            } else {
+                                stats.record_late_completion();
+                            }
+                        } else {
+                            stats.record_late_completion();
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+                    | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        let reply = pending.reply.take();
+                        let state = Arc::clone(&pending.state);
+                        should_remove = true;
+                        drop(pending);
+
+                        if let Some(reply) = reply {
+                            if state.claim_reply() {
+                                reply.error(libc::EIO);
+                                stats.record_accept();
+                                vault_stats.finish_read();
+                                vault_stats.record_error();
+                            } else {
+                                stats.record_late_completion();
+                            }
+                        } else {
+                            stats.record_late_completion();
+                        }
+                    }
+                }
+            }
+            if should_remove {
+                pending_read_waiters.remove(&request_id);
             }
         }
 
@@ -1500,13 +2006,19 @@ fn dispatcher_loop(
         let heap_len = deadline_heap.len();
         if heap_len > 1000 {
             // Count how many pending requests we actually have
-            let pending_count = pending_reads.len() + pending_copy_ranges.len() + pending_structural.len();
+            let pending_count = pending_reads.len()
+                + pending_read_waiters.len()
+                + pending_copy_ranges.len()
+                + pending_structural.len()
+                + pending_hazardous.len();
             // If heap has more than 2x the number of pending requests, it has many stale entries
             if heap_len > pending_count * 2 {
                 let removed = deadline_heap.compact(|request_id, _generation| {
                     pending_reads.contains_key(&request_id)
+                        || pending_read_waiters.contains_key(&request_id)
                         || pending_copy_ranges.contains_key(&request_id)
                         || pending_structural.contains_key(&request_id)
+                        || pending_hazardous.contains_key(&request_id)
                 });
                 if removed > 0 {
                     trace!(removed, heap_len, pending_count, "Compacted deadline heap");
@@ -1546,11 +2058,22 @@ fn dispatcher_loop(
                         *handle = FuseHandle::Reader(job.reader);
                     }
                 }
+                if let Some(counter) = pending_writes_by_file.get(&job.ino_out) {
+                    if counter.fetch_sub(1, Ordering::Release) == 1 {
+                        pending_writes_by_file
+                            .remove_if(&job.ino_out, |_, c| c.load(Ordering::Acquire) == 0);
+                    }
+                }
+                writes_complete_notify.1.notify_all();
                 warn!(request_id = ?queued.id, "Dropped queued copy_file_range job on shutdown");
             }
             QueuedJob::Structural(_job) => {
                 // Structural jobs don't hold readers, nothing to restore
                 warn!(request_id = ?queued.id, "Dropped queued structural job on shutdown");
+            }
+            QueuedJob::Hazardous(_job) => {
+                // Hazardous jobs don't hold readers, nothing to restore
+                warn!(request_id = ?queued.id, "Dropped queued hazardous job on shutdown");
             }
         }
     }
@@ -1565,34 +2088,75 @@ fn dispatcher_loop(
     // double-reply. The handle will be in ReaderLoaned state until the file is closed.
     let pending_read_keys: Vec<_> = pending_reads.iter().map(|e| *e.key()).collect();
     for request_id in pending_read_keys {
-        if let Some((_, pending)) = pending_reads.remove(&request_id) {
+        if let Some((_, mut pending)) = pending_reads.remove(&request_id) {
             if pending.state.claim_reply() {
                 warn!(?request_id, "Replying ESHUTDOWN to pending read");
-                pending.reply.error(libc::ESHUTDOWN);
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::ESHUTDOWN);
+                }
+            }
+        }
+    }
+
+    let pending_waiter_keys: Vec<_> = pending_read_waiters.iter().map(|e| *e.key()).collect();
+    for request_id in pending_waiter_keys {
+        if let Some((_, mut pending)) = pending_read_waiters.remove(&request_id) {
+            if pending.state.claim_reply() {
+                warn!(?request_id, "Replying ESHUTDOWN to pending read waiter");
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::ESHUTDOWN);
+                }
             }
         }
     }
 
     let pending_copy_keys: Vec<_> = pending_copy_ranges.iter().map(|e| *e.key()).collect();
     for request_id in pending_copy_keys {
-        if let Some((_, pending)) = pending_copy_ranges.remove(&request_id) {
+        if let Some((_, mut pending)) = pending_copy_ranges.remove(&request_id) {
             if pending.state.claim_reply() {
                 warn!(?request_id, "Replying ESHUTDOWN to pending copy_file_range");
-                pending.reply.error(libc::ESHUTDOWN);
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::ESHUTDOWN);
+                }
+                if let Some(counter) = pending_writes_by_file.get(&pending.ino_out) {
+                    if counter.fetch_sub(1, Ordering::Release) == 1 {
+                        pending_writes_by_file
+                            .remove_if(&pending.ino_out, |_, c| c.load(Ordering::Acquire) == 0);
+                    }
+                }
+                writes_complete_notify.1.notify_all();
             }
         }
     }
 
     let pending_structural_keys: Vec<_> = pending_structural.iter().map(|e| *e.key()).collect();
     for request_id in pending_structural_keys {
-        if let Some((_, pending)) = pending_structural.remove(&request_id)
+        if let Some((_, mut pending)) = pending_structural.remove(&request_id)
             && pending.state.claim_reply()
         {
-            warn!(?request_id, op = pending.op.name(), "Replying ESHUTDOWN to pending structural op");
-            pending.reply.error(libc::ESHUTDOWN);
+            warn!(
+                ?request_id,
+                op = pending.op.name(),
+                "Replying ESHUTDOWN to pending structural op"
+            );
+            if let Some(reply) = pending.reply.take() {
+                reply.error(libc::ESHUTDOWN);
+            }
             // Release per-file ordering
             for ino in pending.op.affected_inodes() {
                 per_file.complete(ino, Some(libc::ESHUTDOWN));
+            }
+        }
+    }
+
+    let pending_hazardous_keys: Vec<_> = pending_hazardous.iter().map(|e| *e.key()).collect();
+    for request_id in pending_hazardous_keys {
+        if let Some((_, mut pending)) = pending_hazardous.remove(&request_id) {
+            if pending.state.claim_reply() {
+                warn!(?request_id, "Replying ESHUTDOWN to pending hazardous op");
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::ESHUTDOWN);
+                }
             }
         }
     }
@@ -1607,10 +2171,10 @@ fn dispatch_read_job(
     job: QueuedReadJob,
     lane: Lane,
     executor: &FsSyscallExecutor,
-    deadline_heap: &DeadlineHeap,
     pending_reads: &DashMap<RequestId, PendingRead>,
     stats: &SchedulerStats,
     in_flight: &InFlightReads,
+    handle_table: &FuseHandleTable,
     result_tx: &std::sync::mpsc::Sender<(RequestId, oneshot::Receiver<ExecutorResult>)>,
 ) {
     // Create oneshot for result
@@ -1629,19 +2193,24 @@ fn dispatch_read_job(
         deadline: job.deadline,
     };
 
-    // Increment in-flight count before submission
-    stats.inc_in_flight(lane as usize);
-
     // Submit to executor
-    if let Err(e) = executor.try_submit(executor_job) {
+    if let Err((e, rejected_job)) = executor.try_submit(executor_job) {
         // Submission failed - reply with error
         warn!(?request_id, "Executor rejected read job: {}", e);
-        stats.dec_in_flight(lane as usize);
+        let rejected_fh = rejected_job.fh;
+        let reader = match rejected_job.operation {
+            ExecutorOperation::Read { reader, .. } => reader,
+            ExecutorOperation::Structural { .. } => unreachable!("Read job rejected as structural"),
+            ExecutorOperation::Hazardous { .. } => unreachable!("Read job rejected as hazardous"),
+        };
+        restore_reader(request_id, rejected_fh, reader, handle_table);
 
         // Get the pending read and reply with error
-        if let Some((_, pending)) = pending_reads.remove(&request_id) {
+        if let Some((_, mut pending)) = pending_reads.remove(&request_id) {
             if pending.state.claim_reply() {
-                pending.reply.error(libc::EAGAIN);
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::EAGAIN);
+                }
                 // Cancel single-flight if we were leader
                 if let Some(key) = pending.read_key {
                     in_flight.cancel(&key);
@@ -1651,17 +2220,17 @@ fn dispatch_read_job(
         return;
     }
 
-    // Insert into deadline heap for timeout tracking
-    let generation = deadline_heap.insert(request_id, job.deadline);
-
-    // Update pending read with proper generation
-    if let Some(mut pending) = pending_reads.get_mut(&request_id) {
-        pending.generation = generation;
+    stats.inc_in_flight(lane as usize);
+    if let Some(pending) = pending_reads.get_mut(&request_id) {
+        pending.in_flight.store(true, Ordering::Release);
     }
 
     // Send result receiver to self for tracking
     if result_tx.send((request_id, rx)).is_err() {
-        warn!(?request_id, "Failed to send result receiver - dispatcher shutting down");
+        warn!(
+            ?request_id,
+            "Failed to send result receiver - dispatcher shutting down"
+        );
     }
 
     trace!(?request_id, ?lane, "Read job dispatched to executor");
@@ -1674,9 +2243,11 @@ fn dispatch_copy_range_job(
     job: QueuedCopyRangeJob,
     lane: Lane,
     executor: &FsSyscallExecutor,
-    deadline_heap: &DeadlineHeap,
     pending_copy_ranges: &DashMap<RequestId, PendingCopyRange>,
+    pending_writes_by_file: &DashMap<u64, AtomicU64>,
+    writes_complete_notify: &Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     stats: &SchedulerStats,
+    handle_table: &FuseHandleTable,
     result_tx: &std::sync::mpsc::Sender<(RequestId, oneshot::Receiver<ExecutorResult>)>,
 ) {
     // Create oneshot for result
@@ -1695,38 +2266,59 @@ fn dispatch_copy_range_job(
         deadline: job.deadline,
     };
 
-    // Increment in-flight count before submission
-    stats.inc_in_flight(lane as usize);
-
     // Submit to executor
-    if let Err(e) = executor.try_submit(executor_job) {
+    if let Err((e, rejected_job)) = executor.try_submit(executor_job) {
         // Submission failed - reply with error
         warn!(?request_id, "Executor rejected copy_file_range job: {}", e);
-        stats.dec_in_flight(lane as usize);
+        let rejected_fh = rejected_job.fh;
+        let reader = match rejected_job.operation {
+            ExecutorOperation::Read { reader, .. } => reader,
+            ExecutorOperation::Structural { .. } => {
+                unreachable!("copy_file_range rejected as structural")
+            }
+            ExecutorOperation::Hazardous { .. } => {
+                unreachable!("copy_file_range rejected as hazardous")
+            }
+        };
+        restore_reader(request_id, rejected_fh, reader, handle_table);
 
         // Get the pending copy range and reply with error
-        if let Some((_, pending)) = pending_copy_ranges.remove(&request_id) {
+        if let Some((_, mut pending)) = pending_copy_ranges.remove(&request_id) {
             if pending.state.claim_reply() {
-                pending.reply.error(libc::EAGAIN);
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::EAGAIN);
+                }
             }
+            // Decrement pending writes counter for barrier semantics
+            if let Some(counter) = pending_writes_by_file.get(&pending.ino_out) {
+                if counter.fetch_sub(1, Ordering::Release) == 1 {
+                    pending_writes_by_file
+                        .remove_if(&pending.ino_out, |_, c| c.load(Ordering::Acquire) == 0);
+                }
+            }
+            writes_complete_notify.1.notify_all();
         }
         return;
     }
 
-    // Insert into deadline heap for timeout tracking
-    let generation = deadline_heap.insert(request_id, job.deadline);
-
-    // Update pending copy range with proper generation
-    if let Some(mut pending) = pending_copy_ranges.get_mut(&request_id) {
-        pending.generation = generation;
+    stats.inc_in_flight(lane as usize);
+    if let Some(pending) = pending_copy_ranges.get_mut(&request_id) {
+        pending.in_flight.store(true, Ordering::Release);
     }
 
     // Send result receiver to self for tracking
     if result_tx.send((request_id, rx)).is_err() {
-        warn!(?request_id, "Failed to send result receiver - dispatcher shutting down");
+        warn!(
+            ?request_id,
+            "Failed to send result receiver - dispatcher shutting down"
+        );
     }
 
-    trace!(?request_id, ?lane, "copy_file_range job dispatched to executor");
+    trace!(
+        ?request_id,
+        ?lane,
+        "copy_file_range job dispatched to executor"
+    );
 }
 
 /// Handle completion of a read request.
@@ -1803,21 +2395,22 @@ fn handle_read_completion(
                 } else {
                     warn!(
                         ?request_id,
-                        fh,
-                        "Handle modified during async read, discarding reader"
+                        fh, "Handle modified during async read, discarding reader"
                     );
                 }
             } else {
                 trace!(
                     ?request_id,
-                    fh,
-                    "Handle removed during async read, discarding reader"
+                    fh, "Handle removed during async read, discarding reader"
                 );
             }
         }
         Some(ExecutorResult::Structural(_)) => {
             // Structural operations should not be sent to handle_read_completion
             unreachable!("Structural result in read completion handler");
+        }
+        Some(ExecutorResult::Hazardous(_)) => {
+            unreachable!("Hazardous result in read completion handler");
         }
         None => {
             trace!(?request_id, "Replying with EIO (sender dropped)");
@@ -1844,7 +2437,25 @@ fn handle_copy_range_completion(
     result: Option<ExecutorResult>,
     pending: PendingCopyRange,
     handle_table: &FuseHandleTable,
+    read_cache: &ReadCache,
+    attr_cache: &AttrCache,
+    buffer_sizes: &DashMap<u64, u64>,
+    write_bytes_global: &AtomicU64,
+    write_bytes_by_file: &DashMap<u64, AtomicU64>,
 ) {
+    let PendingCopyRange {
+        fh_out,
+        ino_out,
+        offset_out,
+        reply,
+        ..
+    } = pending;
+
+    let Some(reply) = reply else {
+        restore_reader_from_result(request_id, result, handle_table);
+        return;
+    };
+
     match result {
         Some(ExecutorResult::Read(read_result)) => {
             let fh_in = read_result.fh;
@@ -1853,15 +2464,15 @@ fn handle_copy_range_completion(
             match read_result.result {
                 Ok(data) => {
                     // Write to destination buffer
-                    let bytes_written = {
-                        let Some(mut handle) = handle_table.get_mut(&pending.fh_out) else {
+                    let (bytes_written, old_size, new_size) = {
+                        let Some(mut handle) = handle_table.get_mut(&fh_out) else {
                             // Destination handle was closed during async operation
                             warn!(
                                 ?request_id,
-                                fh_out = pending.fh_out,
+                                fh_out = fh_out,
                                 "Destination handle closed during copy_file_range"
                             );
-                            pending.reply.error(libc::EBADF);
+                            reply.error(libc::EBADF);
                             // Still restore the source reader
                             restore_reader(request_id, fh_in, reader, handle_table);
                             return;
@@ -1870,36 +2481,55 @@ fn handle_copy_range_completion(
                         let Some(buffer) = handle.as_write_buffer_mut() else {
                             warn!(
                                 ?request_id,
-                                fh_out = pending.fh_out,
+                                fh_out = fh_out,
                                 "Destination not opened for writing"
                             );
-                            pending.reply.error(libc::EBADF);
+                            reply.error(libc::EBADF);
                             drop(handle);
                             restore_reader(request_id, fh_in, reader, handle_table);
                             return;
                         };
 
-                        buffer.write(pending.offset_out, &data)
+                        let old_size = buffer.len();
+                        let bytes_written = buffer.write(offset_out, &data);
+                        let new_size = buffer.len();
+                        (bytes_written, old_size, new_size)
                     };
 
-                    trace!(
-                        ?request_id,
-                        bytes_written,
-                        "copy_file_range completed"
-                    );
+                    trace!(?request_id, bytes_written, "copy_file_range completed");
+
+                    // Track buffer size for mmap consistency
+                    buffer_sizes
+                        .entry(ino_out)
+                        .and_modify(|s| *s = (*s).max(new_size))
+                        .or_insert(new_size);
+                    // Invalidate attr cache for destination
+                    attr_cache.invalidate(ino_out);
+                    // Invalidate read cache globally for this inode
+                    read_cache.invalidate_inode(ino_out);
+
+                    // Track write bytes for budget enforcement (delta only)
+                    if new_size > old_size {
+                        let delta = new_size - old_size;
+                        write_bytes_global.fetch_add(delta, Ordering::Release);
+                        write_bytes_by_file
+                            .entry(ino_out)
+                            .or_insert_with(|| AtomicU64::new(0))
+                            .fetch_add(delta, Ordering::Release);
+                    }
 
                     // Reply with bytes written
                     // bytes_written is from WriteBuffer::write which returns usize
                     // FUSE expects u32, but practical file ops fit in u32
                     #[allow(clippy::cast_possible_truncation)]
-                    pending.reply.written(bytes_written as u32);
+                    reply.written(bytes_written as u32);
 
                     // Restore source reader
                     restore_reader(request_id, fh_in, reader, handle_table);
                 }
                 Err(errno) => {
                     trace!(?request_id, errno, "copy_file_range read failed");
-                    pending.reply.error(errno);
+                    reply.error(errno);
                     // Still restore the source reader
                     restore_reader(request_id, fh_in, reader, handle_table);
                 }
@@ -1909,9 +2539,12 @@ fn handle_copy_range_completion(
             // Structural operations should not be sent to handle_copy_range_completion
             unreachable!("Structural result in copy_file_range completion handler");
         }
+        Some(ExecutorResult::Hazardous(_)) => {
+            unreachable!("Hazardous result in copy_file_range completion handler");
+        }
         None => {
             trace!(?request_id, "copy_file_range EIO (sender dropped)");
-            pending.reply.error(libc::EIO);
+            reply.error(libc::EIO);
         }
     }
 }
@@ -1920,7 +2553,7 @@ fn handle_copy_range_completion(
 fn restore_reader(
     request_id: RequestId,
     fh: u64,
-    reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
     handle_table: &FuseHandleTable,
 ) {
     if let Some(mut handle) = handle_table.get_mut(&fh) {
@@ -1930,16 +2563,25 @@ fn restore_reader(
         } else {
             warn!(
                 ?request_id,
-                fh,
-                "Handle modified during async operation, discarding reader"
+                fh, "Handle modified during async operation, discarding reader"
             );
         }
     } else {
         trace!(
             ?request_id,
-            fh,
-            "Handle removed during async operation, discarding reader"
+            fh, "Handle removed during async operation, discarding reader"
         );
+    }
+}
+
+/// Restore a reader from a completed executor result without replying.
+fn restore_reader_from_result(
+    request_id: RequestId,
+    result: Option<ExecutorResult>,
+    handle_table: &FuseHandleTable,
+) {
+    if let Some(ExecutorResult::Read(read_result)) = result {
+        restore_reader(request_id, read_result.fh, read_result.reader, handle_table);
     }
 }
 
@@ -1950,7 +2592,6 @@ fn dispatch_structural_job(
     job: QueuedStructuralJob,
     lane: Lane,
     executor: &FsSyscallExecutor,
-    deadline_heap: &DeadlineHeap,
     pending_structural: &DashMap<RequestId, PendingStructural>,
     per_file: &PerFileOrdering,
     stats: &SchedulerStats,
@@ -1971,20 +2612,18 @@ fn dispatch_structural_job(
         deadline: job.deadline,
     };
 
-    // Increment in-flight count before submission
-    stats.inc_in_flight(lane as usize);
-
     // Submit to executor
-    if let Err(e) = executor.try_submit(executor_job) {
+    if let Err((e, _rejected_job)) = executor.try_submit(executor_job) {
         // Submission failed - reply with error
         warn!(?request_id, "Executor rejected structural job: {}", e);
-        stats.dec_in_flight(lane as usize);
 
         // Get the pending structural and reply with error
-        if let Some((_, pending)) = pending_structural.remove(&request_id)
+        if let Some((_, mut pending)) = pending_structural.remove(&request_id)
             && pending.state.claim_reply()
         {
-            pending.reply.error(libc::EAGAIN);
+            if let Some(reply) = pending.reply.take() {
+                reply.error(libc::EAGAIN);
+            }
             // Release per-file ordering for all affected inodes
             for ino in pending.op.affected_inodes() {
                 per_file.complete(ino, Some(libc::EAGAIN));
@@ -1993,21 +2632,75 @@ fn dispatch_structural_job(
         return;
     }
 
-    // Insert into deadline heap for timeout tracking
-    let generation = deadline_heap.insert(request_id, job.deadline);
-
-    // Update pending structural with proper generation
-    if let Some(mut pending) = pending_structural.get_mut(&request_id) {
-        pending.generation = generation;
+    stats.inc_in_flight(lane as usize);
+    if let Some(pending) = pending_structural.get_mut(&request_id) {
+        pending.in_flight.store(true, Ordering::Release);
     }
 
     // Send result receiver to self for tracking
     if result_tx.send((request_id, rx)).is_err() {
-        warn!(?request_id, "Failed to send result receiver - dispatcher shutting down");
+        warn!(
+            ?request_id,
+            "Failed to send result receiver - dispatcher shutting down"
+        );
     }
 
     let op_name = job.op.name();
-    trace!(?request_id, ?lane, op = op_name, "Structural job dispatched to executor");
+    trace!(
+        ?request_id,
+        ?lane,
+        op = op_name,
+        "Structural job dispatched to executor"
+    );
+}
+
+/// Dispatch a hazardous job to the executor.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_hazardous_job(
+    request_id: RequestId,
+    job: QueuedHazardousJob,
+    lane: Lane,
+    executor: &FsSyscallExecutor,
+    pending_hazardous: &DashMap<RequestId, PendingHazardous>,
+    stats: &SchedulerStats,
+    result_tx: &std::sync::mpsc::Sender<(RequestId, oneshot::Receiver<ExecutorResult>)>,
+) {
+    let (tx, rx) = oneshot::channel();
+
+    let executor_job = ExecutorJob {
+        request_id,
+        fh: 0,
+        operation: ExecutorOperation::Hazardous {
+            op: job.op,
+            handler: job.handler,
+        },
+        result_tx: tx,
+        deadline: job.deadline,
+    };
+
+    if let Err((e, _rejected_job)) = executor.try_submit(executor_job) {
+        warn!(?request_id, "Executor rejected hazardous job: {}", e);
+        if let Some((_, mut pending)) = pending_hazardous.remove(&request_id) {
+            if pending.state.claim_reply() {
+                if let Some(reply) = pending.reply.take() {
+                    reply.error(libc::EAGAIN);
+                }
+            }
+        }
+        return;
+    }
+
+    stats.inc_in_flight(lane as usize);
+    if let Some(pending) = pending_hazardous.get_mut(&request_id) {
+        pending.in_flight.store(true, Ordering::Release);
+    }
+
+    if result_tx.send((request_id, rx)).is_err() {
+        warn!(
+            ?request_id,
+            "Failed to send result receiver - dispatcher shutting down"
+        );
+    }
 }
 
 /// Handle completion of a structural request.
@@ -2017,6 +2710,10 @@ fn handle_structural_completion(
     pending: PendingStructural,
     per_file: &PerFileOrdering,
 ) {
+    let Some(reply) = pending.reply else {
+        return;
+    };
+
     match result {
         Some(ExecutorResult::Structural(structural_result)) => {
             // Handle the structural result
@@ -2026,7 +2723,7 @@ fn handle_structural_completion(
                         Ok(()) => {
                             trace!(?request_id, "Structural operation completed successfully");
                             // For empty replies (unlink, rmdir, rename), just reply ok
-                            match pending.reply {
+                            match reply {
                                 StructuralReply::Empty(reply) => reply.ok(),
                                 _ => {
                                     error!(?request_id, "Mismatched reply type for Empty result");
@@ -2035,7 +2732,7 @@ fn handle_structural_completion(
                         }
                         Err(errno) => {
                             trace!(?request_id, errno, "Structural operation failed");
-                            pending.reply.error(errno);
+                            reply.error(errno);
                             // Record error in per-file ordering
                             for ino in pending.op.affected_inodes() {
                                 per_file.complete(ino, Some(errno));
@@ -2048,7 +2745,7 @@ fn handle_structural_completion(
                     match result {
                         Ok((attr, generation)) => {
                             trace!(?request_id, "Entry created successfully");
-                            match pending.reply {
+                            match reply {
                                 StructuralReply::Entry(reply) => {
                                     reply.entry(&Duration::from_secs(1), &attr, generation);
                                 }
@@ -2059,7 +2756,7 @@ fn handle_structural_completion(
                         }
                         Err(errno) => {
                             trace!(?request_id, errno, "Entry creation failed");
-                            pending.reply.error(errno);
+                            reply.error(errno);
                             for ino in pending.op.affected_inodes() {
                                 per_file.complete(ino, Some(errno));
                             }
@@ -2071,9 +2768,15 @@ fn handle_structural_completion(
                     match result {
                         Ok((attr, generation, fh, flags)) => {
                             trace!(?request_id, fh, "File created successfully");
-                            match pending.reply {
+                            match reply {
                                 StructuralReply::Create(reply) => {
-                                    reply.created(&Duration::from_secs(1), &attr, generation, fh, flags);
+                                    reply.created(
+                                        &Duration::from_secs(1),
+                                        &attr,
+                                        generation,
+                                        fh,
+                                        flags,
+                                    );
                                 }
                                 _ => {
                                     error!(?request_id, "Mismatched reply type for Create result");
@@ -2082,7 +2785,7 @@ fn handle_structural_completion(
                         }
                         Err(errno) => {
                             trace!(?request_id, errno, "File creation failed");
-                            pending.reply.error(errno);
+                            reply.error(errno);
                             for ino in pending.op.affected_inodes() {
                                 per_file.complete(ino, Some(errno));
                             }
@@ -2094,7 +2797,7 @@ fn handle_structural_completion(
                     match result {
                         Ok(attr) => {
                             trace!(?request_id, "Setattr completed successfully");
-                            match pending.reply {
+                            match reply {
                                 StructuralReply::Attr(reply) => {
                                     reply.attr(&Duration::from_secs(1), &attr);
                                 }
@@ -2105,7 +2808,7 @@ fn handle_structural_completion(
                         }
                         Err(errno) => {
                             trace!(?request_id, errno, "Setattr failed");
-                            pending.reply.error(errno);
+                            reply.error(errno);
                             for ino in pending.op.affected_inodes() {
                                 per_file.complete(ino, Some(errno));
                             }
@@ -2118,12 +2821,99 @@ fn handle_structural_completion(
             // Read results should not be sent to handle_structural_completion
             unreachable!("Read result in structural completion handler");
         }
+        Some(ExecutorResult::Hazardous(_)) => {
+            unreachable!("Hazardous result in structural completion handler");
+        }
         None => {
             trace!(?request_id, "Structural EIO (sender dropped)");
-            pending.reply.error(libc::EIO);
+            reply.error(libc::EIO);
             for ino in pending.op.affected_inodes() {
                 per_file.complete(ino, Some(libc::EIO));
             }
+        }
+    }
+}
+
+/// Handle completion of a hazardous request.
+fn handle_hazardous_completion(
+    _request_id: RequestId,
+    result: Option<ExecutorResult>,
+    pending: PendingHazardous,
+    stats: &SchedulerStats,
+) {
+    let Some(reply) = pending.reply else {
+        return;
+    };
+
+    match result {
+        Some(ExecutorResult::Hazardous(hazardous_result)) => match hazardous_result {
+            HazardousResult::Empty { result, .. } => match result {
+                Ok(()) => {
+                    if let HazardousReply::Empty(r) = reply {
+                        r.ok();
+                    } else {
+                        reply.error(libc::EIO);
+                    }
+                    stats.record_accept();
+                }
+                Err(errno) => {
+                    reply.error(errno);
+                    stats.record_accept();
+                }
+            },
+            HazardousResult::Directory { result, .. } => match result {
+                Ok(entries) => {
+                    if let HazardousReply::Directory(mut r) = reply {
+                        for entry in entries {
+                            if r.add(entry.inode, entry.offset, entry.file_type, &entry.name) {
+                                break;
+                            }
+                        }
+                        r.ok();
+                    } else {
+                        reply.error(libc::EIO);
+                    }
+                    stats.record_accept();
+                }
+                Err(errno) => {
+                    reply.error(errno);
+                    stats.record_accept();
+                }
+            },
+            HazardousResult::DirectoryPlus { result, .. } => match result {
+                Ok(entries) => {
+                    if let HazardousReply::DirectoryPlus(mut r) = reply {
+                        for entry in entries {
+                            if r.add(
+                                entry.inode,
+                                entry.offset,
+                                &entry.name,
+                                &entry.ttl,
+                                &entry.attr,
+                                entry.generation,
+                            ) {
+                                break;
+                            }
+                        }
+                        r.ok();
+                    } else {
+                        reply.error(libc::EIO);
+                    }
+                    stats.record_accept();
+                }
+                Err(errno) => {
+                    reply.error(errno);
+                    stats.record_accept();
+                }
+            },
+        },
+        Some(_) => {
+            reply.error(libc::EIO);
+            stats.record_accept();
+        }
+        None => {
+            reply.error(libc::EIO);
+            stats.record_accept();
         }
     }
 }
@@ -2145,7 +2935,9 @@ mod tests {
         use crate::handles::FuseHandleTableExt;
         let handle_table = Arc::new(FuseHandleTable::new_fuse());
         let vault_stats = Arc::new(VaultStats::new());
-        let mut scheduler = FuseScheduler::new(handle_table, vault_stats);
+        let attr_cache = Arc::new(AttrCache::with_defaults());
+        let buffer_sizes = Arc::new(DashMap::new());
+        let mut scheduler = FuseScheduler::new(handle_table, vault_stats, attr_cache, buffer_sizes);
         assert!(scheduler.is_healthy());
         assert_eq!(scheduler.pending_read_count(), 0);
         scheduler.start();

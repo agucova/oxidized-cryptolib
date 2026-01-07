@@ -26,12 +26,7 @@ fn mount_test_vault() -> (PathBuf, impl Drop) {
 
     let backend = FuseBackend::new();
     let handle = backend
-        .mount(
-            "consistency_test",
-            &vault_path,
-            "123456789",
-            &mount_point,
-        )
+        .mount("consistency_test", &vault_path, "123456789", &mount_point)
         .expect("Failed to mount");
 
     // Brief delay to let mount settle
@@ -62,13 +57,11 @@ fn test_immediate_write_read() {
     let mut read_data = Vec::new();
     {
         let mut file = File::open(&test_file).expect("Failed to open file for reading");
-        file.read_to_end(&mut read_data).expect("Failed to read data");
+        file.read_to_end(&mut read_data)
+            .expect("Failed to read data");
     }
 
-    assert_eq!(
-        read_data, test_data,
-        "Read data doesn't match written data"
-    );
+    assert_eq!(read_data, test_data, "Read data doesn't match written data");
 }
 
 #[test]
@@ -115,7 +108,8 @@ fn test_git_like_object_creation() {
         {
             let mut file = File::open(&object_file)
                 .unwrap_or_else(|e| panic!("Failed to open object {}: {}", object_id, e));
-            file.read_to_end(&mut read_data).expect("Failed to read object");
+            file.read_to_end(&mut read_data)
+                .expect("Failed to read object");
         }
 
         assert_eq!(
@@ -152,10 +146,9 @@ fn test_multiple_mounts_iterations() {
         let mut read_data = String::new();
         {
             let mut file = File::open(&test_file)
-                .unwrap_or_else(|e| {
-                    panic!("Iteration {}: Failed to open file: {}", iteration, e)
-                });
-            file.read_to_string(&mut read_data).expect("Failed to read data");
+                .unwrap_or_else(|e| panic!("Iteration {}: Failed to open file: {}", iteration, e));
+            file.read_to_string(&mut read_data)
+                .expect("Failed to read data");
         }
 
         assert_eq!(

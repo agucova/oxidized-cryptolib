@@ -21,9 +21,15 @@ async fn test_parity_list_files() {
 
     // Create sync ops and add some files
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    sync_ops.write_file(&DirId::root(), "file1.txt", b"content1").unwrap();
-    sync_ops.write_file(&DirId::root(), "file2.txt", b"content2").unwrap();
-    sync_ops.write_file(&DirId::root(), "file3.txt", b"content3").unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "file1.txt", b"content1")
+        .unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "file2.txt", b"content2")
+        .unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "file3.txt", b"content3")
+        .unwrap();
 
     // Create async ops from same vault
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
@@ -57,7 +63,11 @@ async fn test_parity_list_directories() {
     let sync_dirs = sync_ops.list_directories(&DirId::root()).unwrap();
     let async_dirs = async_ops.list_directories(&DirId::root()).await.unwrap();
 
-    assert_eq!(sync_dirs.len(), async_dirs.len(), "Directory count mismatch");
+    assert_eq!(
+        sync_dirs.len(),
+        async_dirs.len(),
+        "Directory count mismatch"
+    );
 
     let mut sync_names: Vec<_> = sync_dirs.iter().map(|d| &d.name).collect();
     let mut async_names: Vec<_> = async_dirs.iter().map(|d| &d.name).collect();
@@ -76,22 +86,39 @@ async fn test_parity_read_write_roundtrip() {
 
     // Write with sync
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    sync_ops.write_file(&DirId::root(), "parity.txt", content).unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "parity.txt", content)
+        .unwrap();
 
     // Read with async
-    let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key.try_clone().unwrap()));
-    let async_read = async_ops.read_file(&DirId::root(), "parity.txt").await.unwrap();
+    let async_ops =
+        VaultOperationsAsync::new(&vault_path, Arc::new(master_key.try_clone().unwrap()));
+    let async_read = async_ops
+        .read_file(&DirId::root(), "parity.txt")
+        .await
+        .unwrap();
 
-    assert_eq!(async_read.content, content, "Async read of sync-written file failed");
+    assert_eq!(
+        async_read.content, content,
+        "Async read of sync-written file failed"
+    );
 
     // Write with async
     let async_content = b"Async written content";
-    async_ops.write_file(&DirId::root(), "async_file.txt", async_content).await.unwrap();
+    async_ops
+        .write_file(&DirId::root(), "async_file.txt", async_content)
+        .await
+        .unwrap();
 
     // Read with sync
-    let sync_read = sync_ops.read_file(&DirId::root(), "async_file.txt").unwrap();
+    let sync_read = sync_ops
+        .read_file(&DirId::root(), "async_file.txt")
+        .unwrap();
 
-    assert_eq!(sync_read.content, async_content, "Sync read of async-written file failed");
+    assert_eq!(
+        sync_read.content, async_content,
+        "Sync read of async-written file failed"
+    );
 }
 
 #[tokio::test]
@@ -102,10 +129,15 @@ async fn test_parity_large_file() {
     let content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
 
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    sync_ops.write_file(&DirId::root(), "large.bin", &content).unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "large.bin", &content)
+        .unwrap();
 
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
-    let async_read = async_ops.read_file(&DirId::root(), "large.bin").await.unwrap();
+    let async_read = async_ops
+        .read_file(&DirId::root(), "large.bin")
+        .await
+        .unwrap();
 
     assert_eq!(async_read.content, content, "Large file parity failed");
 }
@@ -117,7 +149,9 @@ async fn test_parity_create_directory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    let sync_dir_id = sync_ops.create_directory(&DirId::root(), "sync_created").unwrap();
+    let sync_dir_id = sync_ops
+        .create_directory(&DirId::root(), "sync_created")
+        .unwrap();
 
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
@@ -125,8 +159,15 @@ async fn test_parity_create_directory() {
     let dirs = async_ops.list_directories(&DirId::root()).await.unwrap();
     let found = dirs.iter().find(|d| d.name == "sync_created");
 
-    assert!(found.is_some(), "Async couldn't find sync-created directory");
-    assert_eq!(found.unwrap().directory_id, sync_dir_id, "Directory ID mismatch");
+    assert!(
+        found.is_some(),
+        "Async couldn't find sync-created directory"
+    );
+    assert_eq!(
+        found.unwrap().directory_id,
+        sync_dir_id,
+        "Directory ID mismatch"
+    );
 }
 
 #[tokio::test]
@@ -138,8 +179,12 @@ async fn test_parity_nested_structure() {
     // Create nested structure with sync
     let docs_id = sync_ops.create_directory(&DirId::root(), "docs").unwrap();
     let src_id = sync_ops.create_directory(&DirId::root(), "src").unwrap();
-    sync_ops.write_file(&docs_id, "readme.md", b"# Docs").unwrap();
-    sync_ops.write_file(&src_id, "main.rs", b"fn main() {}").unwrap();
+    sync_ops
+        .write_file(&docs_id, "readme.md", b"# Docs")
+        .unwrap();
+    sync_ops
+        .write_file(&src_id, "main.rs", b"fn main() {}")
+        .unwrap();
 
     // Verify with async
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
@@ -163,14 +208,21 @@ async fn test_parity_find_file() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    sync_ops.write_file(&DirId::root(), "findme.txt", b"found!").unwrap();
-    sync_ops.write_file(&DirId::root(), "other.txt", b"not this").unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "findme.txt", b"found!")
+        .unwrap();
+    sync_ops
+        .write_file(&DirId::root(), "other.txt", b"not this")
+        .unwrap();
 
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Both should find the same file
     let sync_found = sync_ops.find_file(&DirId::root(), "findme.txt").unwrap();
-    let async_found = async_ops.find_file(&DirId::root(), "findme.txt").await.unwrap();
+    let async_found = async_ops
+        .find_file(&DirId::root(), "findme.txt")
+        .await
+        .unwrap();
 
     assert!(sync_found.is_some(), "Sync find_file failed");
     assert!(async_found.is_some(), "Async find_file failed");
@@ -183,13 +235,20 @@ async fn test_parity_find_directory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    let created_id = sync_ops.create_directory(&DirId::root(), "findable").unwrap();
-    sync_ops.create_directory(&DirId::root(), "other_dir").unwrap();
+    let created_id = sync_ops
+        .create_directory(&DirId::root(), "findable")
+        .unwrap();
+    sync_ops
+        .create_directory(&DirId::root(), "other_dir")
+        .unwrap();
 
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     let sync_found = sync_ops.find_directory(&DirId::root(), "findable").unwrap();
-    let async_found = async_ops.find_directory(&DirId::root(), "findable").await.unwrap();
+    let async_found = async_ops
+        .find_directory(&DirId::root(), "findable")
+        .await
+        .unwrap();
 
     assert!(sync_found.is_some(), "Sync find_directory failed");
     assert!(async_found.is_some(), "Async find_directory failed");
@@ -221,7 +280,10 @@ async fn test_parity_find_file_shortened() {
         .await
         .unwrap();
 
-    assert!(sync_found.is_some(), "Sync find_file failed for shortened name");
+    assert!(
+        sync_found.is_some(),
+        "Sync find_file failed for shortened name"
+    );
     assert!(
         async_found.is_some(),
         "Async find_file failed for shortened name"
@@ -301,13 +363,18 @@ async fn test_parity_symlink_operations() {
     let (vault_path, master_key) = VaultBuilder::new().build();
 
     let sync_ops = VaultOperations::new(&vault_path, master_key.try_clone().unwrap());
-    sync_ops.create_symlink(&DirId::root(), "link.txt", "/target/path").unwrap();
+    sync_ops
+        .create_symlink(&DirId::root(), "link.txt", "/target/path")
+        .unwrap();
 
     let async_ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Both should read the same target
     let sync_target = sync_ops.read_symlink(&DirId::root(), "link.txt").unwrap();
-    let async_target = async_ops.read_symlink(&DirId::root(), "link.txt").await.unwrap();
+    let async_target = async_ops
+        .read_symlink(&DirId::root(), "link.txt")
+        .await
+        .unwrap();
 
     assert_eq!(sync_target, "/target/path");
     assert_eq!(async_target, "/target/path");
@@ -354,5 +421,8 @@ async fn test_parity_vault_core_accessors() {
     // These should be identical since they both delegate to VaultCore
     assert_eq!(sync_ops.vault_path(), async_ops.vault_path());
     assert_eq!(sync_ops.cipher_combo(), async_ops.cipher_combo());
-    assert_eq!(sync_ops.shortening_threshold(), async_ops.shortening_threshold());
+    assert_eq!(
+        sync_ops.shortening_threshold(),
+        async_ops.shortening_threshold()
+    );
 }

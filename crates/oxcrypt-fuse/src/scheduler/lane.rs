@@ -106,11 +106,11 @@ pub struct LaneCapacities {
 impl Default for LaneCapacities {
     fn default() -> Self {
         Self {
-            control: 256,        // Internal ops, small queue
-            metadata: 1024,      // L1: 1024
-            read_foreground: 2048, // L2: 2048
+            control: 256,           // Internal ops, small queue
+            metadata: 1024,         // L1: 1024
+            read_foreground: 2048,  // L2: 2048
             write_structural: 1024, // L3: 1024
-            bulk: 512,           // L4: 512
+            bulk: 512,              // L4: 512
         }
     }
 }
@@ -149,11 +149,11 @@ pub struct LaneDeadlines {
 impl Default for LaneDeadlines {
     fn default() -> Self {
         Self {
-            control: Duration::from_secs(5),       // Internal ops
-            metadata: Duration::from_secs(2),      // L1: 2s (must be responsive)
-            read_foreground: Duration::from_secs(10), // L2: 10s
+            control: Duration::from_secs(5),           // Internal ops
+            metadata: Duration::from_secs(2),          // L1: 2s (must be responsive)
+            read_foreground: Duration::from_secs(10),  // L2: 10s
             write_structural: Duration::from_secs(10), // L3: 10s
-            bulk: Duration::from_secs(30),         // L4: longer for large ops
+            bulk: Duration::from_secs(30),             // L4: longer for large ops
         }
     }
 }
@@ -220,7 +220,7 @@ pub struct LaneReservations {
 impl Default for LaneReservations {
     fn default() -> Self {
         Self {
-            metadata_min: 1,        // ≥1 slot for metadata
+            metadata_min: 1,         // ≥1 slot for metadata
             write_structural_min: 2, // ≥1-2 slots for writes/structural
         }
     }
@@ -259,5 +259,4 @@ mod tests {
         assert_eq!(classify_read(1024 * 1024), Lane::Bulk);
         assert_eq!(classify_read(10 * 1024 * 1024), Lane::Bulk);
     }
-
 }

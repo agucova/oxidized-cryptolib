@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::name::{decrypt_filename, encrypt_filename, hash_dir_id};
 use std::collections::HashMap;
@@ -27,29 +27,21 @@ fn generate_directory_with_files(n_files: usize) -> (Vec<String>, Vec<String>, S
 
 fn bench_directory_listing(c: &mut Criterion) {
     let mut group = c.benchmark_group("directory_listing");
-    
+
     for size in [10, 100, 1000] {
         let (encrypted_names, _, dir_id) = generate_directory_with_files(size);
         let master_key = setup_master_key();
-        
+
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    // Realistic scenario: decrypt all filenames when listing a directory
-                    for encrypted_name in &encrypted_names {
-                        let decrypted = decrypt_filename(
-                            encrypted_name,
-                            &dir_id,
-                            &master_key,
-                        );
-                        let _ = black_box(decrypted);
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            b.iter(|| {
+                // Realistic scenario: decrypt all filenames when listing a directory
+                for encrypted_name in &encrypted_names {
+                    let decrypted = decrypt_filename(encrypted_name, &dir_id, &master_key);
+                    let _ = black_box(decrypted);
+                }
+            });
+        });
     }
     group.finish();
 }
@@ -57,15 +49,18 @@ fn bench_directory_listing(c: &mut Criterion) {
 fn bench_directory_path_computation(c: &mut Criterion) {
     let mut group = c.benchmark_group("directory_path_computation");
     let master_key = setup_master_key();
-    
+
     // Test different path depths
     let test_cases = [
         ("root", ""),
         ("shallow", "Documents"),
         ("medium", "Documents/Projects/2024"),
-        ("deep", "Documents/Projects/2024/ClientA/src/components/ui/buttons"),
+        (
+            "deep",
+            "Documents/Projects/2024/ClientA/src/components/ui/buttons",
+        ),
     ];
-    
+
     for (name, path) in test_cases {
         group.bench_function(name, |b| {
             b.iter(|| {
@@ -89,11 +84,11 @@ fn bench_directory_path_computation(c: &mut Criterion) {
 fn bench_path_resolution(c: &mut Criterion) {
     let mut group = c.benchmark_group("path_resolution");
     let master_key = setup_master_key();
-    
+
     // Build a directory tree structure
     let mut dir_map: HashMap<String, String> = HashMap::new();
     dir_map.insert(String::new(), String::new()); // root
-    
+
     // Add some nested directories
     let paths = [
         "Documents",
@@ -107,7 +102,7 @@ fn bench_path_resolution(c: &mut Criterion) {
         "Pictures/Vacation/2023",
         "Pictures/Vacation/2024",
     ];
-    
+
     for path in paths {
         let components: Vec<&str> = path.split('/').collect();
         let mut current_id = String::new();
@@ -122,7 +117,7 @@ fn bench_path_resolution(c: &mut Criterion) {
             dir_map.insert(current_path.clone(), current_id.clone());
         }
     }
-    
+
     // Benchmark path resolution
     group.bench_function("resolve_shallow_path", |b| {
         b.iter(|| {
@@ -156,11 +151,11 @@ fn bench_path_resolution(c: &mut Criterion) {
 
 fn bench_bulk_filename_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("bulk_filename_operations");
-    
+
     // Simulate renaming operations (encrypt old + decrypt new)
     let master_key = setup_master_key();
     let dir_id = "parent-directory-id";
-    
+
     let file_pairs: Vec<(String, String)> = (0..100)
         .map(|i| {
             (
@@ -169,7 +164,7 @@ fn bench_bulk_filename_operations(c: &mut Criterion) {
             )
         })
         .collect();
-    
+
     group.throughput(Throughput::Elements(file_pairs.len() as u64));
     group.bench_function("bulk_rename_simulation", |b| {
         b.iter(|| {

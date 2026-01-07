@@ -27,7 +27,9 @@ fn test_rename_file() {
     let content = b"rename test content";
     mount.write("original.txt", content).expect("write failed");
 
-    mount.rename("original.txt", "renamed.txt").expect("rename failed");
+    mount
+        .rename("original.txt", "renamed.txt")
+        .expect("rename failed");
 
     assert_not_found(&mount, "original.txt");
     assert_file_content(&mount, "renamed.txt", content);
@@ -39,7 +41,9 @@ fn test_rename_empty_file() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.write("empty.txt", b"").expect("write failed");
-    mount.rename("empty.txt", "still_empty.txt").expect("rename failed");
+    mount
+        .rename("empty.txt", "still_empty.txt")
+        .expect("rename failed");
 
     assert_not_found(&mount, "empty.txt");
     assert_file_size(&mount, "still_empty.txt", 0);
@@ -54,7 +58,9 @@ fn test_rename_large_file() {
     let expected_hash = sha256(&content);
 
     mount.write("large.bin", &content).expect("write failed");
-    mount.rename("large.bin", "large_renamed.bin").expect("rename failed");
+    mount
+        .rename("large.bin", "large_renamed.bin")
+        .expect("rename failed");
 
     assert_not_found(&mount, "large.bin");
     assert_file_hash(&mount, "large_renamed.bin", &expected_hash);
@@ -66,7 +72,9 @@ fn test_rename_directory() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("old_dir").expect("mkdir failed");
-    mount.write("old_dir/file.txt", b"content").expect("write failed");
+    mount
+        .write("old_dir/file.txt", b"content")
+        .expect("write failed");
 
     mount.rename("old_dir", "new_dir").expect("rename failed");
 
@@ -87,7 +95,9 @@ fn test_move_file_to_subdirectory() {
     mount.write("file.txt", b"content").expect("write failed");
     mount.mkdir("subdir").expect("mkdir failed");
 
-    mount.rename("file.txt", "subdir/file.txt").expect("move failed");
+    mount
+        .rename("file.txt", "subdir/file.txt")
+        .expect("move failed");
 
     assert_not_found(&mount, "file.txt");
     assert_file_content(&mount, "subdir/file.txt", b"content");
@@ -99,9 +109,13 @@ fn test_move_file_from_subdirectory() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("subdir").expect("mkdir failed");
-    mount.write("subdir/file.txt", b"content").expect("write failed");
+    mount
+        .write("subdir/file.txt", b"content")
+        .expect("write failed");
 
-    mount.rename("subdir/file.txt", "file.txt").expect("move failed");
+    mount
+        .rename("subdir/file.txt", "file.txt")
+        .expect("move failed");
 
     assert_not_found(&mount, "subdir/file.txt");
     assert_file_content(&mount, "file.txt", b"content");
@@ -114,9 +128,13 @@ fn test_move_file_between_subdirectories() {
 
     mount.mkdir("src").expect("mkdir src failed");
     mount.mkdir("dst").expect("mkdir dst failed");
-    mount.write("src/file.txt", b"content").expect("write failed");
+    mount
+        .write("src/file.txt", b"content")
+        .expect("write failed");
 
-    mount.rename("src/file.txt", "dst/file.txt").expect("move failed");
+    mount
+        .rename("src/file.txt", "dst/file.txt")
+        .expect("move failed");
 
     assert_not_found(&mount, "src/file.txt");
     assert_file_content(&mount, "dst/file.txt", b"content");
@@ -129,7 +147,9 @@ fn test_move_directory_with_contents() {
 
     mount.mkdir("parent").expect("mkdir parent failed");
     mount.mkdir("parent/child").expect("mkdir child failed");
-    mount.write("parent/child/file.txt", b"nested").expect("write failed");
+    mount
+        .write("parent/child/file.txt", b"nested")
+        .expect("write failed");
 
     mount.rename("parent", "moved_parent").expect("move failed");
 
@@ -148,10 +168,16 @@ fn test_rename_overwrite_file() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("source.txt", b"source content").expect("write source failed");
-    mount.write("target.txt", b"target content").expect("write target failed");
+    mount
+        .write("source.txt", b"source content")
+        .expect("write source failed");
+    mount
+        .write("target.txt", b"target content")
+        .expect("write target failed");
 
-    mount.rename("source.txt", "target.txt").expect("rename failed");
+    mount
+        .rename("source.txt", "target.txt")
+        .expect("rename failed");
 
     assert_not_found(&mount, "source.txt");
     assert_file_content(&mount, "target.txt", b"source content");
@@ -163,8 +189,12 @@ fn test_move_overwrite_in_directory() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("dir").expect("mkdir failed");
-    mount.write("new.txt", b"new content").expect("write new failed");
-    mount.write("dir/old.txt", b"old content").expect("write old failed");
+    mount
+        .write("new.txt", b"new content")
+        .expect("write new failed");
+    mount
+        .write("dir/old.txt", b"old content")
+        .expect("write old failed");
 
     mount.rename("new.txt", "dir/old.txt").expect("move failed");
 
@@ -184,7 +214,9 @@ fn test_move_preserves_all_bytes() {
     let content = all_byte_values();
     mount.write("source.bin", &content).expect("write failed");
 
-    mount.rename("source.bin", "dest.bin").expect("rename failed");
+    mount
+        .rename("source.bin", "dest.bin")
+        .expect("rename failed");
 
     assert_file_content(&mount, "dest.bin", &content);
 }
@@ -198,7 +230,9 @@ fn test_move_preserves_chunk_content() {
     let expected_hash = sha256(&content);
 
     mount.write("chunked.bin", &content).expect("write failed");
-    mount.rename("chunked.bin", "moved_chunked.bin").expect("rename failed");
+    mount
+        .rename("chunked.bin", "moved_chunked.bin")
+        .expect("rename failed");
 
     assert_file_hash(&mount, "moved_chunked.bin", &expected_hash);
 }
@@ -209,10 +243,14 @@ fn test_move_unicode_filename() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     let unicode_name = unicode_filename();
-    mount.write(&unicode_name, b"content").expect("write failed");
+    mount
+        .write(&unicode_name, b"content")
+        .expect("write failed");
 
     let new_name = "renamed_文件.txt";
-    mount.rename(&unicode_name, new_name).expect("rename failed");
+    mount
+        .rename(&unicode_name, new_name)
+        .expect("rename failed");
 
     assert_not_found(&mount, &unicode_name);
     assert_file_content(&mount, new_name, b"content");
@@ -245,13 +283,23 @@ fn test_rename_swap() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("file_a.txt", b"content A").expect("write a failed");
-    mount.write("file_b.txt", b"content B").expect("write b failed");
+    mount
+        .write("file_a.txt", b"content A")
+        .expect("write a failed");
+    mount
+        .write("file_b.txt", b"content B")
+        .expect("write b failed");
 
     // Swap via temporary
-    mount.rename("file_a.txt", "file_temp.txt").expect("a->temp failed");
-    mount.rename("file_b.txt", "file_a.txt").expect("b->a failed");
-    mount.rename("file_temp.txt", "file_b.txt").expect("temp->b failed");
+    mount
+        .rename("file_a.txt", "file_temp.txt")
+        .expect("a->temp failed");
+    mount
+        .rename("file_b.txt", "file_a.txt")
+        .expect("b->a failed");
+    mount
+        .rename("file_temp.txt", "file_b.txt")
+        .expect("temp->b failed");
 
     assert_file_content(&mount, "file_a.txt", b"content B");
     assert_file_content(&mount, "file_b.txt", b"content A");
@@ -285,7 +333,9 @@ fn test_copy_large_file() {
     let expected_hash = sha256(&content);
 
     mount.write("large.bin", &content).expect("write failed");
-    mount.copy("large.bin", "large_copy.bin").expect("copy failed");
+    mount
+        .copy("large.bin", "large_copy.bin")
+        .expect("copy failed");
 
     assert_file_hash(&mount, "large.bin", &expected_hash);
     assert_file_hash(&mount, "large_copy.bin", &expected_hash);
@@ -296,11 +346,15 @@ fn test_copy_independence() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("original.txt", b"original").expect("write failed");
+    mount
+        .write("original.txt", b"original")
+        .expect("write failed");
     mount.copy("original.txt", "copy.txt").expect("copy failed");
 
     // Modify original
-    mount.write("original.txt", b"modified original").expect("modify failed");
+    mount
+        .write("original.txt", b"modified original")
+        .expect("modify failed");
 
     // Copy should be unchanged
     assert_file_content(&mount, "copy.txt", b"original");
@@ -315,7 +369,9 @@ fn test_copy_to_subdirectory() {
     mount.write("file.txt", b"content").expect("write failed");
     mount.mkdir("subdir").expect("mkdir failed");
 
-    mount.copy("file.txt", "subdir/file.txt").expect("copy failed");
+    mount
+        .copy("file.txt", "subdir/file.txt")
+        .expect("copy failed");
 
     assert_file_content(&mount, "file.txt", b"content");
     assert_file_content(&mount, "subdir/file.txt", b"content");
@@ -329,9 +385,15 @@ fn test_copy_chain() {
     let content = b"chain content";
     mount.write("original.txt", content).expect("write failed");
 
-    mount.copy("original.txt", "copy1.txt").expect("copy1 failed");
-    mount.copy("original.txt", "copy2.txt").expect("copy2 failed");
-    mount.copy("original.txt", "copy3.txt").expect("copy3 failed");
+    mount
+        .copy("original.txt", "copy1.txt")
+        .expect("copy1 failed");
+    mount
+        .copy("original.txt", "copy2.txt")
+        .expect("copy2 failed");
+    mount
+        .copy("original.txt", "copy3.txt")
+        .expect("copy3 failed");
 
     // All should have same content
     assert_file_content(&mount, "original.txt", content);
@@ -383,8 +445,12 @@ fn test_rename_exchange_same_dir() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("file_a.txt", b"content A").expect("write a failed");
-    mount.write("file_b.txt", b"content B").expect("write b failed");
+    mount
+        .write("file_a.txt", b"content A")
+        .expect("write a failed");
+    mount
+        .write("file_b.txt", b"content B")
+        .expect("write b failed");
 
     // Atomic swap
     mount
@@ -482,19 +548,12 @@ fn test_rename_exchange_cross_dir_dirs_fails() {
 
     mount.mkdir("parent_a").expect("mkdir parent_a failed");
     mount.mkdir("parent_b").expect("mkdir parent_b failed");
-    mount
-        .mkdir("parent_a/child")
-        .expect("mkdir child_a failed");
-    mount
-        .mkdir("parent_b/child")
-        .expect("mkdir child_b failed");
+    mount.mkdir("parent_a/child").expect("mkdir child_a failed");
+    mount.mkdir("parent_b/child").expect("mkdir child_b failed");
 
     // Swapping directories across different parents should fail
     let result = mount.rename_exchange("parent_a/child", "parent_b/child");
-    assert!(
-        result.is_err(),
-        "cross-parent dir exchange should fail"
-    );
+    assert!(result.is_err(), "cross-parent dir exchange should fail");
 
     // Check errno is EXDEV
     let err = result.unwrap_err();
@@ -557,8 +616,12 @@ fn test_rename_exchange_large_files() {
     let hash_a = sha256(&content_a);
     let hash_b = sha256(&content_b);
 
-    mount.write("large_a.bin", &content_a).expect("write a failed");
-    mount.write("large_b.bin", &content_b).expect("write b failed");
+    mount
+        .write("large_a.bin", &content_a)
+        .expect("write a failed");
+    mount
+        .write("large_b.bin", &content_b)
+        .expect("write b failed");
 
     // Atomic swap
     mount

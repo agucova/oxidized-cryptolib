@@ -11,8 +11,8 @@ mod common;
 
 #[allow(unused_imports)]
 use common::*;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -162,7 +162,10 @@ fn test_parallel_writes_different_files() {
         handle.join().expect("thread panicked");
     }
 
-    assert!(success.load(Ordering::SeqCst), "Some parallel writes failed");
+    assert!(
+        success.load(Ordering::SeqCst),
+        "Some parallel writes failed"
+    );
 }
 
 #[test]
@@ -174,7 +177,9 @@ fn test_sequential_writes_same_file() {
     let mount_path = mount.mount_path.clone();
 
     // Write from main thread first
-    mount.write("contested.txt", b"initial").expect("write failed");
+    mount
+        .write("contested.txt", b"initial")
+        .expect("write failed");
 
     // Sequential writes from different threads
     for i in 0..5 {
@@ -205,7 +210,9 @@ fn test_rapid_create_delete_cycle() {
         let filename = format!("cycle_{}.txt", i);
         let content = format!("content {}", i);
 
-        mount.write(&filename, content.as_bytes()).expect("write failed");
+        mount
+            .write(&filename, content.as_bytes())
+            .expect("write failed");
         assert_exists(&mount, &filename);
 
         mount.remove(&filename).expect("delete failed");

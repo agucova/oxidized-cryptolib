@@ -36,12 +36,12 @@ fn test_write_file_empty_content() {
 
     // Write an empty file
     vault_ops
-        .write_file(&DirId::root(),"empty.txt", b"")
+        .write_file(&DirId::root(), "empty.txt", b"")
         .expect("Failed to write empty file");
 
     // Read it back
     let decrypted = vault_ops
-        .read_file(&DirId::root(),"empty.txt")
+        .read_file(&DirId::root(), "empty.txt")
         .expect("Failed to read empty file");
     assert!(decrypted.content.is_empty());
 }
@@ -54,12 +54,12 @@ fn test_write_file_large_content() {
     // Write a file larger than one chunk (32KB)
     let content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
     vault_ops
-        .write_file(&DirId::root(),"large.bin", &content)
+        .write_file(&DirId::root(), "large.bin", &content)
         .expect("Failed to write large file");
 
     // Read it back
     let decrypted = vault_ops
-        .read_file(&DirId::root(),"large.bin")
+        .read_file(&DirId::root(), "large.bin")
         .expect("Failed to read large file");
     assert_eq!(decrypted.content, content);
 }
@@ -72,12 +72,12 @@ fn test_write_file_binary_content() {
     // Write binary content with all byte values
     let content: Vec<u8> = (0..=255).collect();
     vault_ops
-        .write_file(&DirId::root(),"binary.bin", &content)
+        .write_file(&DirId::root(), "binary.bin", &content)
         .expect("Failed to write binary file");
 
     // Read it back
     let decrypted = vault_ops
-        .read_file(&DirId::root(),"binary.bin")
+        .read_file(&DirId::root(), "binary.bin")
         .expect("Failed to read binary file");
     assert_eq!(decrypted.content, content);
 }
@@ -90,12 +90,12 @@ fn test_write_file_unicode_filename() {
     // Write file with Unicode filename
     let content = b"Unicode content";
     vault_ops
-        .write_file(&DirId::root(),"файл-测试-🔐.txt", content)
+        .write_file(&DirId::root(), "файл-测试-🔐.txt", content)
         .expect("Failed to write Unicode-named file");
 
     // Read it back
     let decrypted = vault_ops
-        .read_file(&DirId::root(),"файл-测试-🔐.txt")
+        .read_file(&DirId::root(), "файл-测试-🔐.txt")
         .expect("Failed to read Unicode-named file");
     assert_eq!(decrypted.content, content);
 }
@@ -108,16 +108,16 @@ fn test_write_file_overwrites_existing() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Verify original content
-    let original = vault_ops.read_file(&DirId::root(),"existing.txt").unwrap();
+    let original = vault_ops.read_file(&DirId::root(), "existing.txt").unwrap();
     assert_eq!(original.content, b"original content");
 
     // Overwrite with new content
     vault_ops
-        .write_file(&DirId::root(),"existing.txt", b"new content")
+        .write_file(&DirId::root(), "existing.txt", b"new content")
         .expect("Failed to overwrite file");
 
     // Verify new content
-    let updated = vault_ops.read_file(&DirId::root(),"existing.txt").unwrap();
+    let updated = vault_ops.read_file(&DirId::root(), "existing.txt").unwrap();
     assert_eq!(updated.content, b"new content");
 }
 
@@ -130,7 +130,7 @@ fn test_create_directory_basic() {
 
     // Create a directory
     let dir_id = vault_ops
-        .create_directory(&DirId::root(),"new_folder")
+        .create_directory(&DirId::root(), "new_folder")
         .expect("Failed to create directory");
 
     // Verify it appears in listing
@@ -146,7 +146,7 @@ fn test_create_directory_nested() {
 
     // Create parent directory
     let parent_id = vault_ops
-        .create_directory(&DirId::root(),"parent")
+        .create_directory(&DirId::root(), "parent")
         .expect("Failed to create parent directory");
 
     // Create child directory
@@ -167,7 +167,7 @@ fn test_create_directory_and_write_file() {
 
     // Create directory
     let dir_id = vault_ops
-        .create_directory(&DirId::root(),"docs")
+        .create_directory(&DirId::root(), "docs")
         .expect("Failed to create directory");
 
     // Write file in directory
@@ -190,15 +190,19 @@ fn test_delete_file_basic() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Verify file exists
-    assert!(vault_ops.read_file(&DirId::root(),"to_delete.txt").is_ok());
+    assert!(vault_ops.read_file(&DirId::root(), "to_delete.txt").is_ok());
 
     // Delete it
     vault_ops
-        .delete_file(&DirId::root(),"to_delete.txt")
+        .delete_file(&DirId::root(), "to_delete.txt")
         .expect("Failed to delete file");
 
     // Verify it's gone
-    assert!(vault_ops.read_file(&DirId::root(),"to_delete.txt").is_err());
+    assert!(
+        vault_ops
+            .read_file(&DirId::root(), "to_delete.txt")
+            .is_err()
+    );
 }
 
 #[test]
@@ -207,7 +211,7 @@ fn test_delete_file_not_found() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Try to delete non-existent file
-    let result = vault_ops.delete_file(&DirId::root(),"nonexistent.txt");
+    let result = vault_ops.delete_file(&DirId::root(), "nonexistent.txt");
     assert!(matches!(result, Err(VaultWriteError::FileNotFound { .. })));
 }
 
@@ -218,19 +222,19 @@ fn test_delete_written_file() {
 
     // Write a file
     vault_ops
-        .write_file(&DirId::root(),"temp.txt", b"temporary")
+        .write_file(&DirId::root(), "temp.txt", b"temporary")
         .expect("Failed to write file");
 
     // Verify it exists
-    assert!(vault_ops.read_file(&DirId::root(),"temp.txt").is_ok());
+    assert!(vault_ops.read_file(&DirId::root(), "temp.txt").is_ok());
 
     // Delete it
     vault_ops
-        .delete_file(&DirId::root(),"temp.txt")
+        .delete_file(&DirId::root(), "temp.txt")
         .expect("Failed to delete file");
 
     // Verify it's gone
-    assert!(vault_ops.read_file(&DirId::root(),"temp.txt").is_err());
+    assert!(vault_ops.read_file(&DirId::root(), "temp.txt").is_err());
 }
 
 // ==================== delete_directory() tests ====================
@@ -242,7 +246,7 @@ fn test_delete_empty_directory() {
 
     // Create a directory
     vault_ops
-        .create_directory(&DirId::root(),"empty_dir")
+        .create_directory(&DirId::root(), "empty_dir")
         .expect("Failed to create directory");
 
     // Verify it exists
@@ -251,7 +255,7 @@ fn test_delete_empty_directory() {
 
     // Delete it
     vault_ops
-        .delete_directory(&DirId::root(),"empty_dir")
+        .delete_directory(&DirId::root(), "empty_dir")
         .expect("Failed to delete directory");
 
     // Verify it's gone
@@ -266,7 +270,7 @@ fn test_delete_non_empty_directory_fails() {
 
     // Create directory with file
     let dir_id = vault_ops
-        .create_directory(&DirId::root(),"non_empty")
+        .create_directory(&DirId::root(), "non_empty")
         .expect("Failed to create directory");
 
     vault_ops
@@ -274,8 +278,11 @@ fn test_delete_non_empty_directory_fails() {
         .expect("Failed to write file");
 
     // Try to delete - should fail
-    let result = vault_ops.delete_directory(&DirId::root(),"non_empty");
-    assert!(matches!(result, Err(VaultWriteError::DirectoryNotEmpty { .. })));
+    let result = vault_ops.delete_directory(&DirId::root(), "non_empty");
+    assert!(matches!(
+        result,
+        Err(VaultWriteError::DirectoryNotEmpty { .. })
+    ));
 }
 
 #[test]
@@ -284,8 +291,11 @@ fn test_delete_directory_not_found() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Try to delete non-existent directory
-    let result = vault_ops.delete_directory(&DirId::root(),"nonexistent");
-    assert!(matches!(result, Err(VaultWriteError::DirectoryNotFound { .. })));
+    let result = vault_ops.delete_directory(&DirId::root(), "nonexistent");
+    assert!(matches!(
+        result,
+        Err(VaultWriteError::DirectoryNotFound { .. })
+    ));
 }
 
 // ==================== VaultCreator tests ====================
@@ -302,10 +312,10 @@ fn test_vault_creator_full_workflow() {
 
     // Create directory structure
     let docs_id = vault_ops
-        .create_directory(&DirId::root(),"Documents")
+        .create_directory(&DirId::root(), "Documents")
         .expect("Failed to create Documents");
     let photos_id = vault_ops
-        .create_directory(&DirId::root(),"Photos")
+        .create_directory(&DirId::root(), "Photos")
         .expect("Failed to create Photos");
 
     // Write files
@@ -339,16 +349,17 @@ fn test_vault_creator_reopen_with_password() {
             .expect("Failed to create vault");
 
         vault_ops
-            .write_file(&DirId::root(),"secret.txt", b"Top secret data")
+            .write_file(&DirId::root(), "secret.txt", b"Top secret data")
             .expect("Failed to write file");
     }
 
     // Reopen vault with password
-    let master_key = extract_master_key(&vault_path, password).expect("Failed to extract master key");
+    let master_key =
+        extract_master_key(&vault_path, password).expect("Failed to extract master key");
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Verify file is readable
-    let decrypted = vault_ops.read_file(&DirId::root(),"secret.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "secret.txt").unwrap();
     assert_eq!(decrypted.content, b"Top secret data");
 }
 
@@ -362,19 +373,23 @@ fn test_write_at_chunk_boundary() {
     // Write exactly 32KB (one chunk)
     let content = vec![0xAB; 32 * 1024];
     vault_ops
-        .write_file(&DirId::root(),"one_chunk.bin", &content)
+        .write_file(&DirId::root(), "one_chunk.bin", &content)
         .expect("Failed to write one chunk file");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"one_chunk.bin").unwrap();
+    let decrypted = vault_ops
+        .read_file(&DirId::root(), "one_chunk.bin")
+        .unwrap();
     assert_eq!(decrypted.content, content);
 
     // Write exactly 64KB (two chunks)
     let content2 = vec![0xCD; 64 * 1024];
     vault_ops
-        .write_file(&DirId::root(),"two_chunks.bin", &content2)
+        .write_file(&DirId::root(), "two_chunks.bin", &content2)
         .expect("Failed to write two chunk file");
 
-    let decrypted2 = vault_ops.read_file(&DirId::root(),"two_chunks.bin").unwrap();
+    let decrypted2 = vault_ops
+        .read_file(&DirId::root(), "two_chunks.bin")
+        .unwrap();
     assert_eq!(decrypted2.content, content2);
 }
 
@@ -385,7 +400,7 @@ fn test_special_characters_in_directory_names() {
 
     // Create directory with special characters
     let dir_id = vault_ops
-        .create_directory(&DirId::root(),"folder with spaces & symbols!")
+        .create_directory(&DirId::root(), "folder with spaces & symbols!")
         .expect("Failed to create special directory");
 
     // Write file in it
@@ -409,14 +424,14 @@ fn test_rename_file_basic() {
 
     // Rename the file
     vault_ops
-        .rename_file(&DirId::root(),"original.txt", "renamed.txt")
+        .rename_file(&DirId::root(), "original.txt", "renamed.txt")
         .expect("Failed to rename file");
 
     // Verify old name is gone
-    assert!(vault_ops.read_file(&DirId::root(),"original.txt").is_err());
+    assert!(vault_ops.read_file(&DirId::root(), "original.txt").is_err());
 
     // Verify new name works and content preserved
-    let decrypted = vault_ops.read_file(&DirId::root(),"renamed.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "renamed.txt").unwrap();
     assert_eq!(decrypted.content, b"file content");
 }
 
@@ -432,14 +447,14 @@ fn test_rename_file_short_to_long_name() {
 
     // Rename to long name
     vault_ops
-        .rename_file(&DirId::root(),"a.txt", &long_name)
+        .rename_file(&DirId::root(), "a.txt", &long_name)
         .expect("Failed to rename to long name");
 
     // Verify old name is gone
-    assert!(vault_ops.read_file(&DirId::root(),"a.txt").is_err());
+    assert!(vault_ops.read_file(&DirId::root(), "a.txt").is_err());
 
     // Verify new long name works
-    let decrypted = vault_ops.read_file(&DirId::root(),&long_name).unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), &long_name).unwrap();
     assert_eq!(decrypted.content, b"short name content");
 }
 
@@ -454,14 +469,14 @@ fn test_rename_file_long_to_short_name() {
 
     // Rename to short name
     vault_ops
-        .rename_file(&DirId::root(),&long_name, "short.txt")
+        .rename_file(&DirId::root(), &long_name, "short.txt")
         .expect("Failed to rename to short name");
 
     // Verify old name is gone
-    assert!(vault_ops.read_file(&DirId::root(),&long_name).is_err());
+    assert!(vault_ops.read_file(&DirId::root(), &long_name).is_err());
 
     // Verify new short name works
-    let decrypted = vault_ops.read_file(&DirId::root(),"short.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "short.txt").unwrap();
     assert_eq!(decrypted.content, b"long name content");
 }
 
@@ -470,7 +485,7 @@ fn test_rename_file_not_found() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.rename_file(&DirId::root(),"nonexistent.txt", "new.txt");
+    let result = vault_ops.rename_file(&DirId::root(), "nonexistent.txt", "new.txt");
     assert!(matches!(result, Err(VaultWriteError::FileNotFound { .. })));
 }
 
@@ -482,24 +497,25 @@ fn test_rename_file_target_exists() {
         .build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.rename_file(&DirId::root(),"source.txt", "target.txt");
-    assert!(matches!(result, Err(VaultWriteError::FileAlreadyExists { .. })));
+    let result = vault_ops.rename_file(&DirId::root(), "source.txt", "target.txt");
+    assert!(matches!(
+        result,
+        Err(VaultWriteError::FileAlreadyExists { .. })
+    ));
 
     // Verify both files still exist with original content
-    let source = vault_ops.read_file(&DirId::root(),"source.txt").unwrap();
+    let source = vault_ops.read_file(&DirId::root(), "source.txt").unwrap();
     assert_eq!(source.content, b"source");
-    let target = vault_ops.read_file(&DirId::root(),"target.txt").unwrap();
+    let target = vault_ops.read_file(&DirId::root(), "target.txt").unwrap();
     assert_eq!(target.content, b"target");
 }
 
 #[test]
 fn test_rename_file_same_name_error() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.rename_file(&DirId::root(),"file.txt", "file.txt");
+    let result = vault_ops.rename_file(&DirId::root(), "file.txt", "file.txt");
     assert!(matches!(
         result,
         Err(VaultWriteError::SameSourceAndDestination { .. })
@@ -523,9 +539,11 @@ fn test_rename_file_in_subdirectory() {
         .expect("Failed to rename file in subdirectory");
 
     // Verify old name gone, new name works
-    assert!(vault_ops
-        .read_file(&subdir.directory_id, "file.txt")
-        .is_err());
+    assert!(
+        vault_ops
+            .read_file(&subdir.directory_id, "file.txt")
+            .is_err()
+    );
     let decrypted = vault_ops
         .read_file(&subdir.directory_id, "renamed.txt")
         .unwrap();
@@ -536,14 +554,12 @@ fn test_rename_file_in_subdirectory() {
 
 #[test]
 fn test_rename_directory_basic() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("old_folder")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("old_folder").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Rename the directory
     vault_ops
-        .rename_directory(&DirId::root(),"old_folder", "new_folder")
+        .rename_directory(&DirId::root(), "old_folder", "new_folder")
         .expect("Failed to rename directory");
 
     // Verify old name gone
@@ -567,7 +583,7 @@ fn test_rename_directory_preserves_children() {
 
     // Rename the parent directory
     vault_ops
-        .rename_directory(&DirId::root(),"parent", "renamed_parent")
+        .rename_directory(&DirId::root(), "parent", "renamed_parent")
         .expect("Failed to rename directory");
 
     // Verify children are still accessible with the same directory ID
@@ -588,7 +604,7 @@ fn test_rename_directory_not_found() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.rename_directory(&DirId::root(),"nonexistent", "new_name");
+    let result = vault_ops.rename_directory(&DirId::root(), "nonexistent", "new_name");
     assert!(matches!(
         result,
         Err(VaultWriteError::DirectoryNotFound { .. })
@@ -603,7 +619,7 @@ fn test_rename_directory_target_exists() {
         .build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.rename_directory(&DirId::root(),"source_dir", "target_dir");
+    let result = vault_ops.rename_directory(&DirId::root(), "source_dir", "target_dir");
     assert!(matches!(
         result,
         Err(VaultWriteError::DirectoryAlreadyExists { .. })
@@ -617,12 +633,10 @@ fn test_rename_directory_target_exists() {
 
 #[test]
 fn test_rename_directory_same_name_error() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("folder")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("folder").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.rename_directory(&DirId::root(),"folder", "folder");
+    let result = vault_ops.rename_directory(&DirId::root(), "folder", "folder");
     assert!(matches!(
         result,
         Err(VaultWriteError::SameSourceAndDestination { .. })
@@ -633,13 +647,11 @@ fn test_rename_directory_same_name_error() {
 
 #[test]
 fn test_delete_directory_recursive_empty() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("empty_dir")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("empty_dir").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let stats = vault_ops
-        .delete_directory_recursive(&DirId::root(),"empty_dir")
+        .delete_directory_recursive(&DirId::root(), "empty_dir")
         .expect("Failed to delete empty directory");
 
     assert_eq!(stats.files_deleted, 0);
@@ -660,7 +672,7 @@ fn test_delete_directory_recursive_with_files() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let stats = vault_ops
-        .delete_directory_recursive(&DirId::root(),"folder")
+        .delete_directory_recursive(&DirId::root(), "folder")
         .expect("Failed to delete directory with files");
 
     assert_eq!(stats.files_deleted, 3);
@@ -681,7 +693,7 @@ fn test_delete_directory_recursive_nested() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let stats = vault_ops
-        .delete_directory_recursive(&DirId::root(),"root")
+        .delete_directory_recursive(&DirId::root(), "root")
         .expect("Failed to delete nested directory");
 
     // 3 files + 3 directories (root, level1, level2)
@@ -698,7 +710,7 @@ fn test_delete_directory_recursive_not_found() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.delete_directory_recursive(&DirId::root(),"nonexistent");
+    let result = vault_ops.delete_directory_recursive(&DirId::root(), "nonexistent");
     assert!(matches!(
         result,
         Err(VaultWriteError::DirectoryNotFound { .. })
@@ -714,7 +726,7 @@ fn test_delete_directory_recursive_preserves_siblings() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
-        .delete_directory_recursive(&DirId::root(),"delete_me")
+        .delete_directory_recursive(&DirId::root(), "delete_me")
         .expect("Failed to delete directory");
 
     // Verify sibling directory still exists with content
@@ -750,9 +762,11 @@ fn test_move_file_basic() {
         .expect("Failed to move file");
 
     // Verify file gone from source
-    assert!(vault_ops
-        .read_file(&source_dir.directory_id, "file.txt")
-        .is_err());
+    assert!(
+        vault_ops
+            .read_file(&source_dir.directory_id, "file.txt")
+            .is_err()
+    );
 
     // Verify file exists in destination with same content
     let decrypted = vault_ops
@@ -778,12 +792,14 @@ fn test_move_file_to_root() {
         .expect("Failed to move file to root");
 
     // Verify file gone from subdir
-    assert!(vault_ops
-        .read_file(&subdir.directory_id, "file.txt")
-        .is_err());
+    assert!(
+        vault_ops
+            .read_file(&subdir.directory_id, "file.txt")
+            .is_err()
+    );
 
     // Verify file exists in root
-    let decrypted = vault_ops.read_file(&DirId::root(),"file.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "file.txt").unwrap();
     assert_eq!(decrypted.content, b"file in subdir");
 }
 
@@ -805,7 +821,11 @@ fn test_move_file_from_root() {
         .expect("Failed to move file from root");
 
     // Verify file gone from root
-    assert!(vault_ops.read_file(&DirId::root(),"root_file.txt").is_err());
+    assert!(
+        vault_ops
+            .read_file(&DirId::root(), "root_file.txt")
+            .is_err()
+    );
 
     // Verify file exists in destination
     let decrypted = vault_ops
@@ -816,9 +836,7 @@ fn test_move_file_from_root() {
 
 #[test]
 fn test_move_file_not_found() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("dest")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("dest").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let dirs = vault_ops.list_directories(&DirId::root()).unwrap();
@@ -840,12 +858,11 @@ fn test_move_file_target_exists() {
     let source_dir = dirs.iter().find(|d| d.name == "source_dir").unwrap();
     let dest_dir = dirs.iter().find(|d| d.name == "dest_dir").unwrap();
 
-    let result = vault_ops.move_file(
-        &source_dir.directory_id,
-        "file.txt",
-        &dest_dir.directory_id,
-    );
-    assert!(matches!(result, Err(VaultWriteError::FileAlreadyExists { .. })));
+    let result = vault_ops.move_file(&source_dir.directory_id, "file.txt", &dest_dir.directory_id);
+    assert!(matches!(
+        result,
+        Err(VaultWriteError::FileAlreadyExists { .. })
+    ));
 
     // Verify both files still exist with original content
     let source = vault_ops
@@ -860,9 +877,7 @@ fn test_move_file_target_exists() {
 
 #[test]
 fn test_move_file_same_directory_error() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let result = vault_ops.move_file(&DirId::root(), "file.txt", &DirId::root());
@@ -874,15 +889,13 @@ fn test_move_file_same_directory_error() {
 
 #[test]
 fn test_move_file_large_file() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("dest")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("dest").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a large file (100KB) in root
     let large_content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
     vault_ops
-        .write_file(&DirId::root(),"large.bin", &large_content)
+        .write_file(&DirId::root(), "large.bin", &large_content)
         .expect("Failed to write large file");
 
     let dirs = vault_ops.list_directories(&DirId::root()).unwrap();
@@ -925,9 +938,11 @@ fn test_move_and_rename_file_basic() {
         .expect("Failed to move and rename file");
 
     // Verify old location empty
-    assert!(vault_ops
-        .read_file(&source.directory_id, "original.txt")
-        .is_err());
+    assert!(
+        vault_ops
+            .read_file(&source.directory_id, "original.txt")
+            .is_err()
+    );
 
     // Verify new location with new name
     let decrypted = vault_ops
@@ -938,9 +953,7 @@ fn test_move_and_rename_file_basic() {
 
 #[test]
 fn test_move_and_rename_file_same_dir_delegates_to_rename() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // This should just rename since same directory
@@ -949,8 +962,8 @@ fn test_move_and_rename_file_same_dir_delegates_to_rename() {
         .expect("Failed to move and rename in same directory");
 
     // Verify rename happened
-    assert!(vault_ops.read_file(&DirId::root(),"file.txt").is_err());
-    let decrypted = vault_ops.read_file(&DirId::root(),"new_name.txt").unwrap();
+    assert!(vault_ops.read_file(&DirId::root(), "file.txt").is_err());
+    let decrypted = vault_ops.read_file(&DirId::root(), "new_name.txt").unwrap();
     assert_eq!(decrypted.content, b"content");
 }
 
@@ -965,10 +978,12 @@ fn test_rename_file_unicode_names() {
 
     // Rename to another Unicode name
     vault_ops
-        .rename_file(&DirId::root(),"日本語.txt", "中文-émoji-🔐.txt")
+        .rename_file(&DirId::root(), "日本語.txt", "中文-émoji-🔐.txt")
         .expect("Failed to rename Unicode file");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"中文-émoji-🔐.txt").unwrap();
+    let decrypted = vault_ops
+        .read_file(&DirId::root(), "中文-émoji-🔐.txt")
+        .unwrap();
     assert_eq!(decrypted.content, b"japanese content");
 }
 
@@ -982,25 +997,27 @@ fn test_rename_file_preserves_binary_content() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
-        .rename_file(&DirId::root(),"binary.dat", "renamed_binary.dat")
+        .rename_file(&DirId::root(), "binary.dat", "renamed_binary.dat")
         .expect("Failed to rename binary file");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"renamed_binary.dat").unwrap();
+    let decrypted = vault_ops
+        .read_file(&DirId::root(), "renamed_binary.dat")
+        .unwrap();
     assert_eq!(decrypted.content, binary_content);
 }
 
 #[test]
 fn test_rename_file_empty_file() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("empty.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("empty.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
-        .rename_file(&DirId::root(),"empty.txt", "still_empty.txt")
+        .rename_file(&DirId::root(), "empty.txt", "still_empty.txt")
         .expect("Failed to rename empty file");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"still_empty.txt").unwrap();
+    let decrypted = vault_ops
+        .read_file(&DirId::root(), "still_empty.txt")
+        .unwrap();
     assert!(decrypted.content.is_empty());
 }
 
@@ -1016,11 +1033,11 @@ fn test_rename_file_long_to_long_name() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
-        .rename_file(&DirId::root(),&long_name_1, &long_name_2)
+        .rename_file(&DirId::root(), &long_name_1, &long_name_2)
         .expect("Failed to rename long to long");
 
-    assert!(vault_ops.read_file(&DirId::root(),&long_name_1).is_err());
-    let decrypted = vault_ops.read_file(&DirId::root(),&long_name_2).unwrap();
+    assert!(vault_ops.read_file(&DirId::root(), &long_name_1).is_err());
+    let decrypted = vault_ops.read_file(&DirId::root(), &long_name_2).unwrap();
     assert_eq!(decrypted.content, b"long to long content");
 }
 
@@ -1078,7 +1095,7 @@ fn test_delete_directory_recursive_deeply_nested() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let stats = vault_ops
-        .delete_directory_recursive(&DirId::root(),"a")
+        .delete_directory_recursive(&DirId::root(), "a")
         .expect("Failed to delete deeply nested structure");
 
     // 1 file + 10 directories
@@ -1094,13 +1111,16 @@ fn test_delete_directory_recursive_many_files() {
     // Create directory with many files
     let mut builder = VaultBuilder::new();
     for i in 0..50 {
-        builder = builder.add_file(format!("many_files/file_{i}.txt"), format!("content {i}").as_bytes());
+        builder = builder.add_file(
+            format!("many_files/file_{i}.txt"),
+            format!("content {i}").as_bytes(),
+        );
     }
     let (vault_path, master_key) = builder.build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let stats = vault_ops
-        .delete_directory_recursive(&DirId::root(),"many_files")
+        .delete_directory_recursive(&DirId::root(), "many_files")
         .expect("Failed to delete directory with many files");
 
     assert_eq!(stats.files_deleted, 50);
@@ -1112,7 +1132,10 @@ fn test_rename_directory_with_many_children() {
     // Verify renaming a directory with many children works correctly
     let mut builder = VaultBuilder::new();
     for i in 0..20 {
-        builder = builder.add_file(format!("parent/file_{i}.txt"), format!("content {i}").as_bytes());
+        builder = builder.add_file(
+            format!("parent/file_{i}.txt"),
+            format!("content {i}").as_bytes(),
+        );
     }
     let (vault_path, master_key) = builder.build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
@@ -1123,7 +1146,7 @@ fn test_rename_directory_with_many_children() {
     let parent_id = parent.directory_id.clone();
 
     vault_ops
-        .rename_directory(&DirId::root(),"parent", "renamed_parent")
+        .rename_directory(&DirId::root(), "parent", "renamed_parent")
         .expect("Failed to rename directory with many children");
 
     // Verify all children still accessible
@@ -1152,7 +1175,7 @@ fn test_rename_file_with_path_separator_in_name() {
     // Try to rename with path-like characters
     // The filename should be treated literally, not as a path
     vault_ops
-        .rename_file(&DirId::root(),"normal.txt", "file-with-slash.txt")
+        .rename_file(&DirId::root(), "normal.txt", "file-with-slash.txt")
         .expect("Failed to rename");
 
     // Verify the file is in root, not in a subdirectory
@@ -1163,28 +1186,28 @@ fn test_rename_file_with_path_separator_in_name() {
 
 #[test]
 fn test_move_file_to_nonexistent_directory() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Try to move to a directory ID that doesn't exist
     // This should create the storage path but the file should still be accessible
-    let result = vault_ops.move_file(&DirId::root(), "file.txt", &DirId::from_raw("nonexistent-dir-id-12345"));
+    let result = vault_ops.move_file(
+        &DirId::root(),
+        "file.txt",
+        &DirId::from_raw("nonexistent-dir-id-12345"),
+    );
 
     // The move should succeed (creates storage path) but file won't be findable
     // via normal listing since no directory entry points to this dir_id
     assert!(result.is_ok());
 
     // Original file should be gone
-    assert!(vault_ops.read_file(&DirId::root(),"file.txt").is_err());
+    assert!(vault_ops.read_file(&DirId::root(), "file.txt").is_err());
 }
 
 #[test]
 fn test_rename_file_special_filesystem_characters() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("test.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("test.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Test various special characters that might cause filesystem issues
@@ -1203,10 +1226,10 @@ fn test_rename_file_special_filesystem_characters() {
     let mut current_name = "test.txt".to_string();
     for special_name in special_names {
         vault_ops
-            .rename_file(&DirId::root(),&current_name, special_name)
+            .rename_file(&DirId::root(), &current_name, special_name)
             .unwrap_or_else(|_| panic!("Failed to rename to '{special_name}'"));
 
-        let decrypted = vault_ops.read_file(&DirId::root(),special_name).unwrap();
+        let decrypted = vault_ops.read_file(&DirId::root(), special_name).unwrap();
         assert_eq!(decrypted.content, b"content");
 
         current_name = special_name.to_string();
@@ -1215,9 +1238,7 @@ fn test_rename_file_special_filesystem_characters() {
 
 #[test]
 fn test_operations_with_invalid_directory_id() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Operations with invalid/nonexistent directory IDs
@@ -1250,17 +1271,25 @@ fn test_rename_file_multiple_times() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Rename multiple times in sequence
-    vault_ops.rename_file(&DirId::root(),"original.txt", "step1.txt").unwrap();
-    vault_ops.rename_file(&DirId::root(),"step1.txt", "step2.txt").unwrap();
-    vault_ops.rename_file(&DirId::root(),"step2.txt", "step3.txt").unwrap();
-    vault_ops.rename_file(&DirId::root(),"step3.txt", "final.txt").unwrap();
+    vault_ops
+        .rename_file(&DirId::root(), "original.txt", "step1.txt")
+        .unwrap();
+    vault_ops
+        .rename_file(&DirId::root(), "step1.txt", "step2.txt")
+        .unwrap();
+    vault_ops
+        .rename_file(&DirId::root(), "step2.txt", "step3.txt")
+        .unwrap();
+    vault_ops
+        .rename_file(&DirId::root(), "step3.txt", "final.txt")
+        .unwrap();
 
     // Only final name should exist
     let files = vault_ops.list_files(&DirId::root()).unwrap();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].name, "final.txt");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"final.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "final.txt").unwrap();
     assert_eq!(decrypted.content, b"content that persists");
 }
 
@@ -1282,31 +1311,45 @@ fn test_move_file_circular() {
     vault_ops
         .move_file(&DirId::root(), "traveling.txt", &dir1.directory_id)
         .unwrap();
-    assert!(vault_ops.read_file(&DirId::root(),"traveling.txt").is_err());
-    assert!(vault_ops
-        .read_file(&dir1.directory_id, "traveling.txt")
-        .is_ok());
+    assert!(
+        vault_ops
+            .read_file(&DirId::root(), "traveling.txt")
+            .is_err()
+    );
+    assert!(
+        vault_ops
+            .read_file(&dir1.directory_id, "traveling.txt")
+            .is_ok()
+    );
 
     // dir1 -> dir2
     vault_ops
         .move_file(&dir1.directory_id, "traveling.txt", &dir2.directory_id)
         .unwrap();
-    assert!(vault_ops
-        .read_file(&dir1.directory_id, "traveling.txt")
-        .is_err());
-    assert!(vault_ops
-        .read_file(&dir2.directory_id, "traveling.txt")
-        .is_ok());
+    assert!(
+        vault_ops
+            .read_file(&dir1.directory_id, "traveling.txt")
+            .is_err()
+    );
+    assert!(
+        vault_ops
+            .read_file(&dir2.directory_id, "traveling.txt")
+            .is_ok()
+    );
 
     // dir2 -> root
     vault_ops
         .move_file(&dir2.directory_id, "traveling.txt", &DirId::root())
         .unwrap();
-    assert!(vault_ops
-        .read_file(&dir2.directory_id, "traveling.txt")
-        .is_err());
+    assert!(
+        vault_ops
+            .read_file(&dir2.directory_id, "traveling.txt")
+            .is_err()
+    );
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"traveling.txt").unwrap();
+    let decrypted = vault_ops
+        .read_file(&DirId::root(), "traveling.txt")
+        .unwrap();
     assert_eq!(decrypted.content, b"around and around");
 }
 
@@ -1319,12 +1362,12 @@ fn test_delete_and_recreate_directory() {
 
     // Delete directory
     vault_ops
-        .delete_directory_recursive(&DirId::root(),"mydir")
+        .delete_directory_recursive(&DirId::root(), "mydir")
         .expect("Failed to delete directory");
 
     // Recreate with same name
     let new_dir_id = vault_ops
-        .create_directory(&DirId::root(),"mydir")
+        .create_directory(&DirId::root(), "mydir")
         .expect("Failed to recreate directory");
 
     // Write new file
@@ -1354,22 +1397,22 @@ fn test_rename_file_exactly_at_length_threshold() {
     // Create file with name that's right at the boundary
     let boundary_name = format!("{}.txt", "x".repeat(150));
     vault_ops
-        .write_file(&DirId::root(),&boundary_name, b"boundary test")
+        .write_file(&DirId::root(), &boundary_name, b"boundary test")
         .expect("Failed to write boundary-length file");
 
     // Rename to slightly longer (definitely long)
     let longer_name = format!("{}.txt", "y".repeat(200));
     vault_ops
-        .rename_file(&DirId::root(),&boundary_name, &longer_name)
+        .rename_file(&DirId::root(), &boundary_name, &longer_name)
         .expect("Failed to rename to longer name");
 
     // Rename back to shorter
     let shorter_name = "short.txt";
     vault_ops
-        .rename_file(&DirId::root(),&longer_name, shorter_name)
+        .rename_file(&DirId::root(), &longer_name, shorter_name)
         .expect("Failed to rename to shorter name");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),shorter_name).unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), shorter_name).unwrap();
     assert_eq!(decrypted.content, b"boundary test");
 }
 
@@ -1386,11 +1429,13 @@ fn test_operations_on_root_directory() {
 
     // Verify we can rename in root
     vault_ops
-        .rename_file(&DirId::root(),"root_file.txt", "renamed_root.txt")
+        .rename_file(&DirId::root(), "root_file.txt", "renamed_root.txt")
         .unwrap();
 
     // Verify we can delete from root
-    vault_ops.delete_file(&DirId::root(),"renamed_root.txt").unwrap();
+    vault_ops
+        .delete_file(&DirId::root(), "renamed_root.txt")
+        .unwrap();
 
     let files = vault_ops.list_files(&DirId::root()).unwrap();
     assert!(files.is_empty());
@@ -1407,19 +1452,22 @@ fn test_write_file_exclusive_behavior() {
 
     // write_file overwrites without error
     vault_ops
-        .write_file(&DirId::root(),"existing.txt", b"overwritten")
+        .write_file(&DirId::root(), "existing.txt", b"overwritten")
         .expect("write_file should overwrite");
 
-    let decrypted = vault_ops.read_file(&DirId::root(),"existing.txt").unwrap();
+    let decrypted = vault_ops.read_file(&DirId::root(), "existing.txt").unwrap();
     assert_eq!(decrypted.content, b"overwritten");
 
     // But rename_file does NOT overwrite
     vault_ops
-        .write_file(&DirId::root(),"source.txt", b"source content")
+        .write_file(&DirId::root(), "source.txt", b"source content")
         .unwrap();
 
-    let result = vault_ops.rename_file(&DirId::root(),"source.txt", "existing.txt");
-    assert!(matches!(result, Err(VaultWriteError::FileAlreadyExists { .. })));
+    let result = vault_ops.rename_file(&DirId::root(), "source.txt", "existing.txt");
+    assert!(matches!(
+        result,
+        Err(VaultWriteError::FileAlreadyExists { .. })
+    ));
 }
 
 // ==================== Path-based Convenience Method Tests ====================
@@ -1454,9 +1502,7 @@ fn test_read_by_path_nested_file() {
 
 #[test]
 fn test_read_by_path_with_leading_slash() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Leading slash should be handled correctly
@@ -1502,9 +1548,7 @@ fn test_write_by_path_root_file() {
 
 #[test]
 fn test_write_by_path_nested_file() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("docs")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("docs").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
@@ -1575,9 +1619,7 @@ fn test_entry_type_file_exists() {
 
 #[test]
 fn test_entry_type_directory_exists() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("my_folder")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("my_folder").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let result = vault_ops.entry_type("my_folder");
@@ -1603,7 +1645,10 @@ fn test_entry_type_nested() {
     assert_eq!(vault_ops.entry_type("a"), Some(EntryType::Directory));
     assert_eq!(vault_ops.entry_type("a/b"), Some(EntryType::Directory));
     assert_eq!(vault_ops.entry_type("a/b/c"), Some(EntryType::Directory));
-    assert_eq!(vault_ops.entry_type("a/b/c/deep.txt"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("a/b/c/deep.txt"),
+        Some(EntryType::File)
+    );
     assert_eq!(vault_ops.entry_type("a/b/c/nonexistent.txt"), None);
 }
 
@@ -1636,9 +1681,7 @@ fn test_create_directory_by_path() {
 
 #[test]
 fn test_create_directory_by_path_nested() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("parent")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("parent").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
@@ -1659,9 +1702,7 @@ fn test_create_directory_by_path_parent_not_found() {
 
 #[test]
 fn test_delete_directory_by_path() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("empty_folder")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("empty_folder").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
@@ -1679,7 +1720,10 @@ fn test_delete_directory_by_path_not_empty_fails() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let result = vault_ops.delete_directory_by_path("folder");
-    assert!(matches!(result, Err(VaultWriteError::DirectoryNotEmpty { .. })));
+    assert!(matches!(
+        result,
+        Err(VaultWriteError::DirectoryNotEmpty { .. })
+    ));
 }
 
 #[test]
@@ -1713,7 +1757,10 @@ fn test_rename_file_by_path() {
         .expect("Failed to rename file by path");
 
     assert_eq!(vault_ops.entry_type("docs/old_name.txt"), None);
-    assert_eq!(vault_ops.entry_type("docs/new_name.txt"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("docs/new_name.txt"),
+        Some(EntryType::File)
+    );
 
     let decrypted = vault_ops.read_by_path("docs/new_name.txt").unwrap();
     assert_eq!(decrypted.content, b"content");
@@ -1732,7 +1779,10 @@ fn test_move_file_by_path_different_dirs() {
         .expect("Failed to move file by path");
 
     assert_eq!(vault_ops.entry_type("inbox/message.txt"), None);
-    assert_eq!(vault_ops.entry_type("archive/message.txt"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("archive/message.txt"),
+        Some(EntryType::File)
+    );
 
     let decrypted = vault_ops.read_by_path("archive/message.txt").unwrap();
     assert_eq!(decrypted.content, b"important message");
@@ -1752,7 +1802,10 @@ fn test_move_file_by_path_with_rename() {
         .expect("Failed to move and rename by path");
 
     assert_eq!(vault_ops.entry_type("temp/draft.txt"), None);
-    assert_eq!(vault_ops.entry_type("final/completed.txt"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("final/completed.txt"),
+        Some(EntryType::File)
+    );
 
     let decrypted = vault_ops.read_by_path("final/completed.txt").unwrap();
     assert_eq!(decrypted.content, b"work in progress");
@@ -1776,9 +1829,7 @@ fn test_move_file_by_path_same_dir_rename() {
 
 #[test]
 fn test_move_file_by_path_same_path_error() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("file.txt", b"content")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("file.txt", b"content").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let result = vault_ops.move_file_by_path("file.txt", "file.txt");
@@ -1803,7 +1854,10 @@ fn test_path_operations_unicode() {
 
     // Check existence
     assert_eq!(vault_ops.entry_type("文档"), Some(EntryType::Directory));
-    assert_eq!(vault_ops.entry_type("文档/日本語.txt"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("文档/日本語.txt"),
+        Some(EntryType::File)
+    );
 
     // Rename with unicode
     vault_ops
@@ -1834,7 +1888,10 @@ fn test_path_operations_deeply_nested() {
 
     assert_eq!(vault_ops.entry_type("a/b/c/d/e/f/deep.txt"), None);
     // Directories should still exist
-    assert_eq!(vault_ops.entry_type("a/b/c/d/e/f"), Some(EntryType::Directory));
+    assert_eq!(
+        vault_ops.entry_type("a/b/c/d/e/f"),
+        Some(EntryType::Directory)
+    );
 }
 
 #[test]
@@ -1870,15 +1927,24 @@ fn test_path_operations_full_workflow() {
 
     // Write files
     vault_ops
-        .write_by_path("projects/rust/main.rs", b"fn main() { println!(\"Hello\"); }")
+        .write_by_path(
+            "projects/rust/main.rs",
+            b"fn main() { println!(\"Hello\"); }",
+        )
         .expect("Failed to write main.rs");
     vault_ops
         .write_by_path("projects/rust/lib.rs", b"pub fn greet() {}")
         .expect("Failed to write lib.rs");
 
     // Verify existence
-    assert_eq!(vault_ops.entry_type("projects/rust/main.rs"), Some(EntryType::File));
-    assert_eq!(vault_ops.entry_type("projects/rust/lib.rs"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("projects/rust/main.rs"),
+        Some(EntryType::File)
+    );
+    assert_eq!(
+        vault_ops.entry_type("projects/rust/lib.rs"),
+        Some(EntryType::File)
+    );
 
     // Move a file
     vault_ops
@@ -1886,7 +1952,10 @@ fn test_path_operations_full_workflow() {
         .expect("Failed to move lib.rs");
 
     assert_eq!(vault_ops.entry_type("projects/rust/lib.rs"), None);
-    assert_eq!(vault_ops.entry_type("archive/lib.rs"), Some(EntryType::File));
+    assert_eq!(
+        vault_ops.entry_type("archive/lib.rs"),
+        Some(EntryType::File)
+    );
 
     // Rename a file
     vault_ops
@@ -1924,9 +1993,7 @@ fn test_path_operations_full_workflow() {
 #[test]
 fn test_create_symlink_basic() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a symlink
@@ -1944,9 +2011,7 @@ fn test_create_symlink_basic() {
 #[test]
 fn test_create_symlink_roundtrip() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     let test_cases = vec![
@@ -1971,9 +2036,7 @@ fn test_create_symlink_roundtrip() {
 
 #[test]
 fn test_create_symlink_in_subdirectory() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("folder")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("folder").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Get the subdirectory ID
@@ -1995,9 +2058,7 @@ fn test_create_symlink_in_subdirectory() {
 #[test]
 fn test_symlink_appears_in_list() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a symlink
@@ -2018,9 +2079,7 @@ fn test_symlink_appears_in_list() {
 #[test]
 fn test_delete_symlink_basic() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create and then delete a symlink
@@ -2043,9 +2102,7 @@ fn test_delete_symlink_basic() {
 #[test]
 fn test_symlink_already_exists_error() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a symlink
@@ -2061,16 +2118,16 @@ fn test_symlink_already_exists_error() {
     ));
 
     // Original symlink should still be intact
-    let target = vault_ops.read_symlink(&DirId::root(), "existing_link").unwrap();
+    let target = vault_ops
+        .read_symlink(&DirId::root(), "existing_link")
+        .unwrap();
     assert_eq!(target, "/first/target");
 }
 
 #[test]
 fn test_symlink_not_found_error() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Try to read a non-existent symlink
@@ -2085,9 +2142,7 @@ fn test_symlink_not_found_error() {
 #[test]
 fn test_symlink_with_long_name() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a symlink with a very long name (should use .c9s format)
@@ -2105,7 +2160,11 @@ fn test_symlink_with_long_name() {
 
     // Verify it appears in listing
     let symlinks = vault_ops.list_symlinks(&DirId::root()).unwrap();
-    assert!(symlinks.iter().any(|s| s.name == long_name && s.is_shortened));
+    assert!(
+        symlinks
+            .iter()
+            .any(|s| s.name == long_name && s.is_shortened)
+    );
 
     // Delete it
     vault_ops
@@ -2119,9 +2178,7 @@ fn test_symlink_with_long_name() {
 #[test]
 fn test_symlink_with_long_target() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create symlink with very long target path
@@ -2140,9 +2197,7 @@ fn test_symlink_with_long_target() {
 #[test]
 fn test_symlink_unicode_name_and_target() {
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     vault_ops
@@ -2160,9 +2215,7 @@ fn test_symlink_path_extension_correct() {
     use std::fs;
 
     // Add a dummy file to ensure root storage directory exists
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_file("dummy.txt", b"")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_file("dummy.txt", b"").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a symlink
@@ -2185,13 +2238,20 @@ fn test_symlink_path_extension_correct() {
     let symlink_entry = entries.iter().find(|e| {
         let name = e.file_name().to_string_lossy().to_string();
         // Should end with .c9r, not have double extension
-        std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")) && !name.ends_with(".c9r.c9r") && e.path().is_dir()
+        std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r"))
+            && !name.ends_with(".c9r.c9r")
+            && e.path().is_dir()
     });
 
     assert!(
         symlink_entry.is_some(),
         "Symlink directory should exist with single .c9r extension. Found entries: {:?}",
-        entries.iter().map(fs::DirEntry::file_name).collect::<Vec<_>>()
+        entries
+            .iter()
+            .map(fs::DirEntry::file_name)
+            .collect::<Vec<_>>()
     );
 
     let symlink_dir = symlink_entry.unwrap().path();
@@ -2357,13 +2417,20 @@ fn test_recover_directory_tree_basic() {
         .expect("Failed to create Vacation");
 
     // Verify each directory has dirid.c9r in its content directory
-    for (dir_id, name) in [(&docs_id, "Documents"), (&photos_id, "Photos"), (&vacation_id, "Vacation")] {
+    for (dir_id, name) in [
+        (&docs_id, "Documents"),
+        (&photos_id, "Photos"),
+        (&vacation_id, "Vacation"),
+    ] {
         let content_dir = vault_ops
             .calculate_directory_storage_path(dir_id)
             .unwrap_or_else(|_| panic!("Failed to get content dir for {name}"));
 
         let dirid_path = content_dir.join("dirid.c9r");
-        assert!(dirid_path.exists(), "dirid.c9r should exist in {name} content directory");
+        assert!(
+            dirid_path.exists(),
+            "dirid.c9r should exist in {name} content directory"
+        );
 
         // Verify the backup contains the directory's own ID
         let recovered_id = vault_ops
@@ -2388,7 +2455,10 @@ fn test_recover_directory_tree_empty_vault() {
         .recover_directory_tree()
         .expect("Failed to recover directory IDs");
 
-    assert!(recovered.is_empty(), "Empty vault should have no directories to recover");
+    assert!(
+        recovered.is_empty(),
+        "Empty vault should have no directories to recover"
+    );
 }
 
 #[test]
@@ -2469,15 +2539,18 @@ fn test_dirid_backup_survives_rename() {
 
 #[test]
 fn test_encrypt_decrypt_parent_dir_id_roundtrip() {
-    use oxcrypt_core::fs::encrypt_parent_dir_id;
     use oxcrypt_core::fs::decrypt_parent_dir_id;
+    use oxcrypt_core::fs::encrypt_parent_dir_id;
 
     let (_, master_key) = VaultBuilder::new().build();
 
     // Test various parent IDs
     let test_cases = vec![
-        (String::new(), "child-uuid-12345".to_string()),           // Root parent
-        ("parent-uuid-abcdef".to_string(), "child-uuid-12345".to_string()),
+        (String::new(), "child-uuid-12345".to_string()), // Root parent
+        (
+            "parent-uuid-abcdef".to_string(),
+            "child-uuid-12345".to_string(),
+        ),
         ("a".repeat(36), "b".repeat(36)),
     ];
 
@@ -2497,8 +2570,8 @@ fn test_encrypt_decrypt_parent_dir_id_roundtrip() {
 
 #[test]
 fn test_decrypt_parent_dir_id_wrong_child_fails() {
-    use oxcrypt_core::fs::encrypt_parent_dir_id;
     use oxcrypt_core::fs::decrypt_parent_dir_id;
+    use oxcrypt_core::fs::encrypt_parent_dir_id;
 
     let (_, master_key) = VaultBuilder::new().build();
 
@@ -2506,12 +2579,15 @@ fn test_decrypt_parent_dir_id_wrong_child_fails() {
     let child_id = "correct-child";
     let wrong_child = "wrong-child";
 
-    let encrypted = encrypt_parent_dir_id(parent_id, child_id, &master_key)
-        .expect("Encryption should succeed");
+    let encrypted =
+        encrypt_parent_dir_id(parent_id, child_id, &master_key).expect("Encryption should succeed");
 
     // Decryption with wrong child ID should fail (authentication failure)
     let result = decrypt_parent_dir_id(&encrypted, wrong_child, &master_key);
-    assert!(result.is_err(), "Decryption with wrong child ID should fail");
+    assert!(
+        result.is_err(),
+        "Decryption with wrong child ID should fail"
+    );
 }
 
 #[test]
@@ -2551,7 +2627,11 @@ fn test_shortened_directory_has_dirid_backup() {
         let path = entry.path();
         let path_str = path.to_string_lossy();
 
-        if path.is_dir() && std::path::Path::new(path_str.as_ref()).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9s")) {
+        if path.is_dir()
+            && std::path::Path::new(path_str.as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s"))
+        {
             let dir_c9r = path.join("dir.c9r");
             if dir_c9r.exists() {
                 let stored_id = fs::read_to_string(&dir_c9r).expect("Failed to read dir.c9r");
@@ -2592,8 +2672,12 @@ fn test_find_file_exists() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.write_file(&DirId::root(), "target.txt", b"found me").unwrap();
-    vault_ops.write_file(&DirId::root(), "other.txt", b"not this").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "target.txt", b"found me")
+        .unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "other.txt", b"not this")
+        .unwrap();
 
     let result = vault_ops.find_file(&DirId::root(), "target.txt").unwrap();
 
@@ -2607,7 +2691,9 @@ fn test_find_file_not_exists() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.write_file(&DirId::root(), "exists.txt", b"here").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "exists.txt", b"here")
+        .unwrap();
 
     let result = vault_ops.find_file(&DirId::root(), "missing.txt").unwrap();
 
@@ -2619,8 +2705,12 @@ fn test_find_file_in_subdirectory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let sub_id = vault_ops.create_directory(&DirId::root(), "subdir").unwrap();
-    vault_ops.write_file(&sub_id, "nested.txt", b"deep").unwrap();
+    let sub_id = vault_ops
+        .create_directory(&DirId::root(), "subdir")
+        .unwrap();
+    vault_ops
+        .write_file(&sub_id, "nested.txt", b"deep")
+        .unwrap();
 
     // Should find in subdirectory
     let result = vault_ops.find_file(&sub_id, "nested.txt").unwrap();
@@ -2639,7 +2729,9 @@ fn test_find_file_with_many_files() {
 
     // Create many files
     for i in 0..50 {
-        vault_ops.write_file(&DirId::root(), &format!("file_{i}.txt"), b"content").unwrap();
+        vault_ops
+            .write_file(&DirId::root(), &format!("file_{i}.txt"), b"content")
+            .unwrap();
     }
 
     // Find specific files
@@ -2659,13 +2751,21 @@ fn test_find_file_unicode_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.write_file(&DirId::root(), "日本語ファイル.txt", b"Japanese").unwrap();
-    vault_ops.write_file(&DirId::root(), "émojis-🚀.txt", b"Emoji").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "日本語ファイル.txt", b"Japanese")
+        .unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "émojis-🚀.txt", b"Emoji")
+        .unwrap();
 
-    let jp_result = vault_ops.find_file(&DirId::root(), "日本語ファイル.txt").unwrap();
+    let jp_result = vault_ops
+        .find_file(&DirId::root(), "日本語ファイル.txt")
+        .unwrap();
     assert!(jp_result.is_some());
 
-    let emoji_result = vault_ops.find_file(&DirId::root(), "émojis-🚀.txt").unwrap();
+    let emoji_result = vault_ops
+        .find_file(&DirId::root(), "émojis-🚀.txt")
+        .unwrap();
     assert!(emoji_result.is_some());
 }
 
@@ -2684,7 +2784,9 @@ fn test_find_file_does_not_match_directories() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a directory with a name
-    vault_ops.create_directory(&DirId::root(), "myname").unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "myname")
+        .unwrap();
 
     // find_file should NOT find it
     let result = vault_ops.find_file(&DirId::root(), "myname").unwrap();
@@ -2698,10 +2800,16 @@ fn test_find_directory_exists() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let dir_id = vault_ops.create_directory(&DirId::root(), "target_dir").unwrap();
-    vault_ops.create_directory(&DirId::root(), "other_dir").unwrap();
+    let dir_id = vault_ops
+        .create_directory(&DirId::root(), "target_dir")
+        .unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "other_dir")
+        .unwrap();
 
-    let result = vault_ops.find_directory(&DirId::root(), "target_dir").unwrap();
+    let result = vault_ops
+        .find_directory(&DirId::root(), "target_dir")
+        .unwrap();
 
     assert!(result.is_some());
     let dir_info = result.unwrap();
@@ -2714,9 +2822,13 @@ fn test_find_directory_not_exists() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_directory(&DirId::root(), "exists_dir").unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "exists_dir")
+        .unwrap();
 
-    let result = vault_ops.find_directory(&DirId::root(), "missing_dir").unwrap();
+    let result = vault_ops
+        .find_directory(&DirId::root(), "missing_dir")
+        .unwrap();
 
     assert!(result.is_none());
 }
@@ -2726,7 +2838,9 @@ fn test_find_directory_nested() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let parent_id = vault_ops.create_directory(&DirId::root(), "parent").unwrap();
+    let parent_id = vault_ops
+        .create_directory(&DirId::root(), "parent")
+        .unwrap();
     let child_id = vault_ops.create_directory(&parent_id, "child").unwrap();
 
     // Find child in parent
@@ -2747,7 +2861,9 @@ fn test_find_directory_with_many_directories() {
     // Create many directories
     let mut dir_ids = Vec::new();
     for i in 0..30 {
-        let id = vault_ops.create_directory(&DirId::root(), &format!("dir_{i}")).unwrap();
+        let id = vault_ops
+            .create_directory(&DirId::root(), &format!("dir_{i}"))
+            .unwrap();
         dir_ids.push(id);
     }
 
@@ -2768,13 +2884,21 @@ fn test_find_directory_unicode_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_directory(&DirId::root(), "日本語フォルダ").unwrap();
-    vault_ops.create_directory(&DirId::root(), "émojis-📁").unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "日本語フォルダ")
+        .unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "émojis-📁")
+        .unwrap();
 
-    let jp_result = vault_ops.find_directory(&DirId::root(), "日本語フォルダ").unwrap();
+    let jp_result = vault_ops
+        .find_directory(&DirId::root(), "日本語フォルダ")
+        .unwrap();
     assert!(jp_result.is_some());
 
-    let emoji_result = vault_ops.find_directory(&DirId::root(), "émojis-📁").unwrap();
+    let emoji_result = vault_ops
+        .find_directory(&DirId::root(), "émojis-📁")
+        .unwrap();
     assert!(emoji_result.is_some());
 }
 
@@ -2783,7 +2907,9 @@ fn test_find_directory_empty_parent() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let result = vault_ops.find_directory(&DirId::root(), "anything").unwrap();
+    let result = vault_ops
+        .find_directory(&DirId::root(), "anything")
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -2793,12 +2919,18 @@ fn test_find_directory_does_not_match_files() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a file with a name
-    vault_ops.write_file(&DirId::root(), "just_a_file.txt", b"content").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "just_a_file.txt", b"content")
+        .unwrap();
     // Create a directory with a different name
-    vault_ops.create_directory(&DirId::root(), "just_a_dir").unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "just_a_dir")
+        .unwrap();
 
     // find_directory should NOT find the file
-    let result = vault_ops.find_directory(&DirId::root(), "just_a_file.txt").unwrap();
+    let result = vault_ops
+        .find_directory(&DirId::root(), "just_a_file.txt")
+        .unwrap();
     assert!(result.is_none(), "find_directory should not match files");
 
     // find_file should NOT find the directory
@@ -2812,18 +2944,50 @@ fn test_find_file_case_sensitive() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.write_file(&DirId::root(), "MyFile.txt", b"content").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "MyFile.txt", b"content")
+        .unwrap();
     vault_ops.create_directory(&DirId::root(), "MyDir").unwrap();
 
     // Exact match should work
-    assert!(vault_ops.find_file(&DirId::root(), "MyFile.txt").unwrap().is_some());
-    assert!(vault_ops.find_directory(&DirId::root(), "MyDir").unwrap().is_some());
+    assert!(
+        vault_ops
+            .find_file(&DirId::root(), "MyFile.txt")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        vault_ops
+            .find_directory(&DirId::root(), "MyDir")
+            .unwrap()
+            .is_some()
+    );
 
     // Different case should not match
-    assert!(vault_ops.find_file(&DirId::root(), "myfile.txt").unwrap().is_none());
-    assert!(vault_ops.find_file(&DirId::root(), "MYFILE.TXT").unwrap().is_none());
-    assert!(vault_ops.find_directory(&DirId::root(), "mydir").unwrap().is_none());
-    assert!(vault_ops.find_directory(&DirId::root(), "MYDIR").unwrap().is_none());
+    assert!(
+        vault_ops
+            .find_file(&DirId::root(), "myfile.txt")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vault_ops
+            .find_file(&DirId::root(), "MYFILE.TXT")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vault_ops
+            .find_directory(&DirId::root(), "mydir")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vault_ops
+            .find_directory(&DirId::root(), "MYDIR")
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ==================== find_symlink() tests ====================
@@ -2833,10 +2997,16 @@ fn test_find_symlink_exists() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_symlink(&DirId::root(), "target_link", "/path/to/target").unwrap();
-    vault_ops.create_symlink(&DirId::root(), "other_link", "/path/to/other").unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "target_link", "/path/to/target")
+        .unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "other_link", "/path/to/other")
+        .unwrap();
 
-    let result = vault_ops.find_symlink(&DirId::root(), "target_link").unwrap();
+    let result = vault_ops
+        .find_symlink(&DirId::root(), "target_link")
+        .unwrap();
 
     assert!(result.is_some());
     let symlink_info = result.unwrap();
@@ -2849,9 +3019,13 @@ fn test_find_symlink_not_exists() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_symlink(&DirId::root(), "exists_link", "/target").unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "exists_link", "/target")
+        .unwrap();
 
-    let result = vault_ops.find_symlink(&DirId::root(), "missing_link").unwrap();
+    let result = vault_ops
+        .find_symlink(&DirId::root(), "missing_link")
+        .unwrap();
 
     assert!(result.is_none());
 }
@@ -2861,8 +3035,12 @@ fn test_find_symlink_in_subdirectory() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    let sub_id = vault_ops.create_directory(&DirId::root(), "subdir").unwrap();
-    vault_ops.create_symlink(&sub_id, "nested_link", "/deep/target").unwrap();
+    let sub_id = vault_ops
+        .create_directory(&DirId::root(), "subdir")
+        .unwrap();
+    vault_ops
+        .create_symlink(&sub_id, "nested_link", "/deep/target")
+        .unwrap();
 
     // Should find in subdirectory
     let result = vault_ops.find_symlink(&sub_id, "nested_link").unwrap();
@@ -2870,7 +3048,9 @@ fn test_find_symlink_in_subdirectory() {
     assert_eq!(result.unwrap().name, "nested_link");
 
     // Should not find in root
-    let root_result = vault_ops.find_symlink(&DirId::root(), "nested_link").unwrap();
+    let root_result = vault_ops
+        .find_symlink(&DirId::root(), "nested_link")
+        .unwrap();
     assert!(root_result.is_none());
 }
 
@@ -2889,7 +3069,9 @@ fn test_find_symlink_does_not_match_files() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a file with a name
-    vault_ops.write_file(&DirId::root(), "myname", b"content").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), "myname", b"content")
+        .unwrap();
 
     // find_symlink should NOT find it
     let result = vault_ops.find_symlink(&DirId::root(), "myname").unwrap();
@@ -2902,11 +3084,16 @@ fn test_find_symlink_does_not_match_directories() {
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Create a directory with a name
-    vault_ops.create_directory(&DirId::root(), "myname").unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), "myname")
+        .unwrap();
 
     // find_symlink should NOT find it
     let result = vault_ops.find_symlink(&DirId::root(), "myname").unwrap();
-    assert!(result.is_none(), "find_symlink should not match directories");
+    assert!(
+        result.is_none(),
+        "find_symlink should not match directories"
+    );
 }
 
 #[test]
@@ -2914,14 +3101,31 @@ fn test_find_symlink_case_sensitive() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_symlink(&DirId::root(), "MyLink", "/target").unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "MyLink", "/target")
+        .unwrap();
 
     // Exact match should work
-    assert!(vault_ops.find_symlink(&DirId::root(), "MyLink").unwrap().is_some());
+    assert!(
+        vault_ops
+            .find_symlink(&DirId::root(), "MyLink")
+            .unwrap()
+            .is_some()
+    );
 
     // Different case should not match
-    assert!(vault_ops.find_symlink(&DirId::root(), "mylink").unwrap().is_none());
-    assert!(vault_ops.find_symlink(&DirId::root(), "MYLINK").unwrap().is_none());
+    assert!(
+        vault_ops
+            .find_symlink(&DirId::root(), "mylink")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vault_ops
+            .find_symlink(&DirId::root(), "MYLINK")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -2929,10 +3133,16 @@ fn test_find_symlink_unicode_name() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_symlink(&DirId::root(), "日本語リンク", "/japanese/target").unwrap();
-    vault_ops.create_symlink(&DirId::root(), "émoji-🔗", "/emoji/target").unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "日本語リンク", "/japanese/target")
+        .unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "émoji-🔗", "/emoji/target")
+        .unwrap();
 
-    let jp_result = vault_ops.find_symlink(&DirId::root(), "日本語リンク").unwrap();
+    let jp_result = vault_ops
+        .find_symlink(&DirId::root(), "日本語リンク")
+        .unwrap();
     assert!(jp_result.is_some());
 
     let emoji_result = vault_ops.find_symlink(&DirId::root(), "émoji-🔗").unwrap();
@@ -2956,9 +3166,7 @@ fn test_find_file_invalid_directory_id() {
 
 #[test]
 fn test_find_directory_invalid_directory_id() {
-    let (vault_path, master_key) = VaultBuilder::new()
-        .add_directory("existing_dir")
-        .build();
+    let (vault_path, master_key) = VaultBuilder::new().add_directory("existing_dir").build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
     // Looking in a nonexistent directory should return None, not error
@@ -2972,7 +3180,9 @@ fn test_find_symlink_invalid_directory_id() {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
 
-    vault_ops.create_symlink(&DirId::root(), "link", "/target").unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), "link", "/target")
+        .unwrap();
 
     // Looking in a nonexistent directory should return None, not error
     let fake_dir_id = DirId::from_raw("this-is-not-a-real-directory-id");
@@ -2990,7 +3200,9 @@ fn test_find_file_shortened_name() {
 
     // Create a file with a very long name that will be shortened (> 50 chars base64 encoded)
     let long_name = "this_is_a_very_long_filename_that_will_definitely_exceed_the_threshold.txt";
-    vault_ops.write_file(&DirId::root(), long_name, b"shortened content").unwrap();
+    vault_ops
+        .write_file(&DirId::root(), long_name, b"shortened content")
+        .unwrap();
 
     // Find it using the optimized lookup
     let found = vault_ops.find_file(&DirId::root(), long_name).unwrap();
@@ -3008,7 +3220,9 @@ fn test_find_directory_shortened_name() {
 
     // Create a directory with a very long name
     let long_name = "this_is_a_very_long_directory_name_that_will_exceed_threshold";
-    vault_ops.create_directory(&DirId::root(), long_name).unwrap();
+    vault_ops
+        .create_directory(&DirId::root(), long_name)
+        .unwrap();
 
     // Find it using the optimized lookup
     let found = vault_ops.find_directory(&DirId::root(), long_name).unwrap();
@@ -3025,7 +3239,9 @@ fn test_find_symlink_shortened_name() {
 
     // Create a symlink with a very long name
     let long_name = "this_is_a_very_long_symlink_name_that_will_definitely_exceed_threshold";
-    vault_ops.create_symlink(&DirId::root(), long_name, "/some/target").unwrap();
+    vault_ops
+        .create_symlink(&DirId::root(), long_name, "/some/target")
+        .unwrap();
 
     // Find it using the optimized lookup
     let found = vault_ops.find_symlink(&DirId::root(), long_name).unwrap();

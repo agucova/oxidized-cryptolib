@@ -210,11 +210,12 @@ impl InodeTable {
 
         if let Some(entry) = self.inner.get(inode)
             && let Some(remaining) = entry.dec_nlookup(nlookup)
-                && remaining == 0 {
-                    // Safe to evict - drop the ref first
-                    drop(entry);
-                    return self.evict(inode);
-                }
+            && remaining == 0
+        {
+            // Safe to evict - drop the ref first
+            drop(entry);
+            return self.evict(inode);
+        }
         false
     }
 
@@ -261,13 +262,7 @@ impl InodeTable {
     /// * `inode_b` - Second inode
     /// * `path_a` - Original path of inode_a (will become path of inode_b)
     /// * `path_b` - Original path of inode_b (will become path of inode_a)
-    pub fn swap_paths(
-        &self,
-        inode_a: u64,
-        inode_b: u64,
-        path_a: &VaultPath,
-        path_b: &VaultPath,
-    ) {
+    pub fn swap_paths(&self, inode_a: u64, inode_b: u64, path_a: &VaultPath, path_b: &VaultPath) {
         // Update path-to-id mappings: path_a now points to inode_b, path_b now points to inode_a
         self.inner.set_path_mapping(path_a.clone(), inode_b);
         self.inner.set_path_mapping(path_b.clone(), inode_a);
@@ -370,7 +365,9 @@ mod tests {
         let old_path = VaultPath::new("old_name");
         let new_path = VaultPath::new("new_name");
 
-        let inode = table.get_or_insert(&old_path.clone(), &InodeKind::File {
+        let inode = table.get_or_insert(
+            &old_path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "old_name".to_string(),
             },
@@ -396,7 +393,9 @@ mod tests {
         let path = VaultPath::new("to_delete");
 
         // get_or_insert sets nlookup=1
-        let inode = table.get_or_insert(&path.clone(), &InodeKind::File {
+        let inode = table.get_or_insert(
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "to_delete".to_string(),
             },
@@ -457,7 +456,9 @@ mod tests {
             let table = Arc::clone(&table);
             handles.push(thread::spawn(move || {
                 let path = VaultPath::new(format!("file_{i}"));
-                table.get_or_insert(&path, &InodeKind::File {
+                table.get_or_insert(
+                    &path,
+                    &InodeKind::File {
                         dir_id: DirId::root(),
                         name: format!("file_{i}"),
                     },
@@ -483,7 +484,9 @@ mod tests {
         let path = VaultPath::new("nlookup_test");
 
         // First insert: nlookup = 1
-        let inode = table.get_or_insert(&path.clone(), &InodeKind::File {
+        let inode = table.get_or_insert(
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "nlookup_test".to_string(),
             },
@@ -491,7 +494,9 @@ mod tests {
         assert_eq!(table.get(inode).unwrap().nlookup(), 1);
 
         // Second lookup: nlookup = 2
-        table.get_or_insert(&path.clone(), &InodeKind::File {
+        table.get_or_insert(
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "ignored".to_string(),
             },

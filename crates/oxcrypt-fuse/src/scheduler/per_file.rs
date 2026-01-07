@@ -5,8 +5,8 @@
 //! wait for all pending operations on a file to complete.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -174,7 +174,11 @@ impl PerFileOrdering {
     /// - `Ok(None)` if the operation can proceed immediately
     /// - `Ok(Some(receiver))` if the operation must wait (receive `()` when ready)
     /// - `Err(errno)` if the last operation failed and the error should be propagated
-    pub fn try_start(&self, inode: u64, request_id: RequestId) -> Result<Option<oneshot::Receiver<()>>, i32> {
+    pub fn try_start(
+        &self,
+        inode: u64,
+        request_id: RequestId,
+    ) -> Result<Option<oneshot::Receiver<()>>, i32> {
         let state = self.get_or_create(inode);
 
         // Check for last error (will be cleared by successful barrier)
@@ -266,7 +270,9 @@ impl PerFileOrdering {
     /// Call periodically to prevent unbounded memory growth.
     pub fn cleanup_idle(&self) {
         self.files.retain(|_, state| {
-            state.has_in_flight() || state.has_pending() || state.barrier_waiters.load(Ordering::Relaxed) > 0
+            state.has_in_flight()
+                || state.has_pending()
+                || state.barrier_waiters.load(Ordering::Relaxed) > 0
         });
     }
 }

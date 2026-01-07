@@ -13,13 +13,24 @@ pub use harness::TestMount;
 // (not all test files use all utilities, so suppress unused import warnings)
 #[allow(unused_imports)]
 pub use oxcrypt_mount::testing::{
-    // Generators
-    all_byte_values, chunk_minus_one, chunk_plus_one, deep_path, long_filename,
-    multi_chunk_content, one_chunk_content, partial_final_chunk, patterned_chunks,
-    problematic_binary, random_bytes, special_filename, unicode_content, unicode_filename,
     CHUNK_SIZE,
+    // Generators
+    all_byte_values,
+    chunk_minus_one,
+    chunk_plus_one,
+    deep_path,
+    long_filename,
+    multi_chunk_content,
+    one_chunk_content,
+    partial_final_chunk,
+    patterned_chunks,
+    problematic_binary,
+    random_bytes,
     // Assertions
     sha256,
+    special_filename,
+    unicode_content,
+    unicode_filename,
 };
 
 // Macros (skip_if_no_fuse!, require_mount!) are #[macro_export] so they're

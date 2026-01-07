@@ -1,7 +1,7 @@
 use oxcrypt_core::crypto::keys::MasterKey;
 
-pub mod vault_builder;
 pub mod test_data;
+pub mod vault_builder;
 
 pub const TEST_PASSPHRASE: &str = "test-passphrase-12345";
 pub const TEST_VAULT_ID: &str = "test-vault-id";
@@ -11,29 +11,29 @@ pub fn create_test_master_key() -> MasterKey {
     MasterKey::new([0x01; 32], [0x02; 32]).unwrap()
 }
 
-
-
 /// Standard test file contents  
 pub mod test_files {
-    
+
     /// Create content of exactly the specified size
     pub fn create_sized_content(size: usize) -> Vec<u8> {
         let pattern = b"0123456789ABCDEF";
         let mut content = Vec::with_capacity(size);
-        
+
         for i in 0..size {
             content.push(pattern[i % pattern.len()]);
         }
-        
+
         content
     }
-    
+
     /// File content with special characters
     #[allow(dead_code)] // Used in vault_integration_tests
     pub fn create_special_char_content() -> Vec<u8> {
-        "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings".as_bytes().to_vec()
+        "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings"
+            .as_bytes()
+            .to_vec()
     }
-    
+
     /// Create content that will test chunk boundaries (32KB chunks)
     #[allow(dead_code)] // Used in vault_integration_tests
     pub fn create_chunk_boundary_content() -> Vec<u8> {
@@ -44,24 +44,15 @@ pub mod test_files {
 /// Standard test filenames
 #[allow(dead_code)] // Used in snapshot_tests
 pub mod test_filenames {
-    pub const NORMAL_FILES: &[&str] = &[
-        "test.txt",
-        "document.pdf",
-        "image.png",
-        "data.json",
-    ];
-    
+    pub const NORMAL_FILES: &[&str] = &["test.txt", "document.pdf", "image.png", "data.json"];
+
     pub const SPECIAL_CHAR_FILES: &[&str] = &[
         "file with spaces.txt",
         "émojis-🚀.txt",
         "special@#$%^chars.doc",
     ];
-    
-    pub const HIDDEN_FILES: &[&str] = &[
-        ".hidden",
-        ".gitignore",
-        ".config",
-    ];
+
+    pub const HIDDEN_FILES: &[&str] = &[".hidden", ".gitignore", ".config"];
 }
 
 /// Test directory structures
@@ -109,7 +100,7 @@ pub mod test_structures {
             },
         ]
     }
-    
+
     /// Edge case structure with various file types and sizes
     pub fn edge_case_structure() -> Vec<FileEntry> {
         vec![
@@ -123,7 +114,9 @@ pub mod test_structures {
             },
             FileEntry {
                 path: "special_chars.txt",
-                content: "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings".as_bytes().to_vec(),
+                content: "Special chars: 🚀 émojis ñ UTF-8 \0 null bytes \r\n line endings"
+                    .as_bytes()
+                    .to_vec(),
             },
             FileEntry {
                 path: "file with spaces.txt",
@@ -143,22 +136,21 @@ pub mod test_structures {
             },
         ]
     }
-    
 }
 
 /// Utility functions for assertions
 pub mod assertions {
     use oxcrypt_core::fs::file::DecryptedFile;
-    
+
     /// Assert that a decrypted file matches expected content
     #[allow(dead_code)] // Used in vault_integration_tests
     pub fn assert_file_content(decrypted: &DecryptedFile, expected: &[u8]) {
         assert_eq!(
-            decrypted.content, expected,
+            decrypted.content,
+            expected,
             "File content mismatch. Expected {} bytes, got {} bytes",
             expected.len(),
             decrypted.content.len()
         );
     }
-    
 }

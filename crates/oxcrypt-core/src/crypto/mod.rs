@@ -1,7 +1,7 @@
 //! Cryptographic primitives for Cryptomator vault operations
 
-pub mod keys;
 pub mod key_wrap;
+pub mod keys;
 mod thread_safety; // Send + Sync impls for MasterKey
 
 use thiserror::Error;

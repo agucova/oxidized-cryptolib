@@ -6,7 +6,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use super::lane::Lane;
+use super::queue::LaneQueues;
 use super::{ExecutorStats, PerFileStats, SingleFlightStats};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Aggregated scheduler statistics.
 ///
@@ -127,6 +130,14 @@ pub struct SchedulerSnapshot {
     pub rejections_by_lane: [u64; 5],
     /// In-flight by lane.
     pub in_flight_by_lane: [u64; 5],
+    /// Current queue depth total.
+    pub queue_depth_total: u64,
+    /// Current queue depth by lane.
+    pub queue_depth_by_lane: [u64; 5],
+    /// Oldest queue wait in milliseconds.
+    pub oldest_queue_wait_ms: u64,
+    /// Last dequeue timestamp (ms since UNIX epoch).
+    pub last_dequeue_ms: u64,
 
     // Executor stats
     /// Jobs submitted to executor.
@@ -175,7 +186,7 @@ pub struct SchedulerSnapshot {
 
 impl SchedulerSnapshot {
     /// Create a snapshot from component stats.
-    pub fn from_components(
+    pub fn from_components<T>(
         scheduler: &SchedulerStats,
         executor: &ExecutorStats,
         cache_hits: u64,
@@ -184,7 +195,47 @@ impl SchedulerSnapshot {
         cache_bytes: u64,
         single_flight: &SingleFlightStats,
         per_file: &PerFileStats,
+        lane_queues: &LaneQueues<T>,
     ) -> Self {
+        let queue_depth_by_lane = [
+            lane_queues.depth(Lane::Control),
+            lane_queues.depth(Lane::Metadata),
+            lane_queues.depth(Lane::ReadForeground),
+            lane_queues.depth(Lane::WriteStructural),
+            lane_queues.depth(Lane::Bulk),
+        ];
+        let queue_depth_total = queue_depth_by_lane.iter().sum();
+
+        let now_ms = now_ms();
+        let oldest_queue_wait_ms = [
+            lane_queues.stats(Lane::Control).oldest_enqueue_ms(),
+            lane_queues.stats(Lane::Metadata).oldest_enqueue_ms(),
+            lane_queues.stats(Lane::ReadForeground).oldest_enqueue_ms(),
+            lane_queues.stats(Lane::WriteStructural).oldest_enqueue_ms(),
+            lane_queues.stats(Lane::Bulk).oldest_enqueue_ms(),
+        ]
+        .into_iter()
+        .map(|ts| {
+            if ts == 0 {
+                0
+            } else {
+                now_ms.saturating_sub(ts)
+            }
+        })
+        .max()
+        .unwrap_or(0);
+
+        let last_dequeue_ms = [
+            lane_queues.stats(Lane::Control).last_dequeue_ms(),
+            lane_queues.stats(Lane::Metadata).last_dequeue_ms(),
+            lane_queues.stats(Lane::ReadForeground).last_dequeue_ms(),
+            lane_queues.stats(Lane::WriteStructural).last_dequeue_ms(),
+            lane_queues.stats(Lane::Bulk).last_dequeue_ms(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+
         Self {
             // Core stats
             requests_accepted: scheduler.requests_accepted.load(Ordering::Relaxed),
@@ -205,6 +256,10 @@ impl SchedulerSnapshot {
                 scheduler.in_flight_by_lane[3].load(Ordering::Relaxed),
                 scheduler.in_flight_by_lane[4].load(Ordering::Relaxed),
             ],
+            queue_depth_total,
+            queue_depth_by_lane,
+            oldest_queue_wait_ms,
+            last_dequeue_ms,
 
             // Executor stats
             executor_jobs_submitted: executor.jobs_submitted.load(Ordering::Relaxed),
@@ -245,6 +300,7 @@ impl SchedulerSnapshot {
              - Requests: {} accepted, {} rejected ({:.1}% rejection rate)\n\
              - Timeouts: {} ({:.1}% of accepted)\n\
              - In-flight: {} total\n\
+             - Queue: {} depth, oldest wait {}ms\n\
              - Executor: {} submitted, {} completed, {} failed, queue depth {}\n\
              - Cache: {} hits, {} misses ({:.1}% hit rate), {} entries, {} bytes\n\
              - Dedup: {} leaders, {} waiters ({:.1}% dedup rate)\n\
@@ -254,7 +310,9 @@ impl SchedulerSnapshot {
             if self.requests_accepted + self.requests_rejected == 0 {
                 0.0
             } else {
-                self.requests_rejected as f64 / (self.requests_accepted + self.requests_rejected) as f64 * 100.0
+                self.requests_rejected as f64
+                    / (self.requests_accepted + self.requests_rejected) as f64
+                    * 100.0
             },
             self.timeouts,
             if self.requests_accepted == 0 {
@@ -263,6 +321,8 @@ impl SchedulerSnapshot {
                 self.timeouts as f64 / self.requests_accepted as f64 * 100.0
             },
             self.in_flight_by_lane.iter().sum::<u64>(),
+            self.queue_depth_total,
+            self.oldest_queue_wait_ms,
             self.executor_jobs_submitted,
             self.executor_jobs_completed,
             self.executor_jobs_failed,
@@ -282,9 +342,19 @@ impl SchedulerSnapshot {
     }
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scheduler::lane::LaneCapacities;
+    use crate::scheduler::queue::LaneQueues;
 
     #[test]
     fn test_scheduler_stats_new() {
@@ -375,16 +445,18 @@ mod tests {
         let executor = ExecutorStats::default();
         let single_flight = SingleFlightStats::default();
         let per_file = PerFileStats::default();
+        let lane_queues: LaneQueues<()> = LaneQueues::new(&LaneCapacities::default());
 
         let snapshot = SchedulerSnapshot::from_components(
             &scheduler,
             &executor,
-            10, // cache_hits
-            5,  // cache_misses
-            3,  // cache_entries
+            10,   // cache_hits
+            5,    // cache_misses
+            3,    // cache_entries
             1024, // cache_bytes
             &single_flight,
             &per_file,
+            &lane_queues,
         );
 
         let summary = snapshot.summary();

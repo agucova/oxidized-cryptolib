@@ -907,6 +907,14 @@ pub struct SchedulerStatsSnapshot {
     pub in_flight_total: u64,
     /// In-flight requests per lane [L0-Control, L1-Metadata, L2-ReadFg, L3-WriteFg, L4-Bulk].
     pub in_flight_by_lane: [u64; 5],
+    /// Current queue depth total.
+    pub queue_depth_total: u64,
+    /// Current queue depth per lane [L0-Control, L1-Metadata, L2-ReadFg, L3-WriteFg, L4-Bulk].
+    pub queue_depth_by_lane: [u64; 5],
+    /// Oldest queue wait in milliseconds.
+    pub oldest_queue_wait_ms: u64,
+    /// Last dequeue timestamp (ms since UNIX epoch).
+    pub last_dequeue_ms: u64,
 
     // Executor stats
     /// Jobs submitted to the executor.
@@ -963,7 +971,8 @@ impl SchedulerStatsSnapshot {
     pub fn summary(&self) -> String {
         format!(
             "Scheduler: {} accepted, {} rejected ({:.1}% rate), {} timeouts ({:.1}% rate)\n\
-             In-flight: {} total, Executor: {} submitted, {} completed, queue depth {}\n\
+             In-flight: {} total, Queue: {} depth, oldest wait {}ms\n\
+             Executor: {} submitted, {} completed, queue depth {}\n\
              Read cache: {:.1}% hit rate ({} hits, {} misses), {} entries, {}\n\
              Dedup: {:.1}% ratio ({} leaders, {} waiters)",
             self.requests_accepted,
@@ -972,6 +981,8 @@ impl SchedulerStatsSnapshot {
             self.timeouts,
             self.timeout_rate * 100.0,
             self.in_flight_total,
+            self.queue_depth_total,
+            self.oldest_queue_wait_ms,
             self.executor_jobs_submitted,
             self.executor_jobs_completed,
             self.executor_queue_depth,

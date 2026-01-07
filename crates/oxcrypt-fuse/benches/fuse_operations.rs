@@ -6,7 +6,7 @@
 //! - Attribute cache operations
 //! - Directory cache operations
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use fuser::FileType;
 use oxcrypt_core::vault::path::{DirId, VaultPath};
 use oxcrypt_fuse::attr::{AttrCache, DirCache, DirListingEntry};
@@ -431,7 +431,7 @@ fn realistic_patterns(c: &mut Criterion) {
 /// End-to-end benchmarks with actual disk I/O and cryptographic operations.
 /// These measure the full FUSE operation path using a real vault.
 fn end_to_end_disk_io(c: &mut Criterion) {
-    use oxcrypt_core::vault::{extract_master_key, VaultOperations};
+    use oxcrypt_core::vault::{VaultOperations, extract_master_key};
     use std::path::PathBuf;
 
     // Use the test vault - adjust path as needed

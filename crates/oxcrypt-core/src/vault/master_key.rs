@@ -11,7 +11,10 @@ use serde_with::base64::Base64;
 use serde_with::serde_as;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::crypto::{keys::{KeyAccessError, MasterKey}, key_wrap, CryptoError};
+use crate::crypto::{
+    CryptoError, key_wrap,
+    keys::{KeyAccessError, MasterKey},
+};
 
 /// Default scrypt parameters matching Java Cryptomator implementation.
 ///
@@ -192,7 +195,8 @@ impl MasterKeyFile {
         })?;
 
         // Combine salt and pepper as in Java: saltAndPepper = salt || pepper
-        let mut salt_and_pepper = Zeroizing::new(Vec::with_capacity(self.scrypt_salt.len() + pepper.len()));
+        let mut salt_and_pepper =
+            Zeroizing::new(Vec::with_capacity(self.scrypt_salt.len() + pepper.len()));
         salt_and_pepper.extend_from_slice(&self.scrypt_salt);
         salt_and_pepper.extend_from_slice(pepper);
 
@@ -242,7 +246,11 @@ impl MasterKeyFile {
     /// - `CryptoError::KeyDerivationFailed`: Scrypt key derivation failed
     /// - `CryptoError::KeyUnwrapIntegrityFailed`: Wrong passphrase or corrupted/tampered vault
     /// - `CryptoError::HmacVerificationFailed`: **[INTEGRITY VIOLATION]** Vault version tampered
-    pub fn unlock_with_pepper(&self, passphrase: &str, pepper: &[u8]) -> Result<MasterKey, CryptoError> {
+    pub fn unlock_with_pepper(
+        &self,
+        passphrase: &str,
+        pepper: &[u8],
+    ) -> Result<MasterKey, CryptoError> {
         let kek = self.derive_key_with_pepper(passphrase, pepper)?;
         self.unlock_with_kek(&kek)
     }
@@ -251,23 +259,25 @@ impl MasterKeyFile {
         // Unwrap the primary master key (encryption key) first
         // Note: unwrap failure typically means wrong password (though could also be tampering)
         let aes_key = key_wrap::unwrap_key(&self.primary_master_key, kek)?;
-        let aes_key: [u8; 32] = aes_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| CryptoError::InvalidKeyLength {
-                expected: 32,
-                actual: aes_key.len(),
-            })?;
+        let aes_key: [u8; 32] =
+            aes_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| CryptoError::InvalidKeyLength {
+                    expected: 32,
+                    actual: aes_key.len(),
+                })?;
 
         // Unwrap the MAC key second (same order as Java implementation)
         let hmac_key = key_wrap::unwrap_key(&self.hmac_master_key, kek)?;
-        let hmac_key: [u8; 32] = hmac_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| CryptoError::InvalidKeyLength {
-                expected: 32,
-                actual: hmac_key.len(),
-            })?;
+        let hmac_key: [u8; 32] =
+            hmac_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| CryptoError::InvalidKeyLength {
+                    expected: 32,
+                    actual: hmac_key.len(),
+                })?;
         let hmac_key = SecretBox::new(Box::new(hmac_key));
 
         // Verify the version MAC - failure indicates INTEGRITY VIOLATION
@@ -577,17 +587,23 @@ mod tests {
         let unlocked = masterkey_file.unlock(passphrase).unwrap();
 
         // Verify keys match
-        master_key.with_aes_key(|orig_aes| {
-            unlocked.with_aes_key(|unlocked_aes| {
-                assert_eq!(orig_aes, unlocked_aes, "AES keys should match");
+        master_key
+            .with_aes_key(|orig_aes| {
+                unlocked.with_aes_key(|unlocked_aes| {
+                    assert_eq!(orig_aes, unlocked_aes, "AES keys should match");
+                })
             })
-        }).unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
-        master_key.with_mac_key(|orig_mac| {
-            unlocked.with_mac_key(|unlocked_mac| {
-                assert_eq!(orig_mac, unlocked_mac, "MAC keys should match");
+        master_key
+            .with_mac_key(|orig_mac| {
+                unlocked.with_mac_key(|unlocked_mac| {
+                    assert_eq!(orig_mac, unlocked_mac, "MAC keys should match");
+                })
             })
-        }).unwrap().unwrap();
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
@@ -601,14 +617,19 @@ mod tests {
 
         // Parse and unlock with same pepper
         let masterkey_file: MasterKeyFile = serde_json::from_str(&json).unwrap();
-        let unlocked = masterkey_file.unlock_with_pepper(passphrase, pepper).unwrap();
+        let unlocked = masterkey_file
+            .unlock_with_pepper(passphrase, pepper)
+            .unwrap();
 
         // Verify keys match
-        master_key.with_aes_key(|orig_aes| {
-            unlocked.with_aes_key(|unlocked_aes| {
-                assert_eq!(orig_aes, unlocked_aes, "AES keys should match");
+        master_key
+            .with_aes_key(|orig_aes| {
+                unlocked.with_aes_key(|unlocked_aes| {
+                    assert_eq!(orig_aes, unlocked_aes, "AES keys should match");
+                })
             })
-        }).unwrap().unwrap();
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
@@ -651,9 +672,19 @@ mod tests {
         // Verify default parameters match Java implementation
         // Note: cost param depends on OXCRYPT_FAST_KDF env var (1024 for fast, 32768 for production)
         let expected_cost_param = if is_fast_kdf_enabled() { 1024 } else { 32768 };
-        assert_eq!(masterkey_file.scrypt_salt.len(), 8, "Salt should be 8 bytes");
-        assert_eq!(masterkey_file.scrypt_cost_param, expected_cost_param, "Cost param mismatch");
-        assert_eq!(masterkey_file.scrypt_block_size, 8, "Block size should be 8");
+        assert_eq!(
+            masterkey_file.scrypt_salt.len(),
+            8,
+            "Salt should be 8 bytes"
+        );
+        assert_eq!(
+            masterkey_file.scrypt_cost_param, expected_cost_param,
+            "Cost param mismatch"
+        );
+        assert_eq!(
+            masterkey_file.scrypt_block_size, 8,
+            "Block size should be 8"
+        );
         assert_eq!(masterkey_file.version, 999, "Version should be 999");
     }
 
@@ -672,7 +703,10 @@ mod tests {
 
         // Both forms should unlock successfully
         let result = masterkey_file.unlock(passphrase_decomposed);
-        assert!(result.is_ok(), "NFC normalization should make both forms equivalent");
+        assert!(
+            result.is_ok(),
+            "NFC normalization should make both forms equivalent"
+        );
     }
 
     #[test]
@@ -687,17 +721,19 @@ mod tests {
         let expected_version_bytes = 999u32.to_be_bytes();
         assert_eq!(expected_version_bytes, [0x00, 0x00, 0x03, 0xe7]);
 
-        master_key.with_mac_key(|mac_key| {
-            let key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
-            let computed = hmac::sign(&key, &expected_version_bytes);
-            assert_eq!(computed.as_ref(), masterkey_file.version_mac.as_slice());
-        }).unwrap();
+        master_key
+            .with_mac_key(|mac_key| {
+                let key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
+                let computed = hmac::sign(&key, &expected_version_bytes);
+                assert_eq!(computed.as_ref(), masterkey_file.version_mac.as_slice());
+            })
+            .unwrap();
     }
 
     #[test]
     fn test_change_password() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
 
         // Create a master key and initial masterkey file
         let master_key = MasterKey::random().unwrap();
@@ -720,17 +756,29 @@ mod tests {
         let unlocked = new_masterkey_file.unlock(new_passphrase).unwrap();
 
         // Verify keys match original
-        master_key.with_aes_key(|orig_aes| {
-            unlocked.with_aes_key(|unlocked_aes| {
-                assert_eq!(orig_aes, unlocked_aes, "AES keys should match after password change");
+        master_key
+            .with_aes_key(|orig_aes| {
+                unlocked.with_aes_key(|unlocked_aes| {
+                    assert_eq!(
+                        orig_aes, unlocked_aes,
+                        "AES keys should match after password change"
+                    );
+                })
             })
-        }).unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
-        master_key.with_mac_key(|orig_mac| {
-            unlocked.with_mac_key(|unlocked_mac| {
-                assert_eq!(orig_mac, unlocked_mac, "MAC keys should match after password change");
+        master_key
+            .with_mac_key(|orig_mac| {
+                unlocked.with_mac_key(|unlocked_mac| {
+                    assert_eq!(
+                        orig_mac, unlocked_mac,
+                        "MAC keys should match after password change"
+                    );
+                })
             })
-        }).unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         // Verify old password no longer works
         let result = new_masterkey_file.unlock(old_passphrase);
@@ -739,8 +787,8 @@ mod tests {
 
     #[test]
     fn test_change_password_wrong_old_password() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
 
         let master_key = MasterKey::random().unwrap();
         let correct_passphrase = "correct-password";

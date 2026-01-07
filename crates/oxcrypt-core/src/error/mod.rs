@@ -4,7 +4,7 @@
 //! detailed error messages throughout the crate.
 
 // Re-export error types from submodules
-pub use crate::fs::file::{FileContext, FileError, FileDecryptionError, FileEncryptionError};
+pub use crate::fs::file::{FileContext, FileDecryptionError, FileEncryptionError, FileError};
 pub use crate::fs::name::{NameContext, NameError};
-pub use crate::vault::config::{VaultError, MasterKeyExtractionError, ClaimValidationError};
-pub use crate::vault::operations::{VaultOperationError, VaultWriteError, VaultOpContext};
+pub use crate::vault::config::{ClaimValidationError, MasterKeyExtractionError, VaultError};
+pub use crate::vault::operations::{VaultOpContext, VaultOperationError, VaultWriteError};

@@ -42,7 +42,10 @@ pub fn assert_not_found(mount: &TestMount, path: &str) {
 
 /// Assert that a path exists.
 pub fn assert_exists(mount: &TestMount, path: &str) {
-    assert!(mount.exists(path), "Expected '{path}' to exist, but it doesn't");
+    assert!(
+        mount.exists(path),
+        "Expected '{path}' to exist, but it doesn't"
+    );
 }
 
 /// Assert that a path is a directory.

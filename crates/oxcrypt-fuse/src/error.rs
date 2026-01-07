@@ -7,7 +7,7 @@
 
 use crate::async_bridge::BridgeError;
 use oxcrypt_core::error::{VaultOperationError, VaultWriteError};
-use oxcrypt_mount::{io_error_to_errno, VaultErrorCategory};
+use oxcrypt_mount::{VaultErrorCategory, io_error_to_errno};
 use std::io;
 use thiserror::Error;
 

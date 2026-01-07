@@ -210,13 +210,16 @@ fn test_git_cleanup_with_explicit_close() {
         fs::write(repo_path.join("test.txt"), b"test content").unwrap();
 
         let mut index = repo.index().unwrap();
-        index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None).unwrap();
+        index
+            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+            .unwrap();
         index.write().unwrap();
 
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let sig = Signature::now("Test", "test@example.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "Test", &tree, &[]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Test", &tree, &[])
+            .unwrap();
 
         // Explicitly drop in correct order (borrowed objects first)
         drop(tree);
@@ -274,17 +277,24 @@ fn test_git_cleanup_multiple_iterations() {
             let repo = Repository::init(&repo_path).unwrap();
 
             for i in 0..5 {
-                fs::write(repo_path.join(format!("file{}.txt", i)), format!("content {}", i)).unwrap();
+                fs::write(
+                    repo_path.join(format!("file{}.txt", i)),
+                    format!("content {}", i),
+                )
+                .unwrap();
             }
 
             let mut index = repo.index().unwrap();
-            index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None).unwrap();
+            index
+                .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+                .unwrap();
             index.write().unwrap();
 
             let tree_id = index.write_tree().unwrap();
             let tree = repo.find_tree(tree_id).unwrap();
             let sig = Signature::now("Test", "test@example.com").unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Test", &tree, &[]).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Test", &tree, &[])
+                .unwrap();
         }
 
         eprintln!("  Git operations complete");

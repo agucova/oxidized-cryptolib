@@ -21,11 +21,11 @@
 //! mount(fs, mountpoint, options)?;
 //! ```
 
+mod async_bridge;
 pub mod attr;
 pub mod backend;
 pub mod config;
 pub mod error;
-mod async_bridge;
 pub mod filesystem;
 pub mod handles;
 pub mod inode;

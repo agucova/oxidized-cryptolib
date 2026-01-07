@@ -107,9 +107,18 @@ async fn test_concurrent_writes_via_join() {
     assert!(w3.is_ok(), "Write 3 failed: {:?}", w3.err());
 
     // Verify all files
-    assert_eq!(ops.read_file(&root, "file1.txt").await.unwrap().content, b"content 1");
-    assert_eq!(ops.read_file(&root, "file2.txt").await.unwrap().content, b"content 2");
-    assert_eq!(ops.read_file(&root, "file3.txt").await.unwrap().content, b"content 3");
+    assert_eq!(
+        ops.read_file(&root, "file1.txt").await.unwrap().content,
+        b"content 1"
+    );
+    assert_eq!(
+        ops.read_file(&root, "file2.txt").await.unwrap().content,
+        b"content 2"
+    );
+    assert_eq!(
+        ops.read_file(&root, "file3.txt").await.unwrap().content,
+        b"content 3"
+    );
 }
 
 /// Test concurrent directory creation.
@@ -225,9 +234,13 @@ async fn test_handle_table_unique_ids() {
 
     // Create multiple files
     for i in 0..5 {
-        ops.write_file(&root, &format!("file_{i}.txt"), format!("content {i}").as_bytes())
-            .await
-            .expect("Failed to write");
+        ops.write_file(
+            &root,
+            &format!("file_{i}.txt"),
+            format!("content {i}").as_bytes(),
+        )
+        .await
+        .expect("Failed to write");
     }
 
     // Open files and verify unique handles
@@ -241,7 +254,10 @@ async fn test_handle_table_unique_ids() {
         let handle_id = table.insert(oxcrypt_core::vault::OpenHandle::Reader(reader));
 
         // All handles should be unique
-        assert!(!handles.contains(&handle_id), "Duplicate handle ID: {handle_id}");
+        assert!(
+            !handles.contains(&handle_id),
+            "Duplicate handle ID: {handle_id}"
+        );
         handles.push(handle_id);
     }
 
@@ -327,16 +343,30 @@ async fn test_move_operations_no_deadlock() {
     let root = DirId::root();
 
     // Create two directories
-    let dir_a = ops.create_directory(&root, "dir_a").await.expect("create dir_a");
-    let dir_b = ops.create_directory(&root, "dir_b").await.expect("create dir_b");
+    let dir_a = ops
+        .create_directory(&root, "dir_a")
+        .await
+        .expect("create dir_a");
+    let dir_b = ops
+        .create_directory(&root, "dir_b")
+        .await
+        .expect("create dir_b");
 
     // Create files in each
-    ops.write_file(&dir_a, "file_from_a.txt", b"from a").await.expect("write a");
-    ops.write_file(&dir_b, "file_from_b.txt", b"from b").await.expect("write b");
+    ops.write_file(&dir_a, "file_from_a.txt", b"from a")
+        .await
+        .expect("write a");
+    ops.write_file(&dir_b, "file_from_b.txt", b"from b")
+        .await
+        .expect("write b");
 
     // Move files between directories
-    ops.move_file(&dir_a, "file_from_a.txt", &dir_b).await.expect("move a to b");
-    ops.move_file(&dir_b, "file_from_b.txt", &dir_a).await.expect("move b to a");
+    ops.move_file(&dir_a, "file_from_a.txt", &dir_b)
+        .await
+        .expect("move a to b");
+    ops.move_file(&dir_b, "file_from_b.txt", &dir_a)
+        .await
+        .expect("move b to a");
 
     // Verify final state
     let files_in_a = ops.list_files(&dir_a).await.unwrap();
@@ -383,12 +413,20 @@ async fn test_rename_operations_no_deadlock() {
     let root = DirId::root();
 
     // Create files
-    ops.write_file(&root, "original.txt", b"content").await.expect("write");
+    ops.write_file(&root, "original.txt", b"content")
+        .await
+        .expect("write");
 
     // Rename multiple times
-    ops.rename_file(&root, "original.txt", "renamed1.txt").await.expect("rename 1");
-    ops.rename_file(&root, "renamed1.txt", "renamed2.txt").await.expect("rename 2");
-    ops.rename_file(&root, "renamed2.txt", "final.txt").await.expect("rename 3");
+    ops.rename_file(&root, "original.txt", "renamed1.txt")
+        .await
+        .expect("rename 1");
+    ops.rename_file(&root, "renamed1.txt", "renamed2.txt")
+        .await
+        .expect("rename 2");
+    ops.rename_file(&root, "renamed2.txt", "final.txt")
+        .await
+        .expect("rename 3");
 
     // Verify final state
     let files = ops.list_files(&root).await.unwrap();
@@ -412,10 +450,8 @@ async fn test_delete_and_list_no_deadlock() {
     // Delete files while listing
     for i in 0..5 {
         let filename = format!("file_{i}.txt");
-        let (delete_result, list_result) = tokio::join!(
-            ops.delete_file(&root, &filename),
-            ops.list_files(&root),
-        );
+        let (delete_result, list_result) =
+            tokio::join!(ops.delete_file(&root, &filename), ops.list_files(&root),);
 
         assert!(delete_result.is_ok());
         assert!(list_result.is_ok());
@@ -488,9 +524,13 @@ async fn test_write_lock_blocks_read() {
     });
 
     // Run the local set for a short time - read should not complete
-    let run_result = timeout(Duration::from_millis(50), local.run_until(async {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    })).await;
+    let run_result = timeout(
+        Duration::from_millis(50),
+        local.run_until(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }),
+    )
+    .await;
 
     // Timeout expected since the read task is blocked
     assert!(run_result.is_err() || !read_acquired.load(Ordering::SeqCst));
@@ -572,9 +612,7 @@ async fn test_regression_reader_holds_locks() {
         .expect("write file");
 
     // Open for reading
-    let reader = ops.open_file(&root, "test.txt")
-        .await
-        .expect("open file");
+    let reader = ops.open_file(&root, "test.txt").await.expect("open file");
 
     // Reader should have locks
     assert!(
@@ -596,7 +634,8 @@ async fn test_regression_writer_holds_locks() {
     let root = DirId::root();
 
     // Create a streaming writer
-    let writer = ops.create_file(&root, "new_file.txt")
+    let writer = ops
+        .create_file(&root, "new_file.txt")
         .await
         .expect("create file");
 
@@ -627,9 +666,7 @@ async fn test_regression_reader_locks_block_writes() {
         .expect("write file");
 
     // Open for reading and keep the reader alive
-    let reader = ops.open_file(&root, "test.txt")
-        .await
-        .expect("open file");
+    let reader = ops.open_file(&root, "test.txt").await.expect("open file");
 
     // Verify reader has locks
     assert!(reader.has_locks());
@@ -653,9 +690,13 @@ async fn test_regression_reader_locks_block_writes() {
     });
 
     // Run briefly - delete should not complete while reader exists
-    let _ = timeout(Duration::from_millis(50), local.run_until(async {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    })).await;
+    let _ = timeout(
+        Duration::from_millis(50),
+        local.run_until(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }),
+    )
+    .await;
 
     // Delete task started but reader still holds locks
     // The file should still exist (delete blocked)
@@ -679,9 +720,13 @@ async fn test_regression_lock_ordering_no_deadlock() {
 
     // Create initial files
     for i in 0..5 {
-        ops.write_file(&root, &format!("file_{i}.txt"), format!("content {i}").as_bytes())
-            .await
-            .expect("write");
+        ops.write_file(
+            &root,
+            &format!("file_{i}.txt"),
+            format!("content {i}").as_bytes(),
+        )
+        .await
+        .expect("write");
     }
 
     // Run many mixed operations concurrently - if lock ordering is wrong, this deadlocks

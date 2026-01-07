@@ -27,7 +27,7 @@ pub enum FuseHandle {
     /// (standard POSIX behavior).
     ///
     /// Boxed to reduce enum size difference between variants.
-    Reader(Box<oxcrypt_core::fs::streaming::VaultFileReader>),
+    Reader(Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>),
 
     /// Temporary placeholder while reader is loaned to the scheduler.
     ///
@@ -79,7 +79,7 @@ impl FuseHandle {
     /// Get a mutable reference to the reader, if this is a streaming reader.
     pub fn as_reader_mut(
         &mut self,
-    ) -> Option<&mut oxcrypt_core::fs::streaming::VaultFileReader> {
+    ) -> Option<&mut oxcrypt_core::fs::streaming::VaultFileReaderSync> {
         match self {
             FuseHandle::Reader(r) => Some(r.as_mut()),
             _ => None,
@@ -181,9 +181,7 @@ impl OpenHandleTracker {
 
     /// Check if a file has open handles.
     pub fn has_open_handles(&self, ino: u64) -> bool {
-        self.open_counts
-            .get(&ino)
-            .is_some_and(|count| *count > 0)
+        self.open_counts.get(&ino).is_some_and(|count| *count > 0)
     }
 
     /// Check if an inode is marked for deferred deletion.

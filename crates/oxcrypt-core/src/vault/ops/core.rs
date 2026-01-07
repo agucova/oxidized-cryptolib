@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use crate::crypto::keys::MasterKey;
 use crate::fs::name::{
-    create_c9s_filename, decrypt_filename, encrypt_filename, hash_dir_id, NameError,
+    NameError, create_c9s_filename, decrypt_filename, encrypt_filename, hash_dir_id,
 };
-use crate::fs::symlink::{decrypt_symlink_target, encrypt_symlink_target, SymlinkError};
+use crate::fs::symlink::{SymlinkError, decrypt_symlink_target, encrypt_symlink_target};
 use crate::vault::config::CipherCombo;
 use crate::vault::path::DirId;
 
@@ -241,11 +241,8 @@ mod tests {
 
     #[test]
     fn test_vault_core_with_custom_threshold() {
-        let core = VaultCore::with_shortening_threshold(
-            PathBuf::from("/vault"),
-            CipherCombo::SivGcm,
-            150,
-        );
+        let core =
+            VaultCore::with_shortening_threshold(PathBuf::from("/vault"), CipherCombo::SivGcm, 150);
         assert_eq!(core.shortening_threshold(), 150);
     }
 

@@ -25,18 +25,18 @@
 //! cargo bench --release --bench timing_leaks
 //! ```
 
-use base64::{engine::general_purpose::URL_SAFE, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE};
 use dudect_bencher::rand::{Rng, RngCore};
-use dudect_bencher::{ctbench_main, BenchRng, Class, CtRunner};
+use dudect_bencher::{BenchRng, Class, CtRunner, ctbench_main};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::file::{
-    decrypt_file_content, decrypt_file_header, encrypt_file_content, encrypt_file_header,
-    FileContext,
+    FileContext, decrypt_file_content, decrypt_file_header, encrypt_file_content,
+    encrypt_file_header,
 };
 use oxcrypt_core::fs::file_ctrmac::{
-    decrypt_content as ctrmac_decrypt_content, decrypt_header as ctrmac_decrypt_header,
-    encrypt_content as ctrmac_encrypt_content, encrypt_header as ctrmac_encrypt_header,
-    NONCE_SIZE as CTRMAC_NONCE_SIZE,
+    NONCE_SIZE as CTRMAC_NONCE_SIZE, decrypt_content as ctrmac_decrypt_content,
+    decrypt_header as ctrmac_decrypt_header, encrypt_content as ctrmac_encrypt_content,
+    encrypt_header as ctrmac_encrypt_header,
 };
 use oxcrypt_core::fs::name::{decrypt_filename, encrypt_filename};
 use ring::hmac;

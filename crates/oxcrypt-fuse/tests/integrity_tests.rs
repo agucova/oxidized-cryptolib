@@ -26,7 +26,9 @@ fn test_all_byte_values() {
     let content = all_byte_values();
     assert_eq!(content.len(), 256);
 
-    mount.write("all_bytes.bin", &content).expect("write failed");
+    mount
+        .write("all_bytes.bin", &content)
+        .expect("write failed");
     assert_file_content(&mount, "all_bytes.bin", &content);
 }
 
@@ -47,7 +49,9 @@ fn test_high_bytes_only() {
 
     // All 0xFF bytes
     let content = vec![0xFFu8; 1000];
-    mount.write("high_bytes.bin", &content).expect("write failed");
+    mount
+        .write("high_bytes.bin", &content)
+        .expect("write failed");
     assert_file_content(&mount, "high_bytes.bin", &content);
 }
 
@@ -68,7 +72,9 @@ fn test_problematic_binary() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     let content = problematic_binary();
-    mount.write("problematic.bin", &content).expect("write failed");
+    mount
+        .write("problematic.bin", &content)
+        .expect("write failed");
     assert_file_content(&mount, "problematic.bin", &content);
 }
 
@@ -78,8 +84,12 @@ fn test_alternating_bytes() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Alternating pattern that might confuse run-length encoding
-    let content: Vec<u8> = (0..10000).map(|i| if i % 2 == 0 { 0xAA } else { 0x55 }).collect();
-    mount.write("alternating.bin", &content).expect("write failed");
+    let content: Vec<u8> = (0..10000)
+        .map(|i| if i % 2 == 0 { 0xAA } else { 0x55 })
+        .collect();
+    mount
+        .write("alternating.bin", &content)
+        .expect("write failed");
     assert_file_content(&mount, "alternating.bin", &content);
 }
 
@@ -90,7 +100,9 @@ fn test_sequential_bytes() {
 
     // Sequential pattern
     let content: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
-    mount.write("sequential.bin", &content).expect("write failed");
+    mount
+        .write("sequential.bin", &content)
+        .expect("write failed");
     assert_file_content(&mount, "sequential.bin", &content);
 }
 
@@ -121,9 +133,13 @@ fn test_multi_script_unicode() {
         "Russian: Привет мир\n",
         "Japanese: こんにちは世界\n",
         "Emoji: 🎉🚀🌍💻\n",
-    ).as_bytes().to_vec();
+    )
+    .as_bytes()
+    .to_vec();
 
-    mount.write("multi_script.txt", &content).expect("write failed");
+    mount
+        .write("multi_script.txt", &content)
+        .expect("write failed");
     assert_file_content(&mount, "multi_script.txt", &content);
 }
 
@@ -153,7 +169,9 @@ fn test_distinct_chunk_content() {
     let content = patterned_chunks(5);
     let expected_hash = sha256(&content);
 
-    mount.write("distinct_chunks.bin", &content).expect("write failed");
+    mount
+        .write("distinct_chunks.bin", &content)
+        .expect("write failed");
     assert_file_hash(&mount, "distinct_chunks.bin", &expected_hash);
 
     // Also verify specific chunk boundaries
@@ -178,7 +196,9 @@ fn test_random_large_file() {
     let content = multi_chunk_content(10);
     let expected_hash = sha256(&content);
 
-    mount.write("random_large.bin", &content).expect("write failed");
+    mount
+        .write("random_large.bin", &content)
+        .expect("write failed");
     assert_file_hash(&mount, "random_large.bin", &expected_hash);
 }
 
@@ -342,7 +362,9 @@ fn test_multiple_overwrites() {
 
     for i in 0..5 {
         let content = format!("Iteration {} content", i);
-        mount.write("cycle.txt", content.as_bytes()).expect("write failed");
+        mount
+            .write("cycle.txt", content.as_bytes())
+            .expect("write failed");
         assert_file_content(&mount, "cycle.txt", content.as_bytes());
     }
 }
@@ -358,21 +380,29 @@ fn test_size_transitions() {
 
     // Small
     let small = random_bytes(100);
-    mount.write("transitions.bin", &small).expect("write failed");
+    mount
+        .write("transitions.bin", &small)
+        .expect("write failed");
     assert_file_content(&mount, "transitions.bin", &small);
 
     // One chunk
     let one_chunk = one_chunk_content();
-    mount.write("transitions.bin", &one_chunk).expect("write failed");
+    mount
+        .write("transitions.bin", &one_chunk)
+        .expect("write failed");
     assert_file_content(&mount, "transitions.bin", &one_chunk);
 
     // Multiple chunks
     let multi = multi_chunk_content(3);
-    mount.write("transitions.bin", &multi).expect("write failed");
+    mount
+        .write("transitions.bin", &multi)
+        .expect("write failed");
     assert_file_content(&mount, "transitions.bin", &multi);
 
     // Back to small
-    mount.write("transitions.bin", &small).expect("write failed");
+    mount
+        .write("transitions.bin", &small)
+        .expect("write failed");
     assert_file_content(&mount, "transitions.bin", &small);
 
     // Back to empty

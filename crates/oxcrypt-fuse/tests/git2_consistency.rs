@@ -79,9 +79,7 @@ fn test_git2_init_and_commit() {
     eprintln!("Tree ID: {}", tree_id);
 
     eprintln!("Finding tree object...");
-    let tree = repo
-        .find_tree(tree_id)
-        .expect("Failed to find tree");
+    let tree = repo.find_tree(tree_id).expect("Failed to find tree");
 
     eprintln!("Creating signature...");
     let sig = Signature::now("Test User", "test@example.com").unwrap();
@@ -113,8 +111,11 @@ fn test_git2_multiple_iterations() {
 
         // Create test files
         for i in 0..5 {
-            fs::write(repo_path.join(format!("file{}.txt", i)), format!("Content {}", i))
-                .unwrap();
+            fs::write(
+                repo_path.join(format!("file{}.txt", i)),
+                format!("Content {}", i),
+            )
+            .unwrap();
         }
 
         let repo = Repository::init(&repo_path)
@@ -132,14 +133,20 @@ fn test_git2_multiple_iterations() {
         index
             .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
             .unwrap_or_else(|e| {
-                panic!("Iteration {}: Failed to add files to index: {}", iteration, e)
+                panic!(
+                    "Iteration {}: Failed to add files to index: {}",
+                    iteration, e
+                )
             });
 
         index.write().unwrap();
 
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap_or_else(|e| {
-            panic!("Iteration {}: Failed to find tree {}: {}", iteration, tree_id, e)
+            panic!(
+                "Iteration {}: Failed to find tree {}: {}",
+                iteration, tree_id, e
+            )
         });
 
         let sig = Signature::now("Test User", "test@example.com").unwrap();

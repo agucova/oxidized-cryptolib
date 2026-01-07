@@ -42,12 +42,15 @@
 //! - RENAME_EXCHANGE for directories requires same parent (cross-parent returns EXDEV)
 //! - RENAME_EXCHANGE for files works across directories with re-encryption
 
-use crate::attr::{AttrCache, DirCache, DirListingEntry, DEFAULT_ATTR_TTL};
+use crate::attr::{AttrCache, DEFAULT_ATTR_TTL, DirCache, DirListingEntry};
 use crate::config::MountConfig;
 use crate::error::{FuseError, FuseResult, ToErrno};
 use crate::handles::{FuseHandle, FuseHandleTable, WriteBuffer};
 use crate::inode::{InodeKind, InodeTable};
-use crate::scheduler::{FuseScheduler, SchedulerConfig};
+use crate::scheduler::{
+    DirectoryEntry, DirectoryEntryPlus, FuseScheduler, HazardousOp, HazardousOpHandler,
+    HazardousReply, HazardousResult, RequestId, SchedulerConfig, SchedulerShared,
+};
 use dashmap::DashMap;
 
 use filetime::FileTime;
@@ -76,6 +79,627 @@ const DEFAULT_FILE_PERM: u16 = 0o644;
 /// Default directory permissions (rwxr-xr-x).
 const DEFAULT_DIR_PERM: u16 = 0o755;
 
+struct HazardousHandler {
+    ops: Arc<VaultOperationsAsync>,
+    handle: Handle,
+    stats: Arc<crate::async_bridge::BridgeStats>,
+    default_timeout: Duration,
+    write_timeout: Duration,
+    handle_table: Arc<FuseHandleTable>,
+    inodes: Arc<InodeTable>,
+    dir_cache: Arc<DirCache>,
+    attr_cache: Arc<AttrCache>,
+    open_handle_tracker: Arc<crate::handles::OpenHandleTracker>,
+    buffer_sizes: Arc<DashMap<u64, u64>>,
+    scheduler_shared: Option<SchedulerShared>,
+    vault_stats: Arc<VaultStats>,
+    uid: u32,
+    gid: u32,
+}
+
+impl HazardousHandler {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        ops: Arc<VaultOperationsAsync>,
+        handle: Handle,
+        stats: Arc<crate::async_bridge::BridgeStats>,
+        default_timeout: Duration,
+        write_timeout: Duration,
+        handle_table: Arc<FuseHandleTable>,
+        inodes: Arc<InodeTable>,
+        dir_cache: Arc<DirCache>,
+        attr_cache: Arc<AttrCache>,
+        open_handle_tracker: Arc<crate::handles::OpenHandleTracker>,
+        buffer_sizes: Arc<DashMap<u64, u64>>,
+        scheduler_shared: Option<SchedulerShared>,
+        vault_stats: Arc<VaultStats>,
+        uid: u32,
+        gid: u32,
+    ) -> Self {
+        Self {
+            ops,
+            handle,
+            stats,
+            default_timeout,
+            write_timeout,
+            handle_table,
+            inodes,
+            dir_cache,
+            attr_cache,
+            open_handle_tracker,
+            buffer_sizes,
+            scheduler_shared,
+            vault_stats,
+            uid,
+            gid,
+        }
+    }
+
+    fn exec_with_timeout<F, T>(
+        &self,
+        future: F,
+        timeout: Duration,
+    ) -> Result<T, crate::async_bridge::BridgeError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        crate::async_bridge::execute(&self.handle, timeout, Some(&self.stats), future)
+    }
+
+    fn exec<F, T>(&self, future: F) -> Result<T, crate::async_bridge::BridgeError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.exec_with_timeout(future, self.default_timeout)
+    }
+
+    fn effective_file_size(&self, inode: u64, disk_size: u64) -> u64 {
+        self.buffer_sizes
+            .get(&inode)
+            .map_or(disk_size, |s| (*s).max(disk_size))
+    }
+
+    fn make_dir_attr(&self, inode: u64, mtime: Option<SystemTime>) -> FileAttr {
+        let time = mtime.unwrap_or_else(SystemTime::now);
+        FileAttr {
+            ino: inode,
+            size: 0,
+            blocks: 0,
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
+            kind: FileType::Directory,
+            perm: DEFAULT_DIR_PERM,
+            nlink: 2,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: BLOCK_SIZE,
+            flags: 0,
+        }
+    }
+
+    fn make_file_attr(&self, inode: u64, size: u64, mtime: Option<SystemTime>) -> FileAttr {
+        let time = mtime.unwrap_or_else(SystemTime::now);
+        FileAttr {
+            ino: inode,
+            size,
+            blocks: size.div_ceil(u64::from(BLOCK_SIZE)),
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
+            kind: FileType::RegularFile,
+            perm: DEFAULT_FILE_PERM,
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: BLOCK_SIZE,
+            flags: 0,
+        }
+    }
+
+    fn make_symlink_attr(
+        &self,
+        inode: u64,
+        target_len: u64,
+        mtime: Option<SystemTime>,
+    ) -> FileAttr {
+        let time = mtime.unwrap_or_else(SystemTime::now);
+        FileAttr {
+            ino: inode,
+            size: target_len,
+            blocks: 0,
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
+            kind: FileType::Symlink,
+            perm: 0o777,
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: BLOCK_SIZE,
+            flags: 0,
+        }
+    }
+
+    fn list_directory(&self, dir_id: &DirId) -> FuseResult<Vec<DirListingEntry>> {
+        let ops = Arc::clone(&self.ops);
+        let dir_id = dir_id.clone();
+        let (files, dirs, symlinks) = self
+            .exec(async move { ops.list_all(&dir_id).await })
+            .map_err(FuseError::Bridge)??;
+
+        let entries: Vec<DirListingEntry> = dirs
+            .into_iter()
+            .map(|d| DirListingEntry {
+                inode: 0,
+                file_type: FileType::Directory,
+                dir_id: Some(d.directory_id),
+                name: d.name,
+            })
+            .chain(files.into_iter().map(|f| DirListingEntry {
+                inode: 0,
+                file_type: FileType::RegularFile,
+                dir_id: None,
+                name: f.name,
+            }))
+            .chain(symlinks.into_iter().map(|s| DirListingEntry {
+                inode: 0,
+                file_type: FileType::Symlink,
+                dir_id: None,
+                name: s.name,
+            }))
+            .collect();
+
+        Ok(entries)
+    }
+
+    fn flush_handle(&self, ino: u64, fh: u64) -> Result<Option<PathBuf>, c_int> {
+        let mut handle = self.handle_table.get_mut(&fh).ok_or(libc::EBADF)?;
+
+        if let Some(buffer) = handle.as_write_buffer_mut()
+            && buffer.is_dirty()
+        {
+            let ops = Arc::clone(&self.ops);
+            let dir_id = buffer.dir_id().clone();
+            let filename = buffer.filename().to_string();
+            let content = buffer.take_content_for_flush();
+            drop(handle);
+
+            let write_result = self.exec_with_timeout(
+                async move {
+                    ops.write_file(&dir_id, &filename, &content)
+                        .await
+                        .map(|path| (path, content))
+                },
+                self.write_timeout,
+            );
+
+            match write_result {
+                Ok(Ok((encrypted_path, returned_content))) => {
+                    if let Some(mut handle) = self.handle_table.get_mut(&fh)
+                        && let Some(buffer) = handle.as_write_buffer_mut()
+                    {
+                        buffer.restore_content(returned_content);
+                    }
+                    if let Some(ref shared) = self.scheduler_shared {
+                        shared.release_all_file_write_bytes(ino);
+                        shared.invalidate_read_cache_inode(ino);
+                    }
+                    self.attr_cache.invalidate(ino);
+                    return Ok(Some(encrypted_path));
+                }
+                Ok(Err(write_err)) => {
+                    return Err(crate::error::write_error_to_errno(&write_err));
+                }
+                Err(exec_err) => {
+                    return Err(exec_err.to_errno());
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn sync_handle_to_disk(&self, fh: u64, datasync: bool) -> Result<(), c_int> {
+        let handle = self.handle_table.get(&fh).ok_or(libc::EBADF)?;
+
+        let (dir_id, filename) = match handle.value() {
+            FuseHandle::WriteBuffer(buffer) => {
+                (buffer.dir_id().clone(), buffer.filename().to_string())
+            }
+            _ => return Ok(()),
+        };
+        drop(handle);
+
+        let ops = Arc::clone(&self.ops);
+        let ops_for_sync = Arc::clone(&self.ops);
+
+        let find_result = self.exec_with_timeout(
+            async move { ops.find_file(&dir_id, &filename).await },
+            self.default_timeout,
+        );
+
+        let encrypted_path = match find_result {
+            Ok(Ok(Some(info))) => info.encrypted_path,
+            Ok(Ok(None)) => return Ok(()),
+            Ok(Err(_)) => return Err(libc::EIO),
+            Err(e) => return Err(e.to_errno()),
+        };
+
+        let sync_result = self.exec_with_timeout(
+            async move {
+                ops_for_sync
+                    .sync_encrypted_file(&encrypted_path, datasync)
+                    .await
+            },
+            self.write_timeout,
+        );
+
+        match sync_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(libc::EIO),
+            Err(e) => Err(e.to_errno()),
+        }
+    }
+
+    fn wait_pending_writes(&self, ino: u64) -> Result<(), c_int> {
+        if let Some(ref shared) = self.scheduler_shared {
+            if shared.has_pending_writes(ino) {
+                if !shared.wait_pending_writes(ino, self.write_timeout) {
+                    return Err(libc::ETIMEDOUT);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn op_release(&self, ino: u64, fh: u64) -> Result<(), i32> {
+        let Some(handle) = self.handle_table.remove(&fh) else {
+            return Ok(());
+        };
+
+        match handle {
+            FuseHandle::Reader(_) | FuseHandle::ReaderLoaned | FuseHandle::ReadBuffer(_) => {
+                self.vault_stats.record_file_close();
+            }
+            FuseHandle::WriteBuffer(buffer) => {
+                if buffer.is_dirty() {
+                    let ops = Arc::clone(&self.ops);
+                    let dir_id = buffer.dir_id().clone();
+                    let filename = buffer.filename().to_string();
+                    let content = buffer.into_content();
+                    let content_len = content.len();
+
+                    self.vault_stats.start_write();
+                    let start = Instant::now();
+                    match self.exec_with_timeout(
+                        async move { ops.write_file(&dir_id, &filename, &content).await },
+                        self.write_timeout,
+                    ) {
+                        Ok(Ok(_)) => {
+                            let elapsed = start.elapsed();
+                            self.vault_stats.finish_write();
+                            self.vault_stats.record_write(content_len as u64);
+                            self.vault_stats.record_write_latency(elapsed);
+                            self.vault_stats.record_encrypted(content_len as u64);
+                            self.attr_cache.invalidate(ino);
+                            if let Some(ref shared) = self.scheduler_shared {
+                                shared.invalidate_read_cache_inode(ino);
+                            }
+                            self.vault_stats.record_file_close();
+                        }
+                        Ok(Err(e)) => {
+                            self.vault_stats.finish_write();
+                            self.vault_stats.record_write_latency(start.elapsed());
+                            self.vault_stats.record_file_close();
+                            return Err(crate::error::write_error_to_errno(&e));
+                        }
+                        Err(exec_err) => {
+                            self.vault_stats.finish_write();
+                            self.vault_stats.record_write_latency(start.elapsed());
+                            self.vault_stats.record_file_close();
+                            return Err(exec_err.to_errno());
+                        }
+                    }
+                } else {
+                    self.vault_stats.record_file_close();
+                }
+            }
+        }
+
+        let deferred = self.open_handle_tracker.remove_handle(ino);
+        if !self.open_handle_tracker.has_open_handles(ino) {
+            self.buffer_sizes.remove(&ino);
+        }
+
+        if let Some(deferred) = deferred {
+            let file_path = self.inodes.get(ino).map(|entry| entry.path.clone());
+            let ops = Arc::clone(&self.ops);
+            let delete_result =
+                self.exec(async move { ops.delete_file(&deferred.dir_id, &deferred.name).await });
+            if let Ok(Ok(())) = delete_result {
+                if let Some(path) = file_path {
+                    self.inodes.invalidate_path(&path);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn op_flush(&self, ino: u64, fh: u64) -> Result<(), i32> {
+        self.wait_pending_writes(ino)?;
+        self.flush_handle(ino, fh).map(|_| ())
+    }
+
+    fn op_fsync(&self, ino: u64, fh: u64, datasync: bool) -> Result<(), i32> {
+        self.wait_pending_writes(ino)?;
+        self.flush_handle(ino, fh)?;
+        self.sync_handle_to_disk(fh, datasync)
+    }
+
+    fn op_readdir(&self, ino: u64, offset: i64) -> Result<Vec<DirectoryEntry>, i32> {
+        let start = Instant::now();
+        self.vault_stats.record_metadata_op();
+
+        let Some(entry) = self.inodes.get(ino) else {
+            self.vault_stats.record_error();
+            self.vault_stats.record_metadata_latency(start.elapsed());
+            return Err(libc::ENOENT);
+        };
+
+        let Some(dir_id) = entry.dir_id() else {
+            self.vault_stats.record_error();
+            self.vault_stats.record_metadata_latency(start.elapsed());
+            return Err(libc::ENOTDIR);
+        };
+        let current_path = entry.path.clone();
+        drop(entry);
+
+        let parent_inode = current_path
+            .parent()
+            .and_then(|parent| self.inodes.get_inode(&parent))
+            .unwrap_or(crate::inode::ROOT_INODE);
+
+        let entries = if let Some(cached) = self.dir_cache.get(ino) {
+            cached
+        } else {
+            match self.list_directory(&dir_id) {
+                Ok(entries) => {
+                    self.dir_cache.insert(ino, entries.clone());
+                    entries
+                }
+                Err(e) => {
+                    self.vault_stats.record_error();
+                    self.vault_stats.record_metadata_latency(start.elapsed());
+                    return Err(e.to_errno());
+                }
+            }
+        };
+
+        let mut all_entries = vec![
+            DirListingEntry {
+                inode: ino,
+                file_type: FileType::Directory,
+                dir_id: Some(dir_id.clone()),
+                name: ".".to_string(),
+            },
+            DirListingEntry {
+                inode: parent_inode,
+                file_type: FileType::Directory,
+                dir_id: None,
+                name: "..".to_string(),
+            },
+        ];
+        all_entries.extend(entries);
+
+        let start_idx = if offset == 0 {
+            0
+        } else {
+            all_entries
+                .iter()
+                .position(|e| CryptomatorFS::name_to_offset(&e.name) == offset)
+                .map_or(0, |idx| idx + 1)
+        };
+
+        let mut out = Vec::new();
+        for entry in all_entries.into_iter().skip(start_idx) {
+            let entry_inode = if entry.name == "." {
+                ino
+            } else if entry.name == ".." {
+                parent_inode
+            } else {
+                let child_path = current_path.join(&entry.name);
+                let kind = match entry.file_type {
+                    FileType::Directory => InodeKind::Directory {
+                        dir_id: entry.dir_id.clone().unwrap_or_else(DirId::root),
+                    },
+                    FileType::Symlink => InodeKind::Symlink {
+                        dir_id: dir_id.clone(),
+                        name: entry.name.clone(),
+                    },
+                    _ => InodeKind::File {
+                        dir_id: dir_id.clone(),
+                        name: entry.name.clone(),
+                    },
+                };
+                self.inodes.get_or_insert_no_lookup_inc(&child_path, &kind)
+            };
+
+            let next_offset = CryptomatorFS::name_to_offset(&entry.name);
+            out.push(DirectoryEntry {
+                inode: entry_inode,
+                offset: next_offset,
+                file_type: entry.file_type,
+                name: entry.name,
+            });
+        }
+
+        self.vault_stats.record_metadata_latency(start.elapsed());
+        Ok(out)
+    }
+
+    fn op_readdirplus(&self, ino: u64, offset: i64) -> Result<Vec<DirectoryEntryPlus>, i32> {
+        let start = Instant::now();
+        self.vault_stats.record_metadata_op();
+
+        let Some(entry) = self.inodes.get(ino) else {
+            self.vault_stats.record_error();
+            self.vault_stats.record_metadata_latency(start.elapsed());
+            return Err(libc::ENOENT);
+        };
+
+        let Some(dir_id) = entry.dir_id() else {
+            self.vault_stats.record_error();
+            self.vault_stats.record_metadata_latency(start.elapsed());
+            return Err(libc::ENOTDIR);
+        };
+        let current_path = entry.path.clone();
+        drop(entry);
+
+        let parent_inode = current_path
+            .parent()
+            .and_then(|parent| self.inodes.get_inode(&parent))
+            .unwrap_or(crate::inode::ROOT_INODE);
+
+        let ops = Arc::clone(&self.ops);
+        let dir_id_clone = dir_id.clone();
+        let (files, dirs, symlinks) =
+            match self.exec(async move { ops.list_all(&dir_id_clone).await }) {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
+                    self.vault_stats.record_error();
+                    self.vault_stats.record_metadata_latency(start.elapsed());
+                    return Err(crate::error::vault_error_to_errno(&e));
+                }
+                Err(exec_err) => {
+                    self.vault_stats.record_error();
+                    self.vault_stats.record_metadata_latency(start.elapsed());
+                    return Err(exec_err.to_errno());
+                }
+            };
+
+        let mut all_entries: Vec<(String, FileType, u64, Option<DirId>)> = [
+            (".".to_string(), FileType::Directory, 0, None),
+            ("..".to_string(), FileType::Directory, 0, None),
+        ]
+        .into_iter()
+        .chain(
+            dirs.into_iter()
+                .map(|d| (d.name, FileType::Directory, 0, Some(d.directory_id))),
+        )
+        .chain(files.into_iter().map(|f| {
+            let plaintext_size = encrypted_to_plaintext_size_or_zero(f.encrypted_size);
+            (f.name, FileType::RegularFile, plaintext_size, None)
+        }))
+        .chain(symlinks.into_iter().map(|s| {
+            let target_len = s.target.len() as u64;
+            (s.name, FileType::Symlink, target_len, None)
+        }))
+        .collect();
+
+        all_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let start_idx = if offset == 0 {
+            0
+        } else {
+            all_entries
+                .iter()
+                .position(|e| CryptomatorFS::name_to_offset(&e.0) == offset)
+                .map_or(0, |idx| idx + 1)
+        };
+
+        let mut out = Vec::new();
+        for (name, file_type, size, maybe_subdir_id) in all_entries.into_iter().skip(start_idx) {
+            let (entry_inode, attr) = if name == "." {
+                (ino, self.make_dir_attr(ino, None))
+            } else if name == ".." {
+                (parent_inode, self.make_dir_attr(parent_inode, None))
+            } else {
+                let child_path = current_path.join(&name);
+                let kind = match file_type {
+                    FileType::Directory => InodeKind::Directory {
+                        dir_id: maybe_subdir_id.clone().unwrap_or_else(DirId::root),
+                    },
+                    FileType::Symlink => InodeKind::Symlink {
+                        dir_id: dir_id.clone(),
+                        name: name.clone(),
+                    },
+                    _ => InodeKind::File {
+                        dir_id: dir_id.clone(),
+                        name: name.clone(),
+                    },
+                };
+                let entry_inode = self.inodes.get_or_insert(&child_path, &kind);
+
+                let attr = match file_type {
+                    FileType::Directory => self.make_dir_attr(entry_inode, None),
+                    FileType::RegularFile => {
+                        let effective_size = self.effective_file_size(entry_inode, size);
+                        self.make_file_attr(entry_inode, effective_size, None)
+                    }
+                    FileType::Symlink => self.make_symlink_attr(entry_inode, size, None),
+                    _ => {
+                        let effective_size = self.effective_file_size(entry_inode, size);
+                        self.make_file_attr(entry_inode, effective_size, None)
+                    }
+                };
+
+                self.attr_cache.insert(entry_inode, attr);
+                (entry_inode, attr)
+            };
+
+            let next_offset = CryptomatorFS::name_to_offset(&name);
+            out.push(DirectoryEntryPlus {
+                inode: entry_inode,
+                offset: next_offset,
+                name,
+                ttl: DEFAULT_ATTR_TTL,
+                attr,
+                generation: 0,
+            });
+        }
+
+        self.vault_stats.record_metadata_latency(start.elapsed());
+        Ok(out)
+    }
+}
+
+impl HazardousOpHandler for HazardousHandler {
+    fn execute(&self, request_id: RequestId, op: HazardousOp) -> HazardousResult {
+        match op {
+            HazardousOp::Release { ino, fh, .. } => HazardousResult::Empty {
+                id: request_id,
+                result: self.op_release(ino, fh),
+            },
+            HazardousOp::Flush { ino, fh, .. } => HazardousResult::Empty {
+                id: request_id,
+                result: self.op_flush(ino, fh),
+            },
+            HazardousOp::Fsync { ino, fh, datasync } => HazardousResult::Empty {
+                id: request_id,
+                result: self.op_fsync(ino, fh, datasync),
+            },
+            HazardousOp::Readdir { ino, offset, .. } => HazardousResult::Directory {
+                id: request_id,
+                result: self.op_readdir(ino, offset),
+            },
+            HazardousOp::ReaddirPlus { ino, offset, .. } => HazardousResult::DirectoryPlus {
+                id: request_id,
+                result: self.op_readdirplus(ino, offset),
+            },
+        }
+    }
+}
+
 /// FUSE filesystem for Cryptomator vaults.
 ///
 /// Implements the fuser `Filesystem` trait to provide a mountable filesystem
@@ -97,11 +721,11 @@ pub struct CryptomatorFS {
     /// Async vault operations (shared via Arc for thread safety).
     ops: Arc<VaultOperationsAsync>,
     /// Inode table for path/inode mapping.
-    inodes: InodeTable,
+    inodes: Arc<InodeTable>,
     /// Attribute cache for file metadata.
-    attr_cache: AttrCache,
+    attr_cache: Arc<AttrCache>,
     /// Directory listing cache.
-    dir_cache: DirCache,
+    dir_cache: Arc<DirCache>,
     /// File handle table for open files (shared with scheduler for reader restoration).
     handle_table: Arc<FuseHandleTable>,
     /// User ID to use for file ownership.
@@ -116,7 +740,7 @@ pub struct CryptomatorFS {
     #[allow(dead_code)]
     config: MountConfig,
     /// Open handle tracker for POSIX-compliant deferred deletion.
-    open_handle_tracker: crate::handles::OpenHandleTracker,
+    open_handle_tracker: Arc<crate::handles::OpenHandleTracker>,
     /// Kernel notifier for cache invalidation (injected post-mount).
     /// This is set by the backend after spawning the FUSE session.
     notifier: OnceLock<fuser::Notifier>,
@@ -130,7 +754,7 @@ pub struct CryptomatorFS {
     /// Updated by: write(), setattr() (extend), fallocate(), copy_file_range()
     /// Checked by: getattr(), lookup(), readdir()
     /// Cleared by: release() (after flush to disk)
-    buffer_sizes: DashMap<u64, u64>,
+    buffer_sizes: Arc<DashMap<u64, u64>>,
     /// Cached sync operations for fast path (sync VaultOperations instance).
     ///
     /// Lazily created on first use to avoid async overhead for metadata operations.
@@ -142,6 +766,11 @@ pub struct CryptomatorFS {
     /// Created during construction but started in `init()`. Handles reads
     /// asynchronously to prevent blocking FUSE callback threads on slow I/O.
     scheduler: Option<FuseScheduler>,
+    /// Shared scheduler state for hazardous operations.
+    #[allow(dead_code)]
+    scheduler_shared: Option<SchedulerShared>,
+    /// Hazardous operation handler.
+    hazardous_handler: Option<Arc<dyn HazardousOpHandler>>,
 }
 
 impl CryptomatorFS {
@@ -259,6 +888,7 @@ impl CryptomatorFS {
         // Create attribute cache with configured TTLs
         let mut attr_cache = AttrCache::new(config.attr_ttl, config.negative_ttl);
         attr_cache.set_stats(vault_stats.cache_stats());
+        let attr_cache = Arc::new(attr_cache);
 
         // Initialize async bridge with timeouts
         let default_timeout = config.io_timeout;
@@ -280,17 +910,43 @@ impl CryptomatorFS {
         let handle_table = Arc::new(FuseHandleTable::new_auto_id());
 
         // Create scheduler (but don't start yet - started in init())
+        let buffer_sizes = Arc::new(DashMap::new());
         let scheduler = FuseScheduler::with_config(
             SchedulerConfig::default().with_base_timeout(default_timeout),
             Arc::clone(&handle_table),
             Arc::clone(&vault_stats),
+            Arc::clone(&attr_cache),
+            Arc::clone(&buffer_sizes),
         );
+
+        let scheduler_shared = Some(scheduler.shared_state());
+        let inodes = Arc::new(InodeTable::new());
+        let dir_cache = Arc::new(DirCache::default());
+        let open_handle_tracker = Arc::new(crate::handles::OpenHandleTracker::new());
+        let hazardous_handler: Option<Arc<dyn HazardousOpHandler>> =
+            Some(Arc::new(HazardousHandler::new(
+                Arc::clone(&ops),
+                handle.clone(),
+                Arc::clone(&stats),
+                default_timeout,
+                write_timeout,
+                Arc::clone(&handle_table),
+                Arc::clone(&inodes),
+                Arc::clone(&dir_cache),
+                Arc::clone(&attr_cache),
+                Arc::clone(&open_handle_tracker),
+                Arc::clone(&buffer_sizes),
+                scheduler_shared.clone(),
+                Arc::clone(&vault_stats),
+                uid,
+                gid,
+            )));
 
         Ok(Self {
             ops,
-            inodes: InodeTable::new(),
+            inodes,
             attr_cache,
-            dir_cache: DirCache::default(),
+            dir_cache,
             handle_table,
             _owned_runtime: owned_runtime,
             handle,
@@ -302,11 +958,13 @@ impl CryptomatorFS {
             vault_path: vault_path.to_path_buf(),
             vault_stats,
             config,
-            open_handle_tracker: crate::handles::OpenHandleTracker::new(),
+            open_handle_tracker,
             notifier: OnceLock::new(),
-            buffer_sizes: DashMap::new(),
+            buffer_sizes,
             sync_ops_cache: std::sync::Mutex::new(None),
             scheduler: Some(scheduler),
+            scheduler_shared,
+            hazardous_handler,
         })
     }
 
@@ -345,7 +1003,12 @@ impl CryptomatorFS {
     }
 
     /// Creates a new CryptomatorFS with custom UID/GID.
-    pub fn with_ownership(vault_path: &Path, password: &str, uid: u32, gid: u32) -> Result<Self, FuseError> {
+    pub fn with_ownership(
+        vault_path: &Path,
+        password: &str,
+        uid: u32,
+        gid: u32,
+    ) -> Result<Self, FuseError> {
         let mut fs = Self::new(vault_path, password)?;
         fs.uid = uid;
         fs.gid = gid;
@@ -368,10 +1031,11 @@ impl CryptomatorFS {
     fn get_or_create_sync_ops(&self) -> FuseResult<Arc<oxcrypt_core::vault::VaultOperations>> {
         let mut cache = self.sync_ops_cache.lock().unwrap();
         if cache.is_none() {
-            let sync_ops = self.ops.as_sync()
-                .map_err(|e| FuseError::Io(std::io::Error::other(
-                    format!("Failed to create sync operations: {e}")
-                )))?;
+            let sync_ops = self.ops.as_sync().map_err(|e| {
+                FuseError::Io(std::io::Error::other(format!(
+                    "Failed to create sync operations: {e}"
+                )))
+            })?;
             *cache = Some(Arc::new(sync_ops));
         }
         Ok(Arc::clone(cache.as_ref().unwrap()))
@@ -416,11 +1080,7 @@ impl CryptomatorFS {
 
         // Ensure offset is never 0, since offset=0 means "start from beginning"
         // If hash happens to be 0, use 1 instead
-        if offset == 0 {
-            1
-        } else {
-            offset
-        }
+        if offset == 0 { 1 } else { offset }
     }
 
     /// Executes an async operation using the spawn+oneshot pattern.
@@ -432,7 +1092,12 @@ impl CryptomatorFS {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        crate::async_bridge::execute(&self.handle, self.default_timeout, Some(&self.stats), future)
+        crate::async_bridge::execute(
+            &self.handle,
+            self.default_timeout,
+            Some(&self.stats),
+            future,
+        )
     }
 
     /// Executes an async operation that returns a Result, flattening bridge errors.
@@ -455,7 +1120,12 @@ impl CryptomatorFS {
     /// Executes an async operation with a custom timeout.
     ///
     /// Used for operations that need longer timeouts (e.g., write operations).
-    fn exec_with_timeout<F, T>(&self, future: F, timeout: Duration) -> Result<T, crate::async_bridge::BridgeError>
+    #[allow(dead_code)]
+    fn exec_with_timeout<F, T>(
+        &self,
+        future: F,
+        timeout: Duration,
+    ) -> Result<T, crate::async_bridge::BridgeError>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -470,61 +1140,65 @@ impl CryptomatorFS {
     /// - `Ok(Some(path))` if a dirty buffer was written to the given encrypted path
     /// - `Ok(None)` if the handle is a reader or the buffer was clean
     /// - `Err(errno)` on write failure
+    #[allow(dead_code)]
     fn flush_handle(&self, ino: u64, fh: u64) -> Result<Option<PathBuf>, c_int> {
         let mut handle = self.handle_table.get_mut(&fh).ok_or(libc::EBADF)?;
 
         if let Some(buffer) = handle.as_write_buffer_mut()
-            && buffer.is_dirty() {
-                let ops = self.ops_clone();
-                let dir_id = buffer.dir_id().clone();
-                let filename = buffer.filename().to_string();
+            && buffer.is_dirty()
+        {
+            let ops = self.ops_clone();
+            let dir_id = buffer.dir_id().clone();
+            let filename = buffer.filename().to_string();
 
-                // Move content out instead of copying (optimization)
-                let content = buffer.take_content_for_flush();
+            // Move content out instead of copying (optimization)
+            let content = buffer.take_content_for_flush();
 
-                // Drop the handle lock before blocking I/O
-                drop(handle);
+            // Drop the handle lock before blocking I/O
+            drop(handle);
 
-                // Write to vault with extended timeout (5 minutes).
-                // Data operations get longer timeout than metadata ops to avoid data loss.
-                let write_result = self.exec_with_timeout(
-                    async move {
-                        ops.write_file(&dir_id, &filename, &content).await
-                            .map(|path| (path, content)) // Return both path and content
-                    },
-                    self.write_timeout,
-                );
+            // Write to vault with extended timeout (5 minutes).
+            // Data operations get longer timeout than metadata ops to avoid data loss.
+            let write_result = self.exec_with_timeout(
+                async move {
+                    ops.write_file(&dir_id, &filename, &content)
+                        .await
+                        .map(|path| (path, content)) // Return both path and content
+                },
+                self.write_timeout,
+            );
 
-                // Handle the result
-                match write_result {
-                    Ok(Ok((encrypted_path, returned_content))) => {
-                        // Success - restore the (now clean) content
-                        if let Some(mut handle) = self.handle_table.get_mut(&fh)
-                            && let Some(buffer) = handle.as_write_buffer_mut() {
-                                buffer.restore_content(returned_content);
-                            }
-
-                        // Release all tracked write budget now that data is persisted.
-                        // We must release exactly what was tracked (via add_write_bytes),
-                        // not the full content_len, to prevent counter underflow when
-                        // a buffer accumulates writes across multiple flush cycles.
-                        if let Some(ref scheduler) = self.scheduler {
-                            scheduler.release_all_file_write_bytes(ino);
-                        }
-
-                        self.attr_cache.invalidate(ino);
-                        return Ok(Some(encrypted_path));
+            // Handle the result
+            match write_result {
+                Ok(Ok((encrypted_path, returned_content))) => {
+                    // Success - restore the (now clean) content
+                    if let Some(mut handle) = self.handle_table.get_mut(&fh)
+                        && let Some(buffer) = handle.as_write_buffer_mut()
+                    {
+                        buffer.restore_content(returned_content);
                     }
-                    Ok(Err(write_err)) => {
-                        // Write error - can't restore content (was consumed)
-                        return Err(crate::error::write_error_to_errno(&write_err));
+
+                    // Release all tracked write budget now that data is persisted.
+                    // We must release exactly what was tracked (via add_write_bytes),
+                    // not the full content_len, to prevent counter underflow when
+                    // a buffer accumulates writes across multiple flush cycles.
+                    if let Some(ref scheduler) = self.scheduler {
+                        scheduler.release_all_file_write_bytes(ino);
                     }
-                    Err(exec_err) => {
-                        // Executor error (timeout, queue full, etc.)
-                        return Err(exec_err.to_errno());
-                    }
+
+                    self.attr_cache.invalidate(ino);
+                    return Ok(Some(encrypted_path));
+                }
+                Ok(Err(write_err)) => {
+                    // Write error - can't restore content (was consumed)
+                    return Err(crate::error::write_error_to_errno(&write_err));
+                }
+                Err(exec_err) => {
+                    // Executor error (timeout, queue full, etc.)
+                    return Err(exec_err.to_errno());
                 }
             }
+        }
         // Readers or clean buffers don't need flushing
         Ok(None)
     }
@@ -537,6 +1211,7 @@ impl CryptomatorFS {
     /// # Arguments
     /// * `fh` - File handle
     /// * `datasync` - If true, only sync data (fdatasync). If false, sync data+metadata.
+    #[allow(dead_code)]
     fn sync_handle_to_disk(&self, fh: u64, datasync: bool) -> Result<(), c_int> {
         let handle = self.handle_table.get(&fh).ok_or(libc::EBADF)?;
 
@@ -571,7 +1246,11 @@ impl CryptomatorFS {
 
         // Sync the encrypted file to disk
         let sync_result = self.exec_with_timeout(
-            async move { ops_for_sync.sync_encrypted_file(&encrypted_path, datasync).await },
+            async move {
+                ops_for_sync
+                    .sync_encrypted_file(&encrypted_path, datasync)
+                    .await
+            },
             self.write_timeout,
         );
 
@@ -667,6 +1346,7 @@ impl CryptomatorFS {
     ///
     /// Called after release() flushes the buffer to disk.
     #[inline]
+    #[allow(dead_code)]
     fn clear_buffer_size(&self, inode: u64) {
         self.buffer_sizes.remove(&inode);
     }
@@ -675,7 +1355,12 @@ impl CryptomatorFS {
     ///
     /// The `mtime` parameter should be read from the encrypted file's metadata
     /// for accurate timestamps. Falls back to current time if None.
-    fn make_symlink_attr(&self, inode: u64, target_len: u64, mtime: Option<SystemTime>) -> FileAttr {
+    fn make_symlink_attr(
+        &self,
+        inode: u64,
+        target_len: u64,
+        mtime: Option<SystemTime>,
+    ) -> FileAttr {
         let time = mtime.unwrap_or_else(SystemTime::now);
         FileAttr {
             ino: inode,
@@ -782,12 +1467,11 @@ impl CryptomatorFS {
         Ok(None)
     }
 
-    fn lookup_child(
-        &self,
-        parent_inode: u64,
-        name: &str,
-    ) -> FuseResult<(u64, FileAttr, FileType)> {
-        let parent_entry = self.inodes.get(parent_inode).ok_or(FuseError::InvalidInode(parent_inode))?;
+    fn lookup_child(&self, parent_inode: u64, name: &str) -> FuseResult<(u64, FileAttr, FileType)> {
+        let parent_entry = self
+            .inodes
+            .get(parent_inode)
+            .ok_or(FuseError::InvalidInode(parent_inode))?;
 
         let dir_id = parent_entry.dir_id().ok_or(FuseError::PathResolution(
             "Parent is not a directory".to_string(),
@@ -807,8 +1491,13 @@ impl CryptomatorFS {
         // as those files should appear as ENOENT even though they still exist in the vault.
         if let Some(existing_inode) = self.inodes.get_inode(&child_path) {
             // Check if file is marked for deferred deletion
-            if self.open_handle_tracker.is_marked_for_deletion(existing_inode) {
-                return Err(FuseError::PathResolution("File marked for deletion".to_string()));
+            if self
+                .open_handle_tracker
+                .is_marked_for_deletion(existing_inode)
+            {
+                return Err(FuseError::PathResolution(
+                    "File marked for deletion".to_string(),
+                ));
             }
 
             if let Some(entry) = self.inodes.get(existing_inode) {
@@ -816,20 +1505,29 @@ impl CryptomatorFS {
                     InodeKind::File { .. } => {
                         // Check attr cache first, otherwise use effective size (for mmap consistency)
                         // For fast path fallback, use None for mtime - the full lookup will set it properly
-                        let attr = self.attr_cache.get(existing_inode).map_or_else(|| {
+                        let attr = self.attr_cache.get(existing_inode).map_or_else(
+                            || {
                                 // Use effective size to account for in-memory buffer
                                 let size = self.effective_file_size(existing_inode, 0);
                                 self.make_file_attr(existing_inode, size, None)
-                            }, |cached| cached.value);
+                            },
+                            |cached| cached.value,
+                        );
                         (attr, FileType::RegularFile)
                     }
                     InodeKind::Directory { .. } => {
-                        let attr = self.attr_cache.get(existing_inode).map_or_else(|| self.make_dir_attr(existing_inode, None), |cached| cached.value);
+                        let attr = self.attr_cache.get(existing_inode).map_or_else(
+                            || self.make_dir_attr(existing_inode, None),
+                            |cached| cached.value,
+                        );
                         (attr, FileType::Directory)
                     }
                     InodeKind::Symlink { .. } => {
                         // Use size 0 for symlink if not cached (rare case)
-                        let attr = self.attr_cache.get(existing_inode).map_or_else(|| self.make_symlink_attr(existing_inode, 0, None), |cached| cached.value);
+                        let attr = self.attr_cache.get(existing_inode).map_or_else(
+                            || self.make_symlink_attr(existing_inode, 0, None),
+                            |cached| cached.value,
+                        );
                         (attr, FileType::Symlink)
                     }
                     InodeKind::Root => {
@@ -842,7 +1540,9 @@ impl CryptomatorFS {
         }
 
         // Try sync fast path (avoids async task overhead if lock available)
-        if let Some(result) = self.try_lookup_child_sync(parent_inode, name, &parent_path, &dir_id)? {
+        if let Some(result) =
+            self.try_lookup_child_sync(parent_inode, name, &parent_path, &dir_id)?
+        {
             return Ok(result);
         }
 
@@ -854,13 +1554,15 @@ impl CryptomatorFS {
         // This reduces 3 sequential network round-trips to 1 parallel operation
         // Uses async bridge to prevent slow cloud storage from blocking FUSE thread
         let dir_id_for_lookup = dir_id.clone();
-        let (file_result, dir_result, symlink_result) = self.exec(async move {
-            tokio::join!(
-                ops.find_file(&dir_id_for_lookup, &name_owned),
-                ops.find_directory(&dir_id_for_lookup, &name_owned),
-                ops.find_symlink(&dir_id_for_lookup, &name_owned)
-            )
-        }).map_err(FuseError::Bridge)?;
+        let (file_result, dir_result, symlink_result) = self
+            .exec(async move {
+                tokio::join!(
+                    ops.find_file(&dir_id_for_lookup, &name_owned),
+                    ops.find_directory(&dir_id_for_lookup, &name_owned),
+                    ops.find_symlink(&dir_id_for_lookup, &name_owned)
+                )
+            })
+            .map_err(FuseError::Bridge)?;
 
         // Check file result first (most common case)
         if let Ok(Some(file_info)) = file_result {
@@ -923,14 +1625,15 @@ impl CryptomatorFS {
     /// Uses `list_all` to fetch files, directories, and symlinks in a single
     /// operation with parallel I/O, replacing 3 sequential blocking calls.
     /// Uses the async bridge to prevent slow cloud storage from blocking the FUSE thread.
+    #[allow(dead_code)]
     fn list_directory(&self, dir_id: &DirId) -> FuseResult<Vec<DirListingEntry>> {
         let ops = self.ops_clone();
         let dir_id = dir_id.clone();
 
         // Execute with timeout to prevent slow cloud storage from blocking FUSE
-        let (files, dirs, symlinks) = self.exec(async move {
-            ops.list_all(&dir_id).await
-        }).map_err(FuseError::Bridge)??;
+        let (files, dirs, symlinks) = self
+            .exec(async move { ops.list_all(&dir_id).await })
+            .map_err(FuseError::Bridge)??;
 
         // Build entries using iterator chain instead of three separate loops
         let entries: Vec<DirListingEntry> = dirs
@@ -982,6 +1685,7 @@ impl CryptomatorFS {
 
         // FUSE guarantees offset_out is non-negative
         #[allow(clippy::cast_sign_loss)]
+        let old_size = buffer.len();
         let bytes_written = buffer.write(offset_out as u64, data);
         let new_size = buffer.len();
         drop(handle);
@@ -990,6 +1694,16 @@ impl CryptomatorFS {
         self.update_buffer_size(ino_out, new_size);
         // Invalidate attr cache for destination
         self.attr_cache.invalidate(ino_out);
+        // Invalidate read cache for destination inode
+        if let Some(ref scheduler) = self.scheduler {
+            scheduler.invalidate_read_cache_inode(ino_out);
+        }
+        // Track write bytes for budget enforcement (delta only)
+        if let Some(ref scheduler) = self.scheduler {
+            if new_size > old_size {
+                scheduler.add_write_bytes(ino_out, new_size - old_size);
+            }
+        }
 
         // FUSE kernel caps request sizes well below u32::MAX in practice.
         // Truncation here would cause offset desync, but kernel limits prevent this.
@@ -1126,15 +1840,15 @@ impl Filesystem for CryptomatorFS {
             }
             Err(e) => {
                 // Add to negative cache
-                self.attr_cache.insert_negative(parent, name_str.to_string());
+                self.attr_cache
+                    .insert_negative(parent, name_str.to_string());
                 self.vault_stats.record_error();
                 self.vault_stats.record_metadata_latency(start.elapsed());
                 reply.error(e.to_errno());
             }
         }
         // Track inode table size for memory monitoring
-        self.vault_stats
-            .set_inode_count(self.inodes.len() as u64);
+        self.vault_stats.set_inode_count(self.inodes.len() as u64);
     }
 
     /// Forget about an inode.
@@ -1158,8 +1872,7 @@ impl Filesystem for CryptomatorFS {
         trace!(inode = ino, nlookup = nlookup, "forget");
         self.inodes.forget(ino, nlookup);
         // Track inode table size for memory monitoring
-        self.vault_stats
-            .set_inode_count(self.inodes.len() as u64);
+        self.vault_stats.set_inode_count(self.inodes.len() as u64);
     }
 
     /// Batch forget for multiple inodes.
@@ -1174,8 +1887,7 @@ impl Filesystem for CryptomatorFS {
             self.inodes.forget(node.nodeid, node.nlookup);
         }
         // Track inode table size for memory monitoring
-        self.vault_stats
-            .set_inode_count(self.inodes.len() as u64);
+        self.vault_stats.set_inode_count(self.inodes.len() as u64);
     }
 
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
@@ -1192,8 +1904,12 @@ impl Filesystem for CryptomatorFS {
             // 2. Update the size to reflect the current buffer size
             if let Some(buffer_size) = self.buffer_sizes.get(&ino) {
                 let effective_size = (*buffer_size).max(cached.value.size);
-                debug!(inode = ino, cached_size = cached.value.size, effective_size,
-                       "getattr: cache hit but updating size and using zero TTL for actively buffered file");
+                debug!(
+                    inode = ino,
+                    cached_size = cached.value.size,
+                    effective_size,
+                    "getattr: cache hit but updating size and using zero TTL for actively buffered file"
+                );
                 let mut attr = cached.value;
                 attr.size = effective_size;
                 reply.attr(&Duration::ZERO, &attr);
@@ -1226,7 +1942,12 @@ impl Filesystem for CryptomatorFS {
                         // Use effective size to account for in-memory buffer (mmap consistency)
                         let effective_size = self.effective_file_size(ino, disk_size);
                         if effective_size != disk_size {
-                            debug!(inode = ino, disk_size, effective_size, "getattr: using effective size from buffer");
+                            debug!(
+                                inode = ino,
+                                disk_size,
+                                effective_size,
+                                "getattr: using effective size from buffer"
+                            );
                         }
                         let mtime = Self::get_mtime(&info.encrypted_path);
                         self.make_file_attr(ino, effective_size, mtime)
@@ -1237,8 +1958,11 @@ impl Filesystem for CryptomatorFS {
                         // Check if there's an active write buffer for this inode
                         if let Some(buffer_size) = self.buffer_sizes.get(&ino) {
                             // File exists in memory but not yet on disk - return synthetic attr
-                            debug!(inode = ino, buffer_size = *buffer_size,
-                                   "getattr: file not in vault but has active buffer");
+                            debug!(
+                                inode = ino,
+                                buffer_size = *buffer_size,
+                                "getattr: file not in vault but has active buffer"
+                            );
                             self.make_file_attr(ino, *buffer_size, None)
                         } else {
                             self.vault_stats.record_error();
@@ -1301,7 +2025,10 @@ impl Filesystem for CryptomatorFS {
         // Use zero TTL for files with active write buffers to prevent kernel from
         // caching stale size, which causes SIGBUS when mmap accesses extended regions.
         let ttl = if self.buffer_sizes.contains_key(&ino) {
-            debug!(inode = ino, "getattr: using zero TTL for actively buffered file");
+            debug!(
+                inode = ino,
+                "getattr: using zero TTL for actively buffered file"
+            );
             Duration::ZERO
         } else {
             DEFAULT_ATTR_TTL
@@ -1399,7 +2126,9 @@ impl Filesystem for CryptomatorFS {
                 let ops_clone = Arc::clone(&ops);
                 let dir_id_clone = dir_id.clone();
                 let name_clone = name.clone();
-                match self.exec(async move { ops_clone.read_file(&dir_id_clone, &name_clone).await }) {
+                match self
+                    .exec(async move { ops_clone.read_file(&dir_id_clone, &name_clone).await })
+                {
                     Ok(Ok(file)) => file.content,
                     Ok(Err(_)) | Err(_) => Vec::new(), // File doesn't exist, start empty
                 }
@@ -1407,7 +2136,9 @@ impl Filesystem for CryptomatorFS {
 
             let initial_size = existing_content.len() as u64;
             let buffer = WriteBuffer::new(dir_id, name, existing_content);
-            let fh = self.handle_table.insert_auto(FuseHandle::WriteBuffer(buffer));
+            let fh = self
+                .handle_table
+                .insert_auto(FuseHandle::WriteBuffer(buffer));
             self.open_handle_tracker.add_handle(ino);
             // Track initial buffer size for mmap consistency
             self.update_buffer_size(ino, initial_size);
@@ -1415,10 +2146,18 @@ impl Filesystem for CryptomatorFS {
             reply.opened(fh, 0);
         } else {
             // Open for reading - use streaming reader without holding vault locks.
-            // Unlike open_file(), open_file_unlocked() releases locks after opening
-            // the OS file handle, allowing concurrent directory operations (unlink, etc.)
-            match self.exec(async move { ops.open_file_unlocked(&dir_id, &name).await }) {
-                Ok(Ok(reader)) => {
+            // We use the synchronous reader to avoid Tokio runtime dependencies in the executor.
+            // Opening involves reading the header, which is fast enough to do synchronously.
+            let sync_ops = match self.get_or_create_sync_ops() {
+                Ok(ops) => ops,
+                Err(e) => {
+                    reply.error(e.to_errno());
+                    return;
+                }
+            };
+
+            match sync_ops.open_file_reader_sync(&dir_id, &name) {
+                Ok(reader) => {
                     // Store streaming reader in handle table
                     let fh = self
                         .handle_table
@@ -1427,11 +2166,8 @@ impl Filesystem for CryptomatorFS {
                     self.vault_stats.record_file_open();
                     reply.opened(fh, 0);
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     reply.error(crate::error::vault_error_to_errno(&e));
-                }
-                Err(exec_err) => {
-                    reply.error(exec_err.to_errno());
                 }
             }
         }
@@ -1470,10 +2206,7 @@ impl Filesystem for CryptomatorFS {
                 drop(handle);
 
                 // Enqueue to scheduler - it will reply and restore the reader
-                let scheduler = self
-                    .scheduler
-                    .as_ref()
-                    .expect("scheduler not initialized");
+                let scheduler = self.scheduler.as_ref().expect("scheduler not initialized");
 
                 let offset_u64 = u64::try_from(offset).unwrap_or(0);
                 let size_usize = usize::try_from(size).unwrap_or(0);
@@ -1481,7 +2214,10 @@ impl Filesystem for CryptomatorFS {
                 self.vault_stats.start_read();
                 match scheduler.try_enqueue_read(ino, fh, reader, offset_u64, size_usize, reply) {
                     Ok(request_id) => {
-                        trace!(?request_id, fh, offset_u64, size_usize, "Read enqueued to scheduler");
+                        trace!(
+                            ?request_id,
+                            fh, offset_u64, size_usize, "Read enqueued to scheduler"
+                        );
                         // Return immediately - scheduler will reply asynchronously
                         // Stats will be updated when the dispatcher receives the result
                     }
@@ -1552,144 +2288,40 @@ impl Filesystem for CryptomatorFS {
         _req: &Request<'_>,
         ino: u64,
         fh: u64,
-        _flags: i32,
-        _lock_owner: Option<u64>,
-        _flush: bool,
+        flags: i32,
+        lock_owner: Option<u64>,
+        flush: bool,
         reply: ReplyEmpty,
     ) {
-        trace!(fh = fh, "release");
+        trace!(fh = fh, "release (enqueuing to hazardous lane)");
 
-        // Remove handle from table
-        let Some(handle) = self.handle_table.remove(&fh) else {
-            // Handle already released or never existed
-            reply.ok();
-            return;
+        let op = HazardousOp::Release {
+            ino,
+            fh,
+            flags,
+            lock_owner,
+            flush,
         };
+        let reply_handle = HazardousReply::Empty(reply);
 
-        match handle {
-            FuseHandle::Reader(_) => {
-                // Streaming reader just needs to be dropped (releases locks)
-                self.vault_stats.record_file_close();
-                debug!(fh = fh, "Reader released");
+        if let Some(ref scheduler) = self.scheduler {
+            let handler = self
+                .hazardous_handler
+                .as_ref()
+                .expect("hazardous handler not initialized");
+            if let Err(e) = scheduler.try_enqueue_hazardous(op, reply_handle, Arc::clone(handler)) {
+                error!(?e, "Failed to enqueue release");
+                // Reply is already sent by try_enqueue_hazardous in error case
             }
-            FuseHandle::ReaderLoaned => {
-                // Reader was loaned to the scheduler for an async read.
-                // The scheduler will discard the reader when it completes since
-                // the handle table entry is now gone. Just record the close.
-                self.vault_stats.record_file_close();
-                debug!(fh = fh, "ReaderLoaned released (scheduler will discard reader when done)");
-            }
-            FuseHandle::ReadBuffer(_) => {
-                // In-memory read buffer just needs to be dropped
-                self.vault_stats.record_file_close();
-                debug!(fh = fh, "ReadBuffer released");
-            }
-            FuseHandle::WriteBuffer(buffer) => {
-                // Write buffer back to vault if dirty
-                if buffer.is_dirty() {
-                    let ops = self.ops_clone();
-
-                    let dir_id = buffer.dir_id().clone();
-                    let filename = buffer.filename().to_string();
-                    let filename_for_log = filename.clone();
-                    let content = buffer.into_content();
-                    let content_len = content.len();
-
-                    // Use extended timeout for data operations.
-                    // Still use timeout to prevent indefinite hangs, but much longer
-                    // than metadata operations (5 minutes vs 30 seconds default).
-                    self.vault_stats.start_write();
-                    let start = Instant::now();
-                    match self.exec_with_timeout(
-                        async move {
-                            ops.write_file(&dir_id, &filename, &content).await
-                        },
-                        self.write_timeout,
-                    ) {
-                        Ok(Ok(_)) => {
-                            let elapsed = start.elapsed();
-                            self.vault_stats.finish_write();
-                            self.vault_stats.record_write(content_len as u64);
-                            self.vault_stats.record_write_latency(elapsed);
-                            self.vault_stats.record_encrypted(content_len as u64);
-                            debug!(fh = fh, filename = %filename_for_log, size = content_len, "WriteBuffer flushed");
-                            // Invalidate attr cache since file changed
-                            self.attr_cache.invalidate(ino);
-                            self.vault_stats.record_file_close();
-                        }
-                        Ok(Err(e)) => {
-                            self.vault_stats.finish_write();
-                            self.vault_stats.record_write_latency(start.elapsed());
-                            error!(error = %e, "Failed to write buffer back to vault");
-                            self.vault_stats.record_file_close();
-                            reply.error(crate::error::write_error_to_errno(&e));
-                            return;
-                        }
-                        Err(exec_err) => {
-                            self.vault_stats.finish_write();
-                            self.vault_stats.record_write_latency(start.elapsed());
-                            error!(error = %exec_err, "Write timed out or operation failed");
-                            self.vault_stats.record_file_close();
-                            reply.error(exec_err.to_errno());
-                            return;
-                        }
-                    }
-                } else {
-                    self.vault_stats.record_file_close();
-                    debug!(fh = fh, "WriteBuffer released (not dirty)");
-                }
-                // Note: Don't clear buffer_sizes here - wait until after remove_handle
-                // to check if there are still other open handles for this inode
+        } else {
+            error!("Scheduler missing in release");
+            // If scheduler is missing, we can't do anything async.
+            // Just reply ok to unblock kernel, but this leaks handles/memory.
+            // In practice scheduler is always present.
+            if let HazardousReply::Empty(r) = reply_handle {
+                r.ok();
             }
         }
-
-        // Check for deferred deletion (POSIX compliance)
-        // If this was the last handle and the file was unlinked, delete it now
-        let deferred = self.open_handle_tracker.remove_handle(ino);
-
-        // Only clear buffer_sizes tracking when the last handle for this inode is closed.
-        // This prevents the kernel from caching stale file sizes with 60s TTL while
-        // other handles are still actively writing to the file.
-        if !self.open_handle_tracker.has_open_handles(ino) {
-            self.clear_buffer_size(ino);
-        }
-
-        if let Some(deferred) = deferred {
-            let filename = deferred.name.clone();
-            debug!(
-                ino = ino,
-                filename = %filename,
-                "Performing deferred deletion after last handle closed"
-            );
-
-            // Get the file's path before deleting so we can clean up the inode mapping
-            let file_path = self.inodes.get(ino).map(|entry| entry.path.clone());
-
-            let ops = self.ops_clone();
-            // Try to delete the file from vault (use default timeout)
-            match self.exec(
-                async move { ops.delete_file(&deferred.dir_id, &deferred.name).await }
-            ) {
-                Ok(Ok(())) => {
-                    debug!(filename = %filename, "Deferred deletion completed");
-                    // Clean up the inode mapping now that the file is deleted
-                    if let Some(path) = file_path {
-                        self.inodes.invalidate_path(&path);
-                        debug!(path = %path, "Invalidated inode mapping for deleted file");
-                    }
-                }
-                Ok(Err(e)) => {
-                    error!(error = %e, filename = %filename, "Deferred deletion failed (vault error)");
-                    // Don't return error - file handle was already closed successfully
-                }
-                Err(e) => {
-                    error!(error = %e, filename = %filename, "Deferred deletion failed (operation error)");
-                    // Don't return error - file handle was already closed successfully
-                }
-            }
-        }
-
-        reply.ok();
     }
 
     fn opendir(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
@@ -1731,175 +2363,33 @@ impl Filesystem for CryptomatorFS {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        reply: ReplyDirectory,
     ) {
-        let start = Instant::now();
-        self.vault_stats.record_metadata_op();
-        trace!(inode = ino, offset = offset, "readdir");
+        trace!(
+            inode = ino,
+            offset = offset,
+            "readdir (enqueuing to hazardous lane)"
+        );
 
-        // Get directory entry
-        let Some(entry) = self.inodes.get(ino) else {
-            self.vault_stats.record_error();
-            self.vault_stats.record_metadata_latency(start.elapsed());
-            reply.error(libc::ENOENT);
-            return;
-        };
+        let op = HazardousOp::Readdir { ino, fh, offset };
+        let reply_handle = HazardousReply::Directory(reply);
 
-        let Some(dir_id) = entry.dir_id() else {
-            self.vault_stats.record_error();
-            self.vault_stats.record_metadata_latency(start.elapsed());
-            reply.error(libc::ENOTDIR);
-            return;
-        };
-        let current_path = entry.path.clone();
-        drop(entry);
-
-        // Get parent inode (for ".." entry)
-        let parent_inode = current_path
-            .parent()
-            .and_then(|parent| self.inodes.get_inode(&parent))
-            .unwrap_or(crate::inode::ROOT_INODE);
-
-        // Check dir cache first
-        let entries = if let Some(cached) = self.dir_cache.get(ino) {
-            debug!(
-                inode = ino,
-                offset = offset,
-                cached_count = cached.len(),
-                "readdir: CACHE HIT"
-            );
-            cached
-        } else {
-            // List directory contents
-            match self.list_directory(&dir_id) {
-                Ok(entries) => {
-                    debug!(
-                        inode = ino,
-                        offset = offset,
-                        entry_count = entries.len(),
-                        "readdir: CACHE MISS - listing directory"
-                    );
-                    self.dir_cache.insert(ino, entries.clone());
-                    entries
-                }
-                Err(e) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    reply.error(e.to_errno());
-                    return;
-                }
+        if let Some(ref scheduler) = self.scheduler {
+            let handler = self
+                .hazardous_handler
+                .as_ref()
+                .expect("hazardous handler not initialized");
+            if let Err(e) = scheduler.try_enqueue_hazardous(op, reply_handle, Arc::clone(handler)) {
+                error!(?e, "Failed to enqueue readdir");
             }
-        };
-
-        // Add . and ..
-        let mut all_entries = vec![
-            DirListingEntry {
-                inode: ino,
-                file_type: FileType::Directory,
-                dir_id: None,
-                name: ".".to_string(),
-            },
-            DirListingEntry {
-                inode: parent_inode,
-                file_type: FileType::Directory,
-                dir_id: None,
-                name: "..".to_string(),
-            },
-        ];
-        all_entries.extend(entries);
-
-        // Sort entries by name for stable iteration across cache invalidations
-        // This ensures that even if the cache is rebuilt during iteration,
-        // we can reliably resume from the last returned name.
-        all_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-        // Find starting position based on offset
-        // offset=0 means start from beginning
-        // offset>0 encodes a hash of the last returned entry name - resume after that entry
-        let start_idx = if offset == 0 {
-            0
         } else {
-            // Find the entry whose hash matches this offset
-            // We return the index of the NEXT entry (the one after the match)
-            let found = all_entries
-                .iter()
-                .position(|e| Self::name_to_offset(&e.name) == offset)
-                .map_or_else(
-                    || {
-                        // Offset not found - the entry with this offset was likely deleted during iteration
-                        // (directory cache was invalidated and rebuilt without it).
-                        //
-                        // We can't reliably determine our position in the iteration because:
-                        // 1. Hashes don't preserve lexicographic ordering
-                        // 2. We don't know which entries were already returned before the deletion
-                        //
-                        // Conservative strategy: restart from the beginning.
-                        // This ensures we don't skip entries, though we may return duplicates.
-                        // The kernel/client handles duplicates correctly by tracking seen entries.
-                        warn!(
-                            "readdir resume: offset {} NOT FOUND in {} entries (entry deleted during iteration), restarting from beginning",
-                            offset,
-                            all_entries.len()
-                        );
-                        0 // Restart from beginning instead of returning empty
-                    },
-                    |idx| {
-                        debug!(
-                            "readdir resume: found offset {} at idx {}, name={}, starting from idx {}",
-                            offset,
-                            idx,
-                            all_entries[idx].name,
-                            idx + 1
-                        );
-                        idx + 1
-                    },
-                );
-            found
-        };
-
-        // Return entries starting from start_idx
-        for entry in all_entries.iter().skip(start_idx) {
-            // Allocate inode for entry if needed
-            let entry_inode = if entry.name == "." {
-                ino
-            } else if entry.name == ".." {
-                parent_inode
-            } else {
-                // Allocate a real inode for the entry
-                let child_path = current_path.join(&entry.name);
-                let kind = match entry.file_type {
-                    FileType::Directory => InodeKind::Directory {
-                        // Use actual dir_id from listing, or root as fallback for . and ..
-                        dir_id: entry.dir_id.clone().unwrap_or_else(DirId::root),
-                    },
-                    FileType::Symlink => InodeKind::Symlink {
-                        dir_id: dir_id.clone(),
-                        name: entry.name.clone(),
-                    },
-                    _ => InodeKind::File {
-                        dir_id: dir_id.clone(),
-                        name: entry.name.clone(),
-                    },
-                };
-                // Use no_lookup_inc variant: per FUSE spec, readdir does NOT affect
-                // lookup count. Only lookup/create/mkdir/symlink/readdirplus do.
-                self.inodes.get_or_insert_no_lookup_inc(&child_path, &kind)
-            };
-
-            // Compute next offset as hash of current entry name
-            // This allows resuming iteration even if the directory is modified
-            let next_offset = Self::name_to_offset(&entry.name);
-
-            // buffer.add returns true if buffer is full
-            if reply.add(entry_inode, next_offset, entry.file_type, &entry.name) {
-                break;
+            error!("Scheduler missing in readdir");
+            if let HazardousReply::Directory(r) = reply_handle {
+                r.error(libc::EIO);
             }
         }
-
-        self.vault_stats.record_metadata_latency(start.elapsed());
-        reply.ok();
     }
 
     /// Read directory entries with attributes (readdirplus).
@@ -1920,181 +2410,43 @@ impl Filesystem for CryptomatorFS {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
-        mut reply: ReplyDirectoryPlus,
+        reply: ReplyDirectoryPlus,
     ) {
-        let start = Instant::now();
-        self.vault_stats.record_metadata_op();
-        trace!(inode = ino, offset = offset, "readdirplus");
+        trace!(
+            inode = ino,
+            offset = offset,
+            "readdirplus (enqueuing to hazardous lane)"
+        );
 
-        // Get directory entry
-        let Some(entry) = self.inodes.get(ino) else {
-            self.vault_stats.record_error();
-            self.vault_stats.record_metadata_latency(start.elapsed());
-            reply.error(libc::ENOENT);
-            return;
-        };
+        let op = HazardousOp::ReaddirPlus { ino, fh, offset };
+        let reply_handle = HazardousReply::DirectoryPlus(reply);
 
-        let Some(dir_id) = entry.dir_id() else {
-            self.vault_stats.record_error();
-            self.vault_stats.record_metadata_latency(start.elapsed());
-            reply.error(libc::ENOTDIR);
-            return;
-        };
-        let current_path = entry.path.clone();
-        drop(entry);
-
-        // Get parent inode (for ".." entry)
-        let parent_inode = current_path
-            .parent()
-            .and_then(|parent| self.inodes.get_inode(&parent))
-            .unwrap_or(crate::inode::ROOT_INODE);
-
-        // We need to list directory contents with file sizes for readdirplus
-        // Use list_all to fetch all entries in a single operation with parallel I/O
-        let ops = self.ops_clone();
-        let dir_id_clone = dir_id.clone();
-
-        // Execute via async executor with timeout
-        let (files, dirs, symlinks) =
-            match self.exec(async move { ops.list_all(&dir_id_clone).await }) {
-                Ok(Ok(result)) => result,
-                Ok(Err(e)) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    reply.error(crate::error::vault_error_to_errno(&e));
-                    return;
-                }
-                Err(exec_err) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    error!(error = %exec_err, "list_all timed out in readdirplus");
-                    reply.error(exec_err.to_errno());
-                    return;
-                }
-            };
-
-        // Build entries with sizes using iterator chain instead of three separate loops
-        let mut all_entries: Vec<(String, FileType, u64, Option<DirId>)> = [
-            (".".to_string(), FileType::Directory, 0, None),
-            ("..".to_string(), FileType::Directory, 0, None),
-        ]
-        .into_iter()
-        .chain(dirs.into_iter().map(|d| {
-            (d.name, FileType::Directory, 0, Some(d.directory_id))
-        }))
-        .chain(files.into_iter().map(|f| {
-            let plaintext_size = encrypted_to_plaintext_size_or_zero(f.encrypted_size);
-            (f.name, FileType::RegularFile, plaintext_size, None)
-        }))
-        .chain(symlinks.into_iter().map(|s| {
-            let target_len = s.target.len() as u64;
-            (s.name, FileType::Symlink, target_len, None)
-        }))
-        .collect();
-
-        // Sort entries by name for stable iteration across cache invalidations
-        all_entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-        // Find starting position based on offset
-        // offset=0 means start from beginning
-        // offset>0 encodes a hash of the last returned entry name - resume after that entry
-        let start_idx = if offset == 0 {
-            0
+        if let Some(ref scheduler) = self.scheduler {
+            let handler = self
+                .hazardous_handler
+                .as_ref()
+                .expect("hazardous handler not initialized");
+            if let Err(e) = scheduler.try_enqueue_hazardous(op, reply_handle, Arc::clone(handler)) {
+                error!(?e, "Failed to enqueue readdirplus");
+            }
         } else {
-            // Find the entry whose hash matches this offset
-            // We return the index of the NEXT entry (the one after the match)
-            all_entries
-                .iter()
-                .position(|e| Self::name_to_offset(&e.0) == offset)
-                .map_or_else(
-                    || {
-                        // Offset not found - entry was deleted during iteration.
-                        // Restart from beginning to avoid skipping entries (see readdir for detailed explanation).
-                        warn!(
-                            "readdirplus resume: offset {} NOT FOUND in {} entries (entry deleted during iteration), restarting from beginning",
-                            offset,
-                            all_entries.len()
-                        );
-                        0 // Restart from beginning instead of returning empty
-                    },
-                    |idx| {
-                        debug!(
-                            "readdirplus resume: found offset {} at idx {}, name={}, starting from idx {}",
-                            offset,
-                            idx,
-                            all_entries[idx].0,
-                            idx + 1
-                        );
-                        idx + 1
-                    },
-                )
-        };
-
-        // Return entries starting from start_idx with attributes
-        for (name, file_type, size, maybe_subdir_id) in all_entries.iter().skip(start_idx)
-        {
-            // Allocate inode for entry if needed
-            // Note: For readdir entries, we use None for mtime (falls back to now).
-            // The actual mtime will be fetched when getattr is called on the entry.
-            let (entry_inode, attr) = if name == "." {
-                (ino, self.make_dir_attr(ino, None))
-            } else if name == ".." {
-                (parent_inode, self.make_dir_attr(parent_inode, None))
-            } else {
-                // Allocate a real inode for the entry
-                let child_path = current_path.join(name);
-                let kind = match file_type {
-                    FileType::Directory => InodeKind::Directory {
-                        // Dir entries from listing have actual dir_id; root fallback is for safety
-                        dir_id: maybe_subdir_id.clone().unwrap_or_else(DirId::root),
-                    },
-                    FileType::Symlink => InodeKind::Symlink {
-                        dir_id: dir_id.clone(),
-                        name: name.clone(),
-                    },
-                    _ => InodeKind::File {
-                        dir_id: dir_id.clone(),
-                        name: name.clone(),
-                    },
-                };
-                let entry_inode = self.inodes.get_or_insert(&child_path, &kind);
-
-                let attr = match file_type {
-                    FileType::Directory => self.make_dir_attr(entry_inode, None),
-                    FileType::RegularFile => {
-                        // Use effective size to account for in-memory buffer (mmap consistency)
-                        let effective_size = self.effective_file_size(entry_inode, *size);
-                        self.make_file_attr(entry_inode, effective_size, None)
-                    }
-                    FileType::Symlink => self.make_symlink_attr(entry_inode, *size, None),
-                    _ => {
-                        let effective_size = self.effective_file_size(entry_inode, *size);
-                        self.make_file_attr(entry_inode, effective_size, None)
-                    }
-                };
-
-                // Cache the attribute
-                self.attr_cache.insert(entry_inode, attr);
-
-                (entry_inode, attr)
-            };
-
-            // Compute next offset as hash of current entry name
-            let next_offset = Self::name_to_offset(name);
-
-            // buffer.add returns true if buffer is full
-            if reply.add(entry_inode, next_offset, name, &DEFAULT_ATTR_TTL, &attr, 0) {
-                break;
+            error!("Scheduler missing in readdirplus");
+            if let HazardousReply::DirectoryPlus(r) = reply_handle {
+                r.error(libc::EIO);
             }
         }
-
-        self.vault_stats.record_metadata_latency(start.elapsed());
-        reply.ok();
     }
 
-    fn releasedir(&mut self, _req: &Request<'_>, _ino: u64, _fh: u64, _flags: i32, reply: ReplyEmpty) {
+    fn releasedir(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        _flags: i32,
+        reply: ReplyEmpty,
+    ) {
         self.vault_stats.record_dir_close();
         reply.ok();
     }
@@ -2117,61 +2469,51 @@ impl Filesystem for CryptomatorFS {
     /// - Writes dirty buffer contents to the vault
     /// - Does not release the file handle (that's `release`'s job)
     /// - Lock release is a no-op since we don't implement POSIX locks
-    fn flush(&mut self, _req: &Request<'_>, ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
-        trace!(inode = ino, fh = fh, "flush");
+    fn flush(&mut self, _req: &Request<'_>, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {
+        trace!(inode = ino, fh = fh, "flush (enqueuing to hazardous lane)");
 
-        // Wait for any pending async writes (copy_file_range) to complete
-        // before flushing, to ensure all data is visible in the buffer.
+        let op = HazardousOp::Flush {
+            ino,
+            fh,
+            lock_owner,
+        };
+        let reply_handle = HazardousReply::Empty(reply);
+
         if let Some(ref scheduler) = self.scheduler {
-            if scheduler.has_pending_writes(ino) {
-                trace!(ino, "Waiting for pending async writes before flush");
-                if !scheduler.wait_pending_writes(ino, self.write_timeout) {
-                    // Timeout waiting for pending writes - might have stale data
-                    warn!(ino, "Timeout waiting for pending async writes in flush");
-                    reply.error(libc::ETIMEDOUT);
-                    return;
-                }
+            let handler = self
+                .hazardous_handler
+                .as_ref()
+                .expect("hazardous handler not initialized");
+            if let Err(e) = scheduler.try_enqueue_hazardous(op, reply_handle, Arc::clone(handler)) {
+                error!(?e, "Failed to enqueue flush");
             }
-        }
-
-        // Flush writes data to the vault (kernel buffer cache).
-        // We don't sync to disk here - that's fsync's job.
-        match self.flush_handle(ino, fh) {
-            Ok(_) => reply.ok(), // Ignore the returned path
-            Err(errno) => reply.error(errno),
+        } else {
+            error!("Scheduler missing in flush");
+            if let HazardousReply::Empty(r) = reply_handle {
+                r.error(libc::EIO);
+            }
         }
     }
 
     fn fsync(&mut self, _req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
-        trace!(inode = ino, fh = fh, datasync = datasync, "fsync");
+        trace!(inode = ino, fh = fh, "fsync (enqueuing to hazardous lane)");
 
-        // Wait for any pending async writes (copy_file_range) to complete
-        // before syncing, to ensure all data is visible in the buffer.
+        let op = HazardousOp::Fsync { ino, fh, datasync };
+        let reply_handle = HazardousReply::Empty(reply);
+
         if let Some(ref scheduler) = self.scheduler {
-            if scheduler.has_pending_writes(ino) {
-                trace!(ino, "Waiting for pending async writes before fsync");
-                if !scheduler.wait_pending_writes(ino, self.write_timeout) {
-                    // Timeout waiting for pending writes - might have stale data
-                    warn!(ino, "Timeout waiting for pending async writes in fsync");
-                    reply.error(libc::ETIMEDOUT);
-                    return;
-                }
+            let handler = self
+                .hazardous_handler
+                .as_ref()
+                .expect("hazardous handler not initialized");
+            if let Err(e) = scheduler.try_enqueue_hazardous(op, reply_handle, Arc::clone(handler)) {
+                error!(?e, "Failed to enqueue fsync");
             }
-        }
-
-        // First, flush any dirty data to the vault
-        if let Err(errno) = self.flush_handle(ino, fh) {
-            reply.error(errno);
-            return;
-        }
-
-        // Then sync the encrypted file to disk
-        // The datasync flag determines whether to sync metadata too:
-        // - datasync=false (fsync): sync data and metadata
-        // - datasync=true (fdatasync): sync data only
-        match self.sync_handle_to_disk(fh, datasync) {
-            Ok(()) => reply.ok(),
-            Err(errno) => reply.error(errno),
+        } else {
+            error!("Scheduler missing in fsync");
+            if let HazardousReply::Empty(r) = reply_handle {
+                r.error(libc::EIO);
+            }
         }
     }
 
@@ -2286,86 +2628,112 @@ impl Filesystem for CryptomatorFS {
                     // If we have an open file handle, truncate the buffer
                     if let Some(fh) = fh
                         && let Some(mut handle) = self.handle_table.get_mut(&fh)
-                            && let Some(buffer) = handle.as_write_buffer_mut() {
-                                debug!(inode = ino, old_size = buffer.len(), new_size = new_size, "setattr: found open write buffer");
-                                let old_size = buffer.len();
-                                buffer.truncate(new_size);
-
-                                // CRITICAL: For mmap compatibility, if we're extending the file,
-                                // we MUST flush to disk immediately. Otherwise the kernel will
-                                // report the new size but the file on disk is still the old size,
-                                // causing SIGBUS when applications (like SQLite WAL) mmap the
-                                // extended region.
-                                if new_size > old_size {
-                                    // Take content for flush - resize to new_size before writing
-                                    // so the file on disk matches what we report to the kernel.
-                                    // This is critical for mmap consistency.
-                                    let mut content = buffer.take_content_for_flush();
-                                    // On 32-bit: file sizes beyond 4GB would fail earlier in allocation
-                                    #[allow(clippy::cast_possible_truncation)]
-                                    content.resize(new_size as usize, 0);
-                                    let content_for_write = content.clone();
-                                    let dir_id_write = dir_id.clone();
-                                    let name_write = name.clone();
-                                    drop(handle);
-
-                                    let ops = self.ops_clone();
-                                    match self.exec(async move {
-                                        ops.write_file(&dir_id_write, &name_write, &content_for_write).await
-                                    }) {
-                                        Ok(Ok(_)) => {
-                                            // Restore resized content and mark clean
-                                            if let Some(mut handle) = self.handle_table.get_mut(&fh)
-                                                && let Some(buffer) = handle.as_write_buffer_mut() {
-                                                    buffer.restore_content(content);
-                                                }
-                                            // Track buffer size for mmap consistency
-                                            self.update_buffer_size(ino, new_size);
-                                            // Just modified file, so mtime = now is correct
-                                            let attr = self.make_file_attr(ino, new_size, None);
-                                            self.attr_cache.insert(ino, attr);
-                                            self.vault_stats.record_metadata_latency(start.elapsed());
-                                            // Use zero TTL - file has active buffer, kernel must not cache size
-                                            reply.attr(&Duration::ZERO, &attr);
-                                        }
-                                        Ok(Err(e)) => {
-                                            // Restore content but mark dirty for retry
-                                            if let Some(mut handle) = self.handle_table.get_mut(&fh)
-                                                && let Some(buffer) = handle.as_write_buffer_mut() {
-                                                    buffer.restore_content(content);
-                                                    buffer.mark_dirty();
-                                                }
-                                            self.vault_stats.record_error();
-                                            self.vault_stats.record_metadata_latency(start.elapsed());
-                                            reply.error(crate::error::write_error_to_errno(&e));
-                                        }
-                                        Err(exec_err) => {
-                                            if let Some(mut handle) = self.handle_table.get_mut(&fh)
-                                                && let Some(buffer) = handle.as_write_buffer_mut() {
-                                                    buffer.restore_content(content);
-                                                    buffer.mark_dirty();
-                                                }
-                                            self.vault_stats.record_error();
-                                            self.vault_stats.record_metadata_latency(start.elapsed());
-                                            reply.error(exec_err.to_errno());
-                                        }
-                                    }
-                                    return;
+                        && let Some(buffer) = handle.as_write_buffer_mut()
+                    {
+                        debug!(
+                            inode = ino,
+                            old_size = buffer.len(),
+                            new_size = new_size,
+                            "setattr: found open write buffer"
+                        );
+                        let old_size = buffer.len();
+                        buffer.truncate(new_size);
+                        if new_size < old_size {
+                            if let Some(ref scheduler) = self.scheduler {
+                                let shrink = old_size - new_size;
+                                let current = scheduler.file_write_bytes(ino);
+                                let release = shrink.min(current);
+                                if release > 0 {
+                                    scheduler.release_write_bytes(ino, release);
                                 }
-
-                                // Truncating to smaller size: just update buffer (no flush needed)
-                                drop(handle);
-
-                                // Set exact buffer size for mmap consistency (use set, not update, since we're shrinking)
-                                self.set_buffer_size(ino, new_size);
-                                // Just modified file, so mtime = now is correct
-                                let attr = self.make_file_attr(ino, new_size, None);
-                                self.attr_cache.insert(ino, attr);
-                                self.vault_stats.record_metadata_latency(start.elapsed());
-                                // Use zero TTL - file has active buffer, kernel must not cache size
-                                reply.attr(&Duration::ZERO, &attr);
-                                return;
                             }
+                        }
+
+                        // CRITICAL: For mmap compatibility, if we're extending the file,
+                        // we MUST flush to disk immediately. Otherwise the kernel will
+                        // report the new size but the file on disk is still the old size,
+                        // causing SIGBUS when applications (like SQLite WAL) mmap the
+                        // extended region.
+                        if new_size > old_size {
+                            // Take content for flush - resize to new_size before writing
+                            // so the file on disk matches what we report to the kernel.
+                            // This is critical for mmap consistency.
+                            let mut content = buffer.take_content_for_flush();
+                            // On 32-bit: file sizes beyond 4GB would fail earlier in allocation
+                            #[allow(clippy::cast_possible_truncation)]
+                            content.resize(new_size as usize, 0);
+                            let content_for_write = content.clone();
+                            let dir_id_write = dir_id.clone();
+                            let name_write = name.clone();
+                            drop(handle);
+
+                            let ops = self.ops_clone();
+                            match self.exec(async move {
+                                ops.write_file(&dir_id_write, &name_write, &content_for_write)
+                                    .await
+                            }) {
+                                Ok(Ok(_)) => {
+                                    // Restore resized content and mark clean
+                                    if let Some(mut handle) = self.handle_table.get_mut(&fh)
+                                        && let Some(buffer) = handle.as_write_buffer_mut()
+                                    {
+                                        buffer.restore_content(content);
+                                    }
+                                    // Track buffer size for mmap consistency
+                                    self.update_buffer_size(ino, new_size);
+                                    // Just modified file, so mtime = now is correct
+                                    let attr = self.make_file_attr(ino, new_size, None);
+                                    self.attr_cache.insert(ino, attr);
+                                    if let Some(ref scheduler) = self.scheduler {
+                                        scheduler.invalidate_read_cache_inode(ino);
+                                    }
+                                    self.vault_stats.record_metadata_latency(start.elapsed());
+                                    // Use zero TTL - file has active buffer, kernel must not cache size
+                                    reply.attr(&Duration::ZERO, &attr);
+                                }
+                                Ok(Err(e)) => {
+                                    // Restore content but mark dirty for retry
+                                    if let Some(mut handle) = self.handle_table.get_mut(&fh)
+                                        && let Some(buffer) = handle.as_write_buffer_mut()
+                                    {
+                                        buffer.restore_content(content);
+                                        buffer.mark_dirty();
+                                    }
+                                    self.vault_stats.record_error();
+                                    self.vault_stats.record_metadata_latency(start.elapsed());
+                                    reply.error(crate::error::write_error_to_errno(&e));
+                                }
+                                Err(exec_err) => {
+                                    if let Some(mut handle) = self.handle_table.get_mut(&fh)
+                                        && let Some(buffer) = handle.as_write_buffer_mut()
+                                    {
+                                        buffer.restore_content(content);
+                                        buffer.mark_dirty();
+                                    }
+                                    self.vault_stats.record_error();
+                                    self.vault_stats.record_metadata_latency(start.elapsed());
+                                    reply.error(exec_err.to_errno());
+                                }
+                            }
+                            return;
+                        }
+
+                        // Truncating to smaller size: just update buffer (no flush needed)
+                        drop(handle);
+
+                        // Set exact buffer size for mmap consistency (use set, not update, since we're shrinking)
+                        self.set_buffer_size(ino, new_size);
+                        // Just modified file, so mtime = now is correct
+                        let attr = self.make_file_attr(ino, new_size, None);
+                        self.attr_cache.insert(ino, attr);
+                        if let Some(ref scheduler) = self.scheduler {
+                            scheduler.invalidate_read_cache_inode(ino);
+                        }
+                        self.vault_stats.record_metadata_latency(start.elapsed());
+                        // Use zero TTL - file has active buffer, kernel must not cache size
+                        reply.attr(&Duration::ZERO, &attr);
+                        return;
+                    }
 
                     // No open handle - read file, truncate, write back
                     debug!(inode = ino, new_size = new_size, file = %file_name, "setattr: no open write buffer, using read-modify-write");
@@ -2412,9 +2780,15 @@ impl Filesystem for CryptomatorFS {
                             //    to cache stale size → SIGBUS on mmap if file extended again
                             if is_extending {
                                 self.attr_cache.invalidate(ino);
+                                if let Some(ref scheduler) = self.scheduler {
+                                    scheduler.invalidate_read_cache_inode(ino);
+                                }
                                 reply.attr(&Duration::ZERO, &attr);
                             } else {
                                 self.attr_cache.insert(ino, attr);
+                                if let Some(ref scheduler) = self.scheduler {
+                                    scheduler.invalidate_read_cache_inode(ino);
+                                }
                                 reply.attr(&DEFAULT_ATTR_TTL, &attr);
                             }
                         }
@@ -2490,9 +2864,7 @@ impl Filesystem for CryptomatorFS {
                             let new_mtime = Self::get_mtime(&file_info.encrypted_path);
                             self.make_file_attr(ino, file_size, new_mtime)
                         }
-                        Ok(Ok(None)) => {
-                            self.make_file_attr(ino, 0, None)
-                        }
+                        Ok(Ok(None)) => self.make_file_attr(ino, 0, None),
                         Ok(Err(e)) => {
                             self.vault_stats.record_error();
                             self.vault_stats.record_metadata_latency(start.elapsed());
@@ -2621,14 +2993,14 @@ impl Filesystem for CryptomatorFS {
                 let fragment_size = stat.fragment_size() as u32;
 
                 reply.statfs(
-                    u64::from(stat.blocks()),             // Total blocks
-                    u64::from(stat.blocks_free()),        // Free blocks
-                    u64::from(stat.blocks_available()),   // Available blocks (non-root)
-                    u64::from(stat.files()),              // Total inodes
-                    u64::from(stat.files_free()),         // Free inodes
-                    fragment_size,                    // Block size
-                    name_max,                         // Max filename length
-                    fragment_size,                    // Fragment size
+                    u64::from(stat.blocks()),           // Total blocks
+                    u64::from(stat.blocks_free()),      // Free blocks
+                    u64::from(stat.blocks_available()), // Available blocks (non-root)
+                    u64::from(stat.files()),            // Total inodes
+                    u64::from(stat.files_free()),       // Free inodes
+                    fragment_size,                      // Block size
+                    name_max,                           // Max filename length
+                    fragment_size,                      // Fragment size
                 );
             }
             Err(e) => {
@@ -2734,9 +3106,9 @@ impl Filesystem for CryptomatorFS {
             )
         }) {
             Ok((file_res, dir_res, sym_res)) => {
-                matches!(file_res, Ok(Some(_))) ||
-                    matches!(dir_res, Ok(Some(_))) ||
-                    matches!(sym_res, Ok(Some(_)))
+                matches!(file_res, Ok(Some(_)))
+                    || matches!(dir_res, Ok(Some(_)))
+                    || matches!(sym_res, Ok(Some(_)))
             }
             Err(_) => false, // On operation error, proceed and let vault handle it
         };
@@ -2751,7 +3123,9 @@ impl Filesystem for CryptomatorFS {
         // Create the file with a new WriteBuffer marked dirty
         // (File will be written to vault on release, even if empty)
         let buffer = WriteBuffer::new_for_create(dir_id.clone(), name_str.to_string());
-        let fh = self.handle_table.insert_auto(FuseHandle::WriteBuffer(buffer));
+        let fh = self
+            .handle_table
+            .insert_auto(FuseHandle::WriteBuffer(buffer));
 
         // Allocate inode
         let inode = self.inodes.get_or_insert(
@@ -2817,8 +3191,7 @@ impl Filesystem for CryptomatorFS {
             if scheduler.check_write_budget(ino, write_size).is_err() {
                 trace!(
                     ino,
-                    write_size,
-                    "Write rejected due to budget limit (EAGAIN)"
+                    write_size, "Write rejected due to budget limit (EAGAIN)"
                 );
                 drop(handle); // Release lock before replying
                 reply.error(libc::EAGAIN);
@@ -2852,6 +3225,10 @@ impl Filesystem for CryptomatorFS {
 
         // Invalidate attr cache for this inode (will be recalculated with effective_file_size)
         self.attr_cache.invalidate(ino);
+        // Invalidate read cache for this inode (global cache)
+        if let Some(ref scheduler) = self.scheduler {
+            scheduler.invalidate_read_cache_inode(ino);
+        }
         // bytes_written is from buffer.write() which returns amount written (limited by data.len())
         // data.len() is u32 from FUSE API, so bytes_written will fit in u32
         #[allow(clippy::cast_possible_truncation)]
@@ -2937,9 +3314,9 @@ impl Filesystem for CryptomatorFS {
             )
         }) {
             Ok((file_res, dir_res, sym_res)) => {
-                matches!(file_res, Ok(Some(_))) ||
-                    matches!(dir_res, Ok(Some(_))) ||
-                    matches!(sym_res, Ok(Some(_)))
+                matches!(file_res, Ok(Some(_)))
+                    || matches!(dir_res, Ok(Some(_)))
+                    || matches!(sym_res, Ok(Some(_)))
             }
             Err(_) => false, // On operation error, proceed and let vault handle it
         };
@@ -2956,8 +3333,10 @@ impl Filesystem for CryptomatorFS {
         let name_owned = name_str.to_string();
 
         // Create directory
-        match self.exec(async move { ops.create_directory(&parent_dir_id_clone, &name_owned).await })
-        {
+        match self.exec(async move {
+            ops.create_directory(&parent_dir_id_clone, &name_owned)
+                .await
+        }) {
             Ok(Ok(new_dir_id)) => {
                 // Allocate inode
                 let child_path = parent_path.join(name_str);
@@ -2971,7 +3350,9 @@ impl Filesystem for CryptomatorFS {
                 // DEBUG: Track inode allocation and vault UUID
                 tracing::info!(
                     "mkdir: allocated inode={} with dir_id={} for path={}",
-                    inode, new_dir_id, child_path
+                    inode,
+                    new_dir_id,
+                    child_path
                 );
 
                 // Just created, so mtime = now is correct
@@ -3048,25 +3429,27 @@ impl Filesystem for CryptomatorFS {
 
         // Check if file has open handles - if so, defer deletion
         if let Some(ino) = child_inode
-            && self.open_handle_tracker.has_open_handles(ino) {
-                // POSIX: unlink removes directory entry immediately but defers file deletion
-                self.open_handle_tracker
-                    .mark_for_deletion(ino, dir_id.clone(), name_str.to_string());
-                // Invalidate directory cache (file disappears from directory listings)
-                // but KEEP the inode path mapping so lookup can find it and return ENOENT
-                self.dir_cache.invalidate(parent);
+            && self.open_handle_tracker.has_open_handles(ino)
+        {
+            // POSIX: unlink removes directory entry immediately but defers file deletion
+            self.open_handle_tracker
+                .mark_for_deletion(ino, dir_id.clone(), name_str.to_string());
+            // Invalidate directory cache (file disappears from directory listings)
+            // but KEEP the inode path mapping so lookup can find it and return ENOENT
+            self.dir_cache.invalidate(parent);
 
-                // Notify kernel to invalidate its dcache entry for this file
-                // This forces the kernel to call lookup() again, which will return ENOENT
-                if let Some(notifier) = self.notifier.get()
-                    && let Err(e) = notifier.inval_entry(parent, name) {
-                        trace!("Failed to notify kernel of deferred deletion: {}", e);
-                    }
-
-                self.vault_stats.record_metadata_latency(start.elapsed());
-                reply.ok();
-                return;
+            // Notify kernel to invalidate its dcache entry for this file
+            // This forces the kernel to call lookup() again, which will return ENOENT
+            if let Some(notifier) = self.notifier.get()
+                && let Err(e) = notifier.inval_entry(parent, name)
+            {
+                trace!("Failed to notify kernel of deferred deletion: {}", e);
             }
+
+            self.vault_stats.record_metadata_latency(start.elapsed());
+            reply.ok();
+            return;
+        }
 
         let ops = self.ops_clone();
         let dir_id_file = dir_id.clone();
@@ -3085,9 +3468,10 @@ impl Filesystem for CryptomatorFS {
                 if let Some(notifier) = self.notifier.get() {
                     // Use child_inode if available, otherwise skip notification
                     if let Some(ino) = child_inode
-                        && let Err(e) = notifier.delete(parent, ino, name) {
-                            trace!("Failed to notify kernel of deletion (file): {}", e);
-                        }
+                        && let Err(e) = notifier.delete(parent, ino, name)
+                    {
+                        trace!("Failed to notify kernel of deletion (file): {}", e);
+                    }
                 }
 
                 reply.ok();
@@ -3098,7 +3482,8 @@ impl Filesystem for CryptomatorFS {
                 let dir_id_symlink = dir_id.clone();
                 let name_symlink = name_str.to_string();
 
-                match self.exec(async move { ops.delete_symlink(&dir_id_symlink, &name_symlink).await })
+                match self
+                    .exec(async move { ops.delete_symlink(&dir_id_symlink, &name_symlink).await })
                 {
                     Ok(Ok(())) => {
                         self.inodes.invalidate_path(&child_path);
@@ -3109,9 +3494,10 @@ impl Filesystem for CryptomatorFS {
                         if let Some(notifier) = self.notifier.get() {
                             // Use child_inode if available, otherwise skip notification
                             if let Some(ino) = child_inode
-                                && let Err(e) = notifier.delete(parent, ino, name) {
-                                    trace!("Failed to notify kernel of deletion (symlink): {}", e);
-                                }
+                                && let Err(e) = notifier.delete(parent, ino, name)
+                            {
+                                trace!("Failed to notify kernel of deletion (symlink): {}", e);
+                            }
                         }
 
                         reply.ok();
@@ -3187,9 +3573,9 @@ impl Filesystem for CryptomatorFS {
             let parent_dir_id_clone = parent_dir_id.clone();
             let name_owned = name_str.to_string();
 
-            let target_dir_id = match self.exec(async move {
-                ops.find_directory(&parent_dir_id_clone, &name_owned).await
-            }) {
+            let target_dir_id = match self
+                .exec(async move { ops.find_directory(&parent_dir_id_clone, &name_owned).await })
+            {
                 Ok(Ok(Some(dir_info))) => dir_info.directory_id,
                 Ok(Ok(None)) => {
                     self.vault_stats.record_error();
@@ -3215,9 +3601,9 @@ impl Filesystem for CryptomatorFS {
             let ops = self.ops_clone();
             let target_dir_id_clone = target_dir_id.clone();
 
-            let files_to_delete: Vec<String> = match self.exec(async move {
-                ops.list_files(&target_dir_id_clone).await
-            }) {
+            let files_to_delete: Vec<String> = match self
+                .exec(async move { ops.list_files(&target_dir_id_clone).await })
+            {
                 Ok(Ok(files)) => files
                     .into_iter()
                     .filter(|f| f.name.starts_with("._") || f.name == ".DS_Store")
@@ -3242,7 +3628,8 @@ impl Filesystem for CryptomatorFS {
                 let file_name_clone = file_name.clone();
 
                 match self.exec(async move {
-                    ops.delete_file(&target_dir_id_clone, &file_name_clone).await
+                    ops.delete_file(&target_dir_id_clone, &file_name_clone)
+                        .await
                 }) {
                     Ok(Ok(())) => {
                         trace!(file = %file_name, "Deleted AppleDouble file before rmdir");
@@ -3264,7 +3651,8 @@ impl Filesystem for CryptomatorFS {
 
         // Delete directory
         match self.exec(async move {
-            ops.delete_directory(&parent_dir_id_clone, &name_owned).await
+            ops.delete_directory(&parent_dir_id_clone, &name_owned)
+                .await
         }) {
             Ok(Ok(())) => {
                 // Invalidate caches
@@ -3275,14 +3663,15 @@ impl Filesystem for CryptomatorFS {
 
                 // DEBUG: Track inode invalidation
                 if let Some(ino) = child_inode
-                    && let Some(entry) = self.inodes.get(ino) {
-                        tracing::info!(
-                            "rmdir: invalidating inode={} with dir_id={:?} for path={}",
-                            ino,
-                            entry.dir_id(),
-                            child_path
-                        );
-                    }
+                    && let Some(entry) = self.inodes.get(ino)
+                {
+                    tracing::info!(
+                        "rmdir: invalidating inode={} with dir_id={:?} for path={}",
+                        ino,
+                        entry.dir_id(),
+                        child_path
+                    );
+                }
 
                 self.inodes.invalidate_path(&child_path);
                 self.dir_cache.invalidate(parent);
@@ -3292,9 +3681,10 @@ impl Filesystem for CryptomatorFS {
                 // This prevents kernel from caching stale inode numbers across iterations
                 if let Some(notifier) = self.notifier.get()
                     && let Some(ino) = child_inode
-                        && let Err(e) = notifier.delete(parent, ino, name) {
-                            trace!("Failed to notify kernel of directory deletion: {}", e);
-                        }
+                    && let Err(e) = notifier.delete(parent, ino, name)
+                {
+                    trace!("Failed to notify kernel of directory deletion: {}", e);
+                }
 
                 reply.ok();
             }
@@ -3329,7 +3719,12 @@ impl Filesystem for CryptomatorFS {
             return;
         };
 
-        trace!(parent = parent, name = name_str, target = target_str, "symlink");
+        trace!(
+            parent = parent,
+            name = name_str,
+            target = target_str,
+            "symlink"
+        );
 
         // Get parent directory
         let Some(parent_entry) = self.inodes.get(parent) else {
@@ -3350,7 +3745,9 @@ impl Filesystem for CryptomatorFS {
         // DEBUG: Track parent lookup and vault UUID extraction
         tracing::info!(
             "symlink: parent inode={} found, dir_id={}, path={}",
-            parent, dir_id, parent_entry.path
+            parent,
+            dir_id,
+            parent_entry.path
         );
 
         let parent_path = parent_entry.path.clone();
@@ -3376,9 +3773,9 @@ impl Filesystem for CryptomatorFS {
             )
         }) {
             Ok((file_res, dir_res, sym_res)) => {
-                matches!(file_res, Ok(Some(_))) ||
-                matches!(dir_res, Ok(Some(_))) ||
-                matches!(sym_res, Ok(Some(_)))
+                matches!(file_res, Ok(Some(_)))
+                    || matches!(dir_res, Ok(Some(_)))
+                    || matches!(sym_res, Ok(Some(_)))
             }
             Err(_) => false, // On operation error, proceed and let vault handle it
         };
@@ -3676,7 +4073,8 @@ impl Filesystem for CryptomatorFS {
                 match result {
                     Ok(Ok(())) => {
                         // Update inode mappings - swap the paths
-                        self.inodes.swap_paths(src_inode, dest_inode, &src_path, &dest_path);
+                        self.inodes
+                            .swap_paths(src_inode, dest_inode, &src_path, &dest_path);
 
                         // Also swap the InodeKind entries - each inode now has the other's name/location
                         // src_inode was at (src_dir_id, name_str), now at (dest_dir_id, newname_str)
@@ -3754,68 +4152,68 @@ impl Filesystem for CryptomatorFS {
                 let dest_dir_id_file = dest_dir_id.clone();
                 let newname_file = newname_str.to_string();
 
-                let target_exists =
-                    match self.exec(async move { ops_file.find_file(&dest_dir_id_file, &newname_file).await })
-                    {
-                        Ok(Ok(Some(_))) => true,
-                        Ok(Ok(None)) => {
-                            let ops_dir = self.ops_clone();
-                            let dest_dir_id_dir = dest_dir_id.clone();
-                            let newname_dir = newname_str.to_string();
-                            match self.exec(async move {
-                                ops_dir.find_directory(&dest_dir_id_dir, &newname_dir).await
-                            }) {
-                                Ok(Ok(Some(_))) => true,
-                                Ok(Ok(None)) => {
-                                    let ops_sym = self.ops_clone();
-                                    let dest_dir_id_sym = dest_dir_id.clone();
-                                    let newname_sym = newname_str.to_string();
-                                    match self.exec(async move {
-                                        ops_sym.find_symlink(&dest_dir_id_sym, &newname_sym).await
-                                    }) {
-                                        Ok(Ok(Some(_))) => true,
-                                        Ok(Ok(None)) => false,
-                                        Ok(Err(e)) => {
-                                            self.vault_stats.record_error();
-                                            self.vault_stats.record_metadata_latency(start.elapsed());
-                                            reply.error(e.to_errno());
-                                            return;
-                                        }
-                                        Err(exec_err) => {
-                                            self.vault_stats.record_error();
-                                            self.vault_stats.record_metadata_latency(start.elapsed());
-                                            reply.error(exec_err.to_errno());
-                                            return;
-                                        }
+                let target_exists = match self
+                    .exec(async move { ops_file.find_file(&dest_dir_id_file, &newname_file).await })
+                {
+                    Ok(Ok(Some(_))) => true,
+                    Ok(Ok(None)) => {
+                        let ops_dir = self.ops_clone();
+                        let dest_dir_id_dir = dest_dir_id.clone();
+                        let newname_dir = newname_str.to_string();
+                        match self.exec(async move {
+                            ops_dir.find_directory(&dest_dir_id_dir, &newname_dir).await
+                        }) {
+                            Ok(Ok(Some(_))) => true,
+                            Ok(Ok(None)) => {
+                                let ops_sym = self.ops_clone();
+                                let dest_dir_id_sym = dest_dir_id.clone();
+                                let newname_sym = newname_str.to_string();
+                                match self.exec(async move {
+                                    ops_sym.find_symlink(&dest_dir_id_sym, &newname_sym).await
+                                }) {
+                                    Ok(Ok(Some(_))) => true,
+                                    Ok(Ok(None)) => false,
+                                    Ok(Err(e)) => {
+                                        self.vault_stats.record_error();
+                                        self.vault_stats.record_metadata_latency(start.elapsed());
+                                        reply.error(e.to_errno());
+                                        return;
+                                    }
+                                    Err(exec_err) => {
+                                        self.vault_stats.record_error();
+                                        self.vault_stats.record_metadata_latency(start.elapsed());
+                                        reply.error(exec_err.to_errno());
+                                        return;
                                     }
                                 }
-                                Ok(Err(e)) => {
-                                    self.vault_stats.record_error();
-                                    self.vault_stats.record_metadata_latency(start.elapsed());
-                                    reply.error(e.to_errno());
-                                    return;
-                                }
-                                Err(exec_err) => {
-                                    self.vault_stats.record_error();
-                                    self.vault_stats.record_metadata_latency(start.elapsed());
-                                    reply.error(exec_err.to_errno());
-                                    return;
-                                }
+                            }
+                            Ok(Err(e)) => {
+                                self.vault_stats.record_error();
+                                self.vault_stats.record_metadata_latency(start.elapsed());
+                                reply.error(e.to_errno());
+                                return;
+                            }
+                            Err(exec_err) => {
+                                self.vault_stats.record_error();
+                                self.vault_stats.record_metadata_latency(start.elapsed());
+                                reply.error(exec_err.to_errno());
+                                return;
                             }
                         }
-                        Ok(Err(e)) => {
-                            self.vault_stats.record_error();
-                            self.vault_stats.record_metadata_latency(start.elapsed());
-                            reply.error(e.to_errno());
-                            return;
-                        }
-                        Err(exec_err) => {
-                            self.vault_stats.record_error();
-                            self.vault_stats.record_metadata_latency(start.elapsed());
-                            reply.error(exec_err.to_errno());
-                            return;
-                        }
-                    };
+                    }
+                    Ok(Err(e)) => {
+                        self.vault_stats.record_error();
+                        self.vault_stats.record_metadata_latency(start.elapsed());
+                        reply.error(e.to_errno());
+                        return;
+                    }
+                    Err(exec_err) => {
+                        self.vault_stats.record_error();
+                        self.vault_stats.record_metadata_latency(start.elapsed());
+                        reply.error(exec_err.to_errno());
+                        return;
+                    }
+                };
 
                 if target_exists {
                     self.vault_stats.record_error();
@@ -3862,22 +4260,23 @@ impl Filesystem for CryptomatorFS {
                 let ops_f = self.ops_clone();
                 let src_dir_f = src_dir_id.clone();
                 let name_f = name_str.to_string();
-                let is_file = match self.exec(async move { ops_f.find_file(&src_dir_f, &name_f).await }) {
-                    Ok(Ok(Some(_))) => true,
-                    Ok(Ok(None)) => false,
-                    Ok(Err(e)) => {
-                        self.vault_stats.record_error();
-                        self.vault_stats.record_metadata_latency(start.elapsed());
-                        reply.error(e.to_errno());
-                        return;
-                    }
-                    Err(exec_err) => {
-                        self.vault_stats.record_error();
-                        self.vault_stats.record_metadata_latency(start.elapsed());
-                        reply.error(exec_err.to_errno());
-                        return;
-                    }
-                };
+                let is_file =
+                    match self.exec(async move { ops_f.find_file(&src_dir_f, &name_f).await }) {
+                        Ok(Ok(Some(_))) => true,
+                        Ok(Ok(None)) => false,
+                        Ok(Err(e)) => {
+                            self.vault_stats.record_error();
+                            self.vault_stats.record_metadata_latency(start.elapsed());
+                            reply.error(e.to_errno());
+                            return;
+                        }
+                        Err(exec_err) => {
+                            self.vault_stats.record_error();
+                            self.vault_stats.record_metadata_latency(start.elapsed());
+                            reply.error(exec_err.to_errno());
+                            return;
+                        }
+                    };
 
                 if is_file {
                     SourceType::File
@@ -3886,7 +4285,9 @@ impl Filesystem for CryptomatorFS {
                     let ops_d = self.ops_clone();
                     let src_dir_d = src_dir_id.clone();
                     let name_d = name_str.to_string();
-                    let is_dir = match self.exec(async move { ops_d.find_directory(&src_dir_d, &name_d).await }) {
+                    let is_dir = match self
+                        .exec(async move { ops_d.find_directory(&src_dir_d, &name_d).await })
+                    {
                         Ok(Ok(Some(_))) => true,
                         Ok(Ok(None)) => false,
                         Ok(Err(e)) => {
@@ -3910,7 +4311,9 @@ impl Filesystem for CryptomatorFS {
                         let ops_s = self.ops_clone();
                         let src_dir_s = src_dir_id.clone();
                         let name_s = name_str.to_string();
-                        let is_sym = match self.exec(async move { ops_s.find_symlink(&src_dir_s, &name_s).await }) {
+                        let is_sym = match self
+                            .exec(async move { ops_s.find_symlink(&src_dir_s, &name_s).await })
+                        {
                             Ok(Ok(Some(_))) => true,
                             Ok(Ok(None)) => false,
                             Ok(Err(e)) => {
@@ -3955,22 +4358,23 @@ impl Filesystem for CryptomatorFS {
             let ops_df = self.ops_clone();
             let dest_dir_df = dest_dir_id.clone();
             let newname_df = newname_str.to_string();
-            let dest_file_exists = match self.exec(async move { ops_df.find_file(&dest_dir_df, &newname_df).await }) {
-                Ok(Ok(Some(_))) => true,
-                Ok(Ok(None)) => false,
-                Ok(Err(e)) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    reply.error(e.to_errno());
-                    return;
-                }
-                Err(exec_err) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    reply.error(exec_err.to_errno());
-                    return;
-                }
-            };
+            let dest_file_exists =
+                match self.exec(async move { ops_df.find_file(&dest_dir_df, &newname_df).await }) {
+                    Ok(Ok(Some(_))) => true,
+                    Ok(Ok(None)) => false,
+                    Ok(Err(e)) => {
+                        self.vault_stats.record_error();
+                        self.vault_stats.record_metadata_latency(start.elapsed());
+                        reply.error(e.to_errno());
+                        return;
+                    }
+                    Err(exec_err) => {
+                        self.vault_stats.record_error();
+                        self.vault_stats.record_metadata_latency(start.elapsed());
+                        reply.error(exec_err.to_errno());
+                        return;
+                    }
+                };
 
             // Check if destination exists as directory
             // Note: find_directory may return an error if the entry exists but is not a directory
@@ -3978,7 +4382,9 @@ impl Filesystem for CryptomatorFS {
             let ops_dd = self.ops_clone();
             let dest_dir_dd = dest_dir_id.clone();
             let newname_dd = newname_str.to_string();
-            let dest_dir_exists = match self.exec(async move { ops_dd.find_directory(&dest_dir_dd, &newname_dd).await }) {
+            let dest_dir_exists = match self
+                .exec(async move { ops_dd.find_directory(&dest_dir_dd, &newname_dd).await })
+            {
                 Ok(Ok(Some(_))) => true,
                 Ok(Ok(None)) => false,
                 Ok(Err(e)) => {
@@ -4008,7 +4414,9 @@ impl Filesystem for CryptomatorFS {
             let ops_ds = self.ops_clone();
             let dest_dir_ds = dest_dir_id.clone();
             let newname_ds = newname_str.to_string();
-            let dest_sym_exists = match self.exec(async move { ops_ds.find_symlink(&dest_dir_ds, &newname_ds).await }) {
+            let dest_sym_exists = match self
+                .exec(async move { ops_ds.find_symlink(&dest_dir_ds, &newname_ds).await })
+            {
                 Ok(Ok(Some(_))) => true,
                 Ok(Ok(None)) => false,
                 Ok(Err(e)) => {
@@ -4040,7 +4448,9 @@ impl Filesystem for CryptomatorFS {
                         let ops_del = self.ops_clone();
                         let dest_dir_del = dest_dir_id.clone();
                         let newname_del = newname_str.to_string();
-                        match self.exec(async move { ops_del.delete_directory(&dest_dir_del, &newname_del).await }) {
+                        match self.exec(async move {
+                            ops_del.delete_directory(&dest_dir_del, &newname_del).await
+                        }) {
                             Ok(Ok(())) => { /* deleted successfully */ }
                             Ok(Err(e)) => {
                                 // If deletion failed (e.g., not empty), return error
@@ -4078,7 +4488,9 @@ impl Filesystem for CryptomatorFS {
                         let ops_del = self.ops_clone();
                         let dest_dir_del = dest_dir_id.clone();
                         let newname_del = newname_str.to_string();
-                        match self.exec(async move { ops_del.delete_file(&dest_dir_del, &newname_del).await }) {
+                        match self.exec(async move {
+                            ops_del.delete_file(&dest_dir_del, &newname_del).await
+                        }) {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
                                 self.vault_stats.record_error();
@@ -4113,7 +4525,9 @@ impl Filesystem for CryptomatorFS {
                 let ops_del = self.ops_clone();
                 let dest_dir_del = dest_dir_id.clone();
                 let newname_del = newname_str.to_string();
-                match self.exec(async move { ops_del.delete_symlink(&dest_dir_del, &newname_del).await }) {
+                match self
+                    .exec(async move { ops_del.delete_symlink(&dest_dir_del, &newname_del).await })
+                {
                     Ok(Ok(())) => { /* deleted successfully */ }
                     Ok(Err(e)) => {
                         self.vault_stats.record_error();
@@ -4147,7 +4561,9 @@ impl Filesystem for CryptomatorFS {
                 if parent == newparent {
                     let ops = self.ops_clone();
                     let dir = src_dir_id.clone();
-                    self.exec(async move { ops.rename_file(&dir, &name_owned, &newname_owned).await })
+                    self.exec(
+                        async move { ops.rename_file(&dir, &name_owned, &newname_owned).await },
+                    )
                 } else if name_str == newname_str {
                     let ops = self.ops_clone();
                     let src = src_dir_id.clone();
@@ -4157,7 +4573,10 @@ impl Filesystem for CryptomatorFS {
                     let ops = self.ops_clone();
                     let src = src_dir_id.clone();
                     let dest = dest_dir_id.clone();
-                    self.exec(async move { ops.move_and_rename_file(&src, &name_owned, &dest, &newname_owned).await })
+                    self.exec(async move {
+                        ops.move_and_rename_file(&src, &name_owned, &dest, &newname_owned)
+                            .await
+                    })
                 }
             }
             SourceType::Directory => {
@@ -4165,14 +4584,20 @@ impl Filesystem for CryptomatorFS {
                 let ops = self.ops_clone();
                 let src = src_dir_id.clone();
                 let dest = dest_dir_id.clone();
-                self.exec(async move { ops.move_and_rename_directory(&src, &name_owned, &dest, &newname_owned).await })
+                self.exec(async move {
+                    ops.move_and_rename_directory(&src, &name_owned, &dest, &newname_owned)
+                        .await
+                })
             }
             SourceType::Symlink => {
                 // Use symlink rename operations
                 let ops = self.ops_clone();
                 let src = src_dir_id.clone();
                 let dest = dest_dir_id.clone();
-                self.exec(async move { ops.move_and_rename_symlink(&src, &name_owned, &dest, &newname_owned).await })
+                self.exec(async move {
+                    ops.move_and_rename_symlink(&src, &name_owned, &dest, &newname_owned)
+                        .await
+                })
             }
         };
 
@@ -4299,19 +4724,23 @@ impl Filesystem for CryptomatorFS {
 
         // If we have an open file handle, extend the buffer
         if let Some(mut handle) = self.handle_table.get_mut(&fh)
-            && let Some(buffer) = handle.as_write_buffer_mut() {
-                // Only extend, don't shrink
-                if new_size > buffer.len() {
-                    buffer.truncate(new_size);
-                    // Track buffer size for mmap consistency
-                    self.update_buffer_size(ino, new_size);
-                }
-                drop(handle);
-
-                self.attr_cache.invalidate(ino);
-                reply.ok();
-                return;
+            && let Some(buffer) = handle.as_write_buffer_mut()
+        {
+            // Only extend, don't shrink
+            if new_size > buffer.len() {
+                buffer.truncate(new_size);
+                // Track buffer size for mmap consistency
+                self.update_buffer_size(ino, new_size);
             }
+            drop(handle);
+
+            self.attr_cache.invalidate(ino);
+            if let Some(ref scheduler) = self.scheduler {
+                scheduler.invalidate_read_cache_inode(ino);
+            }
+            reply.ok();
+            return;
+        }
 
         // No open handle - read file, extend if needed, write back
         let ops = self.ops_clone();
@@ -4337,11 +4766,14 @@ impl Filesystem for CryptomatorFS {
             let dir_id_write = dir_id.clone();
             let name_write = name.clone();
 
-            match self.exec(async move {
-                ops.write_file(&dir_id_write, &name_write, &content).await
-            }) {
+            match self
+                .exec(async move { ops.write_file(&dir_id_write, &name_write, &content).await })
+            {
                 Ok(Ok(_)) => {
                     self.attr_cache.invalidate(ino);
+                    if let Some(ref scheduler) = self.scheduler {
+                        scheduler.invalidate_read_cache_inode(ino);
+                    }
                     reply.ok();
                 }
                 Ok(Err(e)) => {
@@ -4399,10 +4831,7 @@ impl Filesystem for CryptomatorFS {
                 drop(handle_in);
 
                 // Enqueue to scheduler - it will read, write to dest, and reply
-                let scheduler = self
-                    .scheduler
-                    .as_ref()
-                    .expect("scheduler not initialized");
+                let scheduler = self.scheduler.as_ref().expect("scheduler not initialized");
 
                 // FUSE guarantees offsets are non-negative
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -4436,7 +4865,6 @@ impl Filesystem for CryptomatorFS {
                     }
                     Err(e) => {
                         // Enqueue failed - scheduler already replied with error.
-                        // The reader is consumed, handle remains in ReaderLoaned state.
                         warn!(
                             error = %e,
                             fh_in,
@@ -4449,7 +4877,10 @@ impl Filesystem for CryptomatorFS {
             }
             FuseHandle::ReaderLoaned => {
                 // Reader is busy with async operation - return EAGAIN
-                trace!(fh_in, "copy_file_range while reader is loaned, returning EAGAIN");
+                trace!(
+                    fh_in,
+                    "copy_file_range while reader is loaned, returning EAGAIN"
+                );
                 reply.error(libc::EAGAIN);
                 return;
             }
@@ -4489,7 +4920,13 @@ impl Filesystem for CryptomatorFS {
         whence: i32,
         reply: ReplyLseek,
     ) {
-        trace!(inode = ino, fh = fh, offset = offset, whence = whence, "lseek");
+        trace!(
+            inode = ino,
+            fh = fh,
+            offset = offset,
+            whence = whence,
+            "lseek"
+        );
 
         // Get file size for SEEK_END calculations
         let file_size = {

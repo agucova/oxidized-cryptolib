@@ -69,18 +69,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    let filter = if cli.debug {
-        "debug"
-    } else {
-        "info"
-    };
+    let filter = if cli.debug { "debug" } else { "info" };
 
     // When tokio-console is enabled, we need to run with an async runtime
     // so that the filesystem uses the instrumented runtime for visibility.
     #[cfg(feature = "tokio-console")]
     {
-        use tracing_subscriber::Layer;
         use std::net::SocketAddr;
+        use tracing_subscriber::Layer;
 
         // Build the multi-threaded runtime FIRST, before setting up tracing
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -109,7 +105,10 @@ fn main() -> Result<()> {
                 .with(console_layer)
                 .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
                 .init();
-            info!("tokio-console enabled, connect with: tokio-console http://127.0.0.1:{}", console_port);
+            info!(
+                "tokio-console enabled, connect with: tokio-console http://127.0.0.1:{}",
+                console_port
+            );
         } else {
             tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
@@ -235,8 +234,7 @@ fn get_password(cli: &Cli) -> Result<Zeroizing<String>> {
         Ok(Zeroizing::new(pwd))
     } else {
         Ok(Zeroizing::new(
-            rpassword::prompt_password("Vault password: ")
-                .context("Failed to read password")?,
+            rpassword::prompt_password("Vault password: ").context("Failed to read password")?,
         ))
     }
 }
@@ -246,7 +244,8 @@ fn mount_and_wait(cli: &Cli, fs: CryptomatorFS) -> Result<()> {
     // Derive vault name from path for display
     let vault_name = cli
         .vault
-        .file_name().map_or_else(|| "Vault".to_string(), |n| n.to_string_lossy().to_string());
+        .file_name()
+        .map_or_else(|| "Vault".to_string(), |n| n.to_string_lossy().to_string());
 
     // Mount options
     let mut options = vec![

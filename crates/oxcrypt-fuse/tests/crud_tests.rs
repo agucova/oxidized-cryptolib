@@ -62,7 +62,9 @@ fn test_write_read_exactly_one_chunk() {
     let content = one_chunk_content();
     assert_eq!(content.len(), CHUNK_SIZE);
 
-    mount.write("one_chunk.bin", &content).expect("write failed");
+    mount
+        .write("one_chunk.bin", &content)
+        .expect("write failed");
 
     assert_file_content(&mount, "one_chunk.bin", &content);
     assert_file_size(&mount, "one_chunk.bin", CHUNK_SIZE as u64);
@@ -106,7 +108,9 @@ fn test_write_read_multi_chunk() {
     let content = multi_chunk_content(3);
     assert_eq!(content.len(), 3 * CHUNK_SIZE);
 
-    mount.write("multi_chunk.bin", &content).expect("write failed");
+    mount
+        .write("multi_chunk.bin", &content)
+        .expect("write failed");
 
     assert_file_content(&mount, "multi_chunk.bin", &content);
     assert_file_size(&mount, "multi_chunk.bin", (3 * CHUNK_SIZE) as u64);
@@ -137,7 +141,9 @@ fn test_write_read_patterned_chunks() {
     let content = patterned_chunks(4);
     assert_eq!(content.len(), 4 * CHUNK_SIZE);
 
-    mount.write("patterned.bin", &content).expect("write failed");
+    mount
+        .write("patterned.bin", &content)
+        .expect("write failed");
 
     let read_content = mount.read("patterned.bin").expect("read failed");
     assert_eq!(read_content.len(), content.len());
@@ -168,10 +174,14 @@ fn test_overwrite_same_size() {
     let content2 = b"Replaced content xxxx";
     assert_eq!(content1.len(), content2.len());
 
-    mount.write("overwrite.txt", content1).expect("write 1 failed");
+    mount
+        .write("overwrite.txt", content1)
+        .expect("write 1 failed");
     assert_file_content(&mount, "overwrite.txt", content1);
 
-    mount.write("overwrite.txt", content2).expect("write 2 failed");
+    mount
+        .write("overwrite.txt", content2)
+        .expect("write 2 failed");
     assert_file_content(&mount, "overwrite.txt", content2);
 }
 
@@ -215,18 +225,24 @@ fn test_overwrite_chunk_boundary_transition() {
 
     // Start with content below chunk boundary
     let content1 = random_bytes(CHUNK_SIZE - 100);
-    mount.write("transition.bin", &content1).expect("write 1 failed");
+    mount
+        .write("transition.bin", &content1)
+        .expect("write 1 failed");
     assert_file_size(&mount, "transition.bin", (CHUNK_SIZE - 100) as u64);
 
     // Grow to above chunk boundary (triggers second chunk)
     let content2 = random_bytes(CHUNK_SIZE + 100);
-    mount.write("transition.bin", &content2).expect("write 2 failed");
+    mount
+        .write("transition.bin", &content2)
+        .expect("write 2 failed");
     assert_file_content(&mount, "transition.bin", &content2);
     assert_file_size(&mount, "transition.bin", (CHUNK_SIZE + 100) as u64);
 
     // Shrink back below chunk boundary
     let content3 = random_bytes(CHUNK_SIZE - 100);
-    mount.write("transition.bin", &content3).expect("write 3 failed");
+    mount
+        .write("transition.bin", &content3)
+        .expect("write 3 failed");
     assert_file_content(&mount, "transition.bin", &content3);
     assert_file_size(&mount, "transition.bin", (CHUNK_SIZE - 100) as u64);
 }
@@ -240,7 +256,9 @@ fn test_delete_file() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("to_delete.txt", b"content").expect("write failed");
+    mount
+        .write("to_delete.txt", b"content")
+        .expect("write failed");
     assert_exists(&mount, "to_delete.txt");
 
     mount.remove("to_delete.txt").expect("delete failed");
@@ -265,7 +283,9 @@ fn test_delete_directory_with_contents() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("dir_with_stuff").expect("mkdir failed");
-    mount.write("dir_with_stuff/file.txt", b"content").expect("write failed");
+    mount
+        .write("dir_with_stuff/file.txt", b"content")
+        .expect("write failed");
 
     // rmdir_all should work
     mount.rmdir_all("dir_with_stuff").expect("rmdir_all failed");
@@ -304,7 +324,9 @@ fn test_file_in_subdirectory() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     mount.mkdir("subdir").expect("mkdir failed");
-    mount.write("subdir/file.txt", b"content").expect("write failed");
+    mount
+        .write("subdir/file.txt", b"content")
+        .expect("write failed");
 
     assert_file_content(&mount, "subdir/file.txt", b"content");
     assert_dir_contains(&mount, "subdir", &["file.txt"]);
@@ -319,7 +341,9 @@ fn test_truncate_to_zero() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("truncate.txt", b"some content here").expect("write failed");
+    mount
+        .write("truncate.txt", b"some content here")
+        .expect("write failed");
     mount.truncate("truncate.txt", 0).expect("truncate failed");
 
     assert_file_size(&mount, "truncate.txt", 0);
@@ -352,7 +376,10 @@ fn test_truncate_extend() {
     // Extended bytes should be zero
     let content = mount.read("truncate.txt").expect("read failed");
     assert_eq!(&content[0..2], b"Hi");
-    assert!(content[2..].iter().all(|&b| b == 0), "Extended bytes should be zero");
+    assert!(
+        content[2..].iter().all(|&b| b == 0),
+        "Extended bytes should be zero"
+    );
 }
 
 #[test]
@@ -367,7 +394,9 @@ fn test_truncate_across_chunk_boundary() {
 
     // Truncate to 1.5 chunks
     let new_size = CHUNK_SIZE + CHUNK_SIZE / 2;
-    mount.truncate("truncate.bin", new_size as u64).expect("truncate failed");
+    mount
+        .truncate("truncate.bin", new_size as u64)
+        .expect("truncate failed");
     assert_file_size(&mount, "truncate.bin", new_size as u64);
 
     // Verify content preserved up to truncation point

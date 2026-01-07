@@ -26,8 +26,8 @@ use lru::LruCache;
 use aead::Payload;
 use aes::cipher::{KeyIvInit, StreamCipher};
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, KeyInit},
 };
 use rand::RngCore;
 use ring::hmac;
@@ -39,10 +39,10 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard};
 use tracing::{debug, instrument, trace, warn};
 use zeroize::Zeroizing;
 
-use crate::crypto::keys::MasterKey;
-use crate::vault::config::CipherCombo;
 use super::file::{FileContext, FileDecryptionError, FileEncryptionError};
 use super::file_ctrmac;
+use crate::crypto::keys::MasterKey;
+use crate::vault::config::CipherCombo;
 
 /// AES-256-CTR with big-endian 128-bit counter (for CTRMAC)
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
@@ -144,10 +144,17 @@ pub fn encrypted_to_plaintext_size(encrypted_size: u64) -> Option<u64> {
 /// Calculate plaintext file size from encrypted file size with cipher combo.
 ///
 /// Returns `None` if the encrypted size is too small to be valid.
-pub fn encrypted_to_plaintext_size_for_cipher(encrypted_size: u64, cipher_combo: CipherCombo) -> Option<u64> {
+pub fn encrypted_to_plaintext_size_for_cipher(
+    encrypted_size: u64,
+    cipher_combo: CipherCombo,
+) -> Option<u64> {
     let (header_size, chunk_size, chunk_overhead) = match cipher_combo {
         CipherCombo::SivGcm => (HEADER_SIZE, CHUNK_ENCRYPTED_SIZE, CHUNK_OVERHEAD),
-        CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_CHUNK_ENCRYPTED_SIZE, CTRMAC_CHUNK_OVERHEAD),
+        CipherCombo::SivCtrMac => (
+            CTRMAC_HEADER_SIZE,
+            CTRMAC_CHUNK_ENCRYPTED_SIZE,
+            CTRMAC_CHUNK_OVERHEAD,
+        ),
     };
 
     if encrypted_size < header_size as u64 {
@@ -187,7 +194,10 @@ pub fn encrypted_to_plaintext_size_or_zero(encrypted_size: u64) -> u64 {
 }
 
 /// Calculate plaintext file size with cipher combo, returning 0 for edge cases.
-pub fn encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size: u64, cipher_combo: CipherCombo) -> u64 {
+pub fn encrypted_to_plaintext_size_or_zero_for_cipher(
+    encrypted_size: u64,
+    cipher_combo: CipherCombo,
+) -> u64 {
     let (header_size, chunk_overhead) = match cipher_combo {
         CipherCombo::SivGcm => (HEADER_SIZE, CHUNK_OVERHEAD),
         CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_CHUNK_OVERHEAD),
@@ -334,6 +344,163 @@ impl StreamingError {
 }
 
 // ============================================================================
+// Chunk Decryption Logic (Shared)
+// ============================================================================
+
+/// Handles decryption of individual file chunks.
+///
+/// Shared logic for both synchronous and asynchronous readers.
+#[derive(Debug)]
+struct ChunkDecryptor {
+    content_key: Zeroizing<[u8; 32]>,
+    header_nonce: Vec<u8>,
+    mac_key: Option<Zeroizing<Vec<u8>>>,
+    cipher_combo: CipherCombo,
+    path: PathBuf,
+}
+
+impl ChunkDecryptor {
+    fn new(
+        content_key: Zeroizing<[u8; 32]>,
+        header_nonce: Vec<u8>,
+        mac_key: Option<Zeroizing<Vec<u8>>>,
+        cipher_combo: CipherCombo,
+        path: PathBuf,
+    ) -> Self {
+        Self {
+            content_key,
+            header_nonce,
+            mac_key,
+            cipher_combo,
+            path,
+        }
+    }
+
+    /// Decrypt a single chunk using the appropriate cipher algorithm.
+    fn decrypt_chunk(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
+        match self.cipher_combo {
+            CipherCombo::SivGcm => self.decrypt_chunk_gcm(chunk_num, encrypted),
+            CipherCombo::SivCtrMac => self.decrypt_chunk_ctrmac(chunk_num, encrypted),
+        }
+    }
+
+    /// Decrypt a single chunk using AES-GCM (SIV_GCM cipher combo).
+    fn decrypt_chunk_gcm(
+        &self,
+        chunk_num: u64,
+        encrypted: &[u8],
+    ) -> Result<Vec<u8>, StreamingError> {
+        let context = StreamingContext::new()
+            .with_path(&self.path)
+            .with_chunk(chunk_num)
+            .with_operation("decrypt_chunk_gcm");
+
+        let nonce = Nonce::from_slice(&encrypted[..CHUNK_NONCE_SIZE]);
+        let ciphertext = &encrypted[CHUNK_NONCE_SIZE..];
+
+        // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
+        let mut aad = [0u8; 8 + HEADER_NONCE_SIZE];
+        aad[..8].copy_from_slice(&chunk_num.to_be_bytes());
+        aad[8..].copy_from_slice(&self.header_nonce);
+
+        let key = Key::<Aes256Gcm>::from_slice(&*self.content_key);
+        let cipher = Aes256Gcm::new(key);
+
+        let payload = Payload {
+            msg: ciphertext,
+            aad: &aad,
+        };
+
+        cipher.decrypt(nonce, payload).map_err(|_| {
+            warn!(
+                chunk = chunk_num,
+                "Chunk decryption failed - authentication tag mismatch"
+            );
+            StreamingError::ChunkDecryptionFailed {
+                chunk_number: chunk_num,
+                context,
+            }
+        })
+    }
+
+    /// Decrypt a single chunk using AES-CTR + HMAC-SHA256 (SIV_CTRMAC cipher combo).
+    fn decrypt_chunk_ctrmac(
+        &self,
+        chunk_num: u64,
+        encrypted: &[u8],
+    ) -> Result<Vec<u8>, StreamingError> {
+        let context = StreamingContext::new()
+            .with_path(&self.path)
+            .with_chunk(chunk_num)
+            .with_operation("decrypt_chunk_ctrmac");
+
+        // Get MAC key (must be present for CTRMAC)
+        let mac_key = self.mac_key.as_ref().ok_or_else(|| {
+            warn!(
+                chunk = chunk_num,
+                "MAC key not available for CTRMAC decryption"
+            );
+            StreamingError::ChunkDecryptionFailed {
+                chunk_number: chunk_num,
+                context: context.clone(),
+            }
+        })?;
+
+        // Parse chunk: nonce (16) + ciphertext (variable) + MAC (32)
+        if encrypted.len() < CTRMAC_CHUNK_OVERHEAD {
+            return Err(StreamingError::IncompleteChunk {
+                chunk_number: chunk_num,
+                expected: CTRMAC_CHUNK_OVERHEAD,
+                actual: encrypted.len(),
+                context,
+            });
+        }
+
+        let chunk_nonce = &encrypted[..CTRMAC_CHUNK_NONCE_SIZE];
+        let ciphertext = &encrypted[CTRMAC_CHUNK_NONCE_SIZE..encrypted.len() - CTRMAC_MAC_SIZE];
+        let expected_mac = &encrypted[encrypted.len() - CTRMAC_MAC_SIZE..];
+
+        // Verify HMAC: MAC(header_nonce || chunk_number_be || chunk_nonce || ciphertext)
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
+        let mut mac_context = hmac::Context::with_key(&hmac_key);
+        mac_context.update(&self.header_nonce);
+        mac_context.update(&chunk_num.to_be_bytes());
+        mac_context.update(chunk_nonce);
+        mac_context.update(ciphertext);
+        let computed_mac = mac_context.sign();
+
+        // Constant-time comparison
+        if !bool::from(computed_mac.as_ref().ct_eq(expected_mac)) {
+            warn!(chunk = chunk_num, "Chunk HMAC verification failed");
+            return Err(StreamingError::ChunkDecryptionFailed {
+                chunk_number: chunk_num,
+                context,
+            });
+        }
+
+        // Decrypt with AES-CTR
+        let chunk_nonce_array: [u8; 16] =
+            chunk_nonce
+                .try_into()
+                .map_err(|_| StreamingError::ChunkDecryptionFailed {
+                    chunk_number: chunk_num,
+                    context: context.clone(),
+                })?;
+        let mut cipher = Aes256Ctr::new((&*self.content_key).into(), (&chunk_nonce_array).into());
+        let mut plaintext = ciphertext.to_vec();
+        cipher.apply_keystream(&mut plaintext);
+
+        trace!(
+            chunk = chunk_num,
+            decrypted_size = plaintext.len(),
+            "CTRMAC chunk decrypted successfully"
+        );
+
+        Ok(plaintext)
+    }
+}
+
+// ============================================================================
 // VaultFileReader
 // ============================================================================
 
@@ -375,19 +542,10 @@ impl StreamingError {
 pub struct VaultFileReader {
     /// Handle to the encrypted file
     file: File,
-    /// The decrypted content key from the file header
-    content_key: Zeroizing<[u8; 32]>,
-    /// Header nonce, used as part of chunk AAD (12 bytes for GCM, 16 bytes for CTRMAC)
-    header_nonce: Vec<u8>,
-    /// MAC key for CTRMAC cipher combo (stored as Zeroizing for security)
-    /// Only populated when cipher_combo is SivCtrMac
-    mac_key: Option<Zeroizing<Vec<u8>>>,
-    /// The cipher combo used for this file
-    cipher_combo: CipherCombo,
+    /// Shared chunk decryption logic
+    decryptor: ChunkDecryptor,
     /// Total plaintext size of the file
     plaintext_size: u64,
-    /// Path to the file (for error context)
-    path: PathBuf,
     /// LRU cache of recently-read chunks for random access patterns.
     /// Key: chunk number, Value: decrypted chunk data wrapped in Arc.
     /// Arc enables cache hits to return an 8-byte pointer clone instead of
@@ -407,8 +565,8 @@ impl std::fmt::Debug for VaultFileReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cached_chunks: Vec<_> = self.chunk_cache.iter().map(|(k, _)| *k).collect();
         f.debug_struct("VaultFileReader")
-            .field("path", &self.path)
-            .field("cipher_combo", &self.cipher_combo)
+            .field("path", &self.decryptor.path)
+            .field("cipher_combo", &self.decryptor.cipher_combo)
             .field("plaintext_size", &self.plaintext_size)
             .field("cached_chunks", &cached_chunks)
             .finish_non_exhaustive()
@@ -423,7 +581,10 @@ impl VaultFileReader {
     ///
     /// For SIV_CTRMAC vaults, use [`open_with_cipher`] instead.
     #[instrument(level = "debug", skip(master_key), fields(path = %path.as_ref().display()))]
-    pub async fn open(path: impl AsRef<Path>, master_key: &MasterKey) -> Result<Self, StreamingError> {
+    pub async fn open(
+        path: impl AsRef<Path>,
+        master_key: &MasterKey,
+    ) -> Result<Self, StreamingError> {
         Self::open_with_cipher(path, master_key, CipherCombo::SivGcm).await
     }
 
@@ -451,14 +612,15 @@ impl VaultFileReader {
 
         debug!(cipher_combo = ?cipher_combo, "Opening encrypted file for streaming read");
 
-        let mut file = File::open(path).await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
+        let mut file = File::open(path)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
 
         // Get file size
-        let metadata = file.metadata().await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
+        let metadata = file
+            .metadata()
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
         let encrypted_size = metadata.len();
 
         if encrypted_size < header_size as u64 {
@@ -474,9 +636,9 @@ impl VaultFileReader {
 
         // Read header (size depends on cipher combo)
         let mut header_bytes = vec![0u8; header_size];
-        file.read_exact(&mut header_bytes).await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
+        file.read_exact(&mut header_bytes)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
 
         // Extract header nonce (size depends on cipher combo)
         let header_nonce = header_bytes[..nonce_size].to_vec();
@@ -493,35 +655,29 @@ impl VaultFileReader {
                 (header.content_key, None)
             }
             CipherCombo::SivCtrMac => {
-                let header = file_ctrmac::decrypt_header(
-                    &header_bytes,
-                    master_key,
-                    &file_context,
-                ).map_err(|e| {
-                    warn!(error = %e, "CTRMAC header decryption failed");
-                    StreamingError::HeaderDecryption(
-                        FileDecryptionError::HeaderDecryption {
+                let header = file_ctrmac::decrypt_header(&header_bytes, master_key, &file_context)
+                    .map_err(|e| {
+                        warn!(error = %e, "CTRMAC header decryption failed");
+                        StreamingError::HeaderDecryption(FileDecryptionError::HeaderDecryption {
                             context: FileContext::new().with_path(path),
-                        }
-                    )
-                })?;
+                        })
+                    })?;
                 // Extract MAC key from master key for chunk verification
-                let mac_key = master_key.with_mac_key(|key| {
-                    Zeroizing::new(key.to_vec())
-                }).map_err(|e| {
-                    warn!(error = %e, "Failed to extract MAC key");
-                    StreamingError::HeaderDecryption(
-                        FileDecryptionError::HeaderDecryption {
+                let mac_key = master_key
+                    .with_mac_key(|key| Zeroizing::new(key.to_vec()))
+                    .map_err(|e| {
+                        warn!(error = %e, "Failed to extract MAC key");
+                        StreamingError::HeaderDecryption(FileDecryptionError::HeaderDecryption {
                             context: FileContext::new().with_path(path),
-                        }
-                    )
-                })?;
+                        })
+                    })?;
                 (header.content_key, Some(mac_key))
             }
         };
 
         // Calculate plaintext size
-        let plaintext_size = encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size, cipher_combo);
+        let plaintext_size =
+            encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size, cipher_combo);
 
         debug!(
             cipher_combo = ?cipher_combo,
@@ -530,14 +686,18 @@ impl VaultFileReader {
             "File opened for streaming read"
         );
 
-        Ok(Self {
-            file,
+        let decryptor = ChunkDecryptor::new(
             content_key,
             header_nonce,
             mac_key,
             cipher_combo,
+            path.to_path_buf(),
+        );
+
+        Ok(Self {
+            file,
+            decryptor,
             plaintext_size,
-            path: path.to_path_buf(),
             chunk_cache: LruCache::new(NonZeroUsize::new(CHUNK_CACHE_CAPACITY).unwrap()),
             dir_lock_guard: None,
             file_lock_guard: None,
@@ -582,7 +742,7 @@ impl VaultFileReader {
     /// avoid re-decrypting the same chunk on sequential reads.
     ///
     /// Returns fewer bytes than requested if reading past EOF.
-    #[instrument(level = "debug", skip(self), fields(path = %self.path.display()))]
+    #[instrument(level = "debug", skip(self), fields(path = %self.decryptor.path.display()))]
     pub async fn read_range(&mut self, offset: u64, len: usize) -> Result<Vec<u8>, StreamingError> {
         // Handle read past EOF
         if offset >= self.plaintext_size {
@@ -599,7 +759,12 @@ impl VaultFileReader {
             return Ok(Vec::new());
         }
 
-        trace!(offset = offset, requested = len, actual = actual_len, "Reading range");
+        trace!(
+            offset = offset,
+            requested = len,
+            actual = actual_len,
+            "Reading range"
+        );
 
         // Calculate chunk range
         let start_chunk = plaintext_to_chunk_number(offset);
@@ -648,28 +813,32 @@ impl VaultFileReader {
     ///
     /// Uses the LRU cache if the chunk was recently read. Returns an Arc
     /// to enable cheap cloning on cache hits (8-byte pointer vs 32KB data).
-    async fn read_chunk(&mut self, chunk_num: u64) -> Result<Arc<Zeroizing<Vec<u8>>>, StreamingError> {
+    async fn read_chunk(
+        &mut self,
+        chunk_num: u64,
+    ) -> Result<Arc<Zeroizing<Vec<u8>>>, StreamingError> {
         // Check LRU cache - Arc::clone is 8 bytes instead of 32KB data clone
         if let Some(data) = self.chunk_cache.get(&chunk_num) {
             trace!(chunk = chunk_num, "Cache hit");
             return Ok(Arc::clone(data));
         }
 
-        trace!(chunk = chunk_num, cipher_combo = ?self.cipher_combo, "Cache miss, reading from disk");
+        trace!(chunk = chunk_num, cipher_combo = ?self.decryptor.cipher_combo, "Cache miss, reading from disk");
 
         let context = StreamingContext::new()
-            .with_path(&self.path)
+            .with_path(&self.decryptor.path)
             .with_chunk(chunk_num)
             .with_operation("read_chunk");
 
         // Get cipher-combo-specific sizes
-        let (chunk_encrypted_size, chunk_overhead) = match self.cipher_combo {
+        let (chunk_encrypted_size, chunk_overhead) = match self.decryptor.cipher_combo {
             CipherCombo::SivGcm => (CHUNK_ENCRYPTED_SIZE, CHUNK_OVERHEAD),
             CipherCombo::SivCtrMac => (CTRMAC_CHUNK_ENCRYPTED_SIZE, CTRMAC_CHUNK_OVERHEAD),
         };
 
         // Seek to chunk position (cipher-combo-aware)
-        let encrypted_offset = chunk_to_encrypted_offset_for_cipher(chunk_num, self.cipher_combo);
+        let encrypted_offset =
+            chunk_to_encrypted_offset_for_cipher(chunk_num, self.decryptor.cipher_combo);
         self.file
             .seek(SeekFrom::Start(encrypted_offset))
             .await
@@ -677,9 +846,11 @@ impl VaultFileReader {
 
         // Read encrypted chunk (may be smaller for last chunk)
         let mut encrypted_chunk = vec![0u8; chunk_encrypted_size];
-        let bytes_read = self.file.read(&mut encrypted_chunk).await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
+        let bytes_read = self
+            .file
+            .read(&mut encrypted_chunk)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
 
         if bytes_read == 0 {
             // No data at this position - shouldn't happen for valid chunk numbers
@@ -703,7 +874,7 @@ impl VaultFileReader {
         }
 
         // Decrypt chunk using appropriate algorithm
-        let decrypted = self.decrypt_chunk(chunk_num, &encrypted_chunk)?;
+        let decrypted = self.decryptor.decrypt_chunk(chunk_num, &encrypted_chunk)?;
         let decrypted = Arc::new(Zeroizing::new(decrypted));
 
         // Store in LRU cache (evicts oldest if at capacity)
@@ -712,115 +883,6 @@ impl VaultFileReader {
 
         Ok(decrypted)
     }
-
-    /// Decrypt a single chunk using the appropriate cipher algorithm.
-    fn decrypt_chunk(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
-        match self.cipher_combo {
-            CipherCombo::SivGcm => self.decrypt_chunk_gcm(chunk_num, encrypted),
-            CipherCombo::SivCtrMac => self.decrypt_chunk_ctrmac(chunk_num, encrypted),
-        }
-    }
-
-    /// Decrypt a single chunk using AES-GCM (SIV_GCM cipher combo).
-    fn decrypt_chunk_gcm(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
-        let context = StreamingContext::new()
-            .with_path(&self.path)
-            .with_chunk(chunk_num)
-            .with_operation("decrypt_chunk_gcm");
-
-        let nonce = Nonce::from_slice(&encrypted[..CHUNK_NONCE_SIZE]);
-        let ciphertext = &encrypted[CHUNK_NONCE_SIZE..];
-
-        // Build AAD: chunk_number (8 bytes BE) || header_nonce (12 bytes)
-        // Use stack array to avoid heap allocation per chunk
-        let mut aad = [0u8; 8 + HEADER_NONCE_SIZE];
-        aad[..8].copy_from_slice(&chunk_num.to_be_bytes());
-        aad[8..].copy_from_slice(&self.header_nonce);
-
-        let key = Key::<Aes256Gcm>::from_slice(&*self.content_key);
-        let cipher = Aes256Gcm::new(key);
-
-        let payload = Payload {
-            msg: ciphertext,
-            aad: &aad,
-        };
-
-        cipher.decrypt(nonce, payload).map_err(|_| {
-            warn!(chunk = chunk_num, "Chunk decryption failed - authentication tag mismatch");
-            StreamingError::ChunkDecryptionFailed {
-                chunk_number: chunk_num,
-                context,
-            }
-        })
-    }
-
-    /// Decrypt a single chunk using AES-CTR + HMAC-SHA256 (SIV_CTRMAC cipher combo).
-    fn decrypt_chunk_ctrmac(&self, chunk_num: u64, encrypted: &[u8]) -> Result<Vec<u8>, StreamingError> {
-        let context = StreamingContext::new()
-            .with_path(&self.path)
-            .with_chunk(chunk_num)
-            .with_operation("decrypt_chunk_ctrmac");
-
-        // Get MAC key (must be present for CTRMAC)
-        let mac_key = self.mac_key.as_ref().ok_or_else(|| {
-            warn!(chunk = chunk_num, "MAC key not available for CTRMAC decryption");
-            StreamingError::ChunkDecryptionFailed {
-                chunk_number: chunk_num,
-                context: context.clone(),
-            }
-        })?;
-
-        // Parse chunk: nonce (16) + ciphertext (variable) + MAC (32)
-        if encrypted.len() < CTRMAC_CHUNK_OVERHEAD {
-            return Err(StreamingError::IncompleteChunk {
-                chunk_number: chunk_num,
-                expected: CTRMAC_CHUNK_OVERHEAD,
-                actual: encrypted.len(),
-                context,
-            });
-        }
-
-        let chunk_nonce = &encrypted[..CTRMAC_CHUNK_NONCE_SIZE];
-        let ciphertext = &encrypted[CTRMAC_CHUNK_NONCE_SIZE..encrypted.len() - CTRMAC_MAC_SIZE];
-        let expected_mac = &encrypted[encrypted.len() - CTRMAC_MAC_SIZE..];
-
-        // Verify HMAC: MAC(header_nonce || chunk_number_be || chunk_nonce || ciphertext)
-        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
-        let mut mac_context = hmac::Context::with_key(&hmac_key);
-        mac_context.update(&self.header_nonce);
-        mac_context.update(&chunk_num.to_be_bytes());
-        mac_context.update(chunk_nonce);
-        mac_context.update(ciphertext);
-        let computed_mac = mac_context.sign();
-
-        // Constant-time comparison
-        if !bool::from(computed_mac.as_ref().ct_eq(expected_mac)) {
-            warn!(chunk = chunk_num, "Chunk HMAC verification failed");
-            return Err(StreamingError::ChunkDecryptionFailed {
-                chunk_number: chunk_num,
-                context,
-            });
-        }
-
-        // Decrypt with AES-CTR
-        let chunk_nonce_array: [u8; 16] = chunk_nonce.try_into().map_err(|_| {
-            StreamingError::ChunkDecryptionFailed {
-                chunk_number: chunk_num,
-                context: context.clone(),
-            }
-        })?;
-        let mut cipher = Aes256Ctr::new((&*self.content_key).into(), (&chunk_nonce_array).into());
-        let mut plaintext = ciphertext.to_vec();
-        cipher.apply_keystream(&mut plaintext);
-
-        trace!(
-            chunk = chunk_num,
-            decrypted_size = plaintext.len(),
-            "CTRMAC chunk decrypted successfully"
-        );
-
-        Ok(plaintext)
-    }
 }
 
 impl Drop for VaultFileReader {
@@ -828,7 +890,287 @@ impl Drop for VaultFileReader {
         // Zeroizing handles content_key cleanup automatically
         // Clear the LRU cache
         self.chunk_cache.clear();
-        trace!(path = %self.path.display(), "VaultFileReader dropped");
+        trace!(path = %self.decryptor.path.display(), "VaultFileReader dropped");
+    }
+}
+
+// ============================================================================
+// VaultFileReaderSync
+// ============================================================================
+
+/// Synchronous random-access reader for encrypted vault files.
+///
+/// Enables efficient FUSE `read(offset, size)` operations by decrypting only
+/// the necessary chunks. Maintains a small cache of recently accessed chunks
+/// to optimize sequential reads.
+///
+/// This is the blocking I/O equivalent of [`VaultFileReader`].
+pub struct VaultFileReaderSync {
+    /// Handle to the encrypted file
+    file: std::fs::File,
+    /// Shared chunk decryption logic
+    decryptor: ChunkDecryptor,
+    /// Total plaintext size of the file
+    plaintext_size: u64,
+    /// LRU cache of recently-read chunks for random access patterns.
+    chunk_cache: LruCache<u64, Arc<Zeroizing<Vec<u8>>>>,
+}
+
+impl std::fmt::Debug for VaultFileReaderSync {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cached_chunks: Vec<_> = self.chunk_cache.iter().map(|(k, _)| *k).collect();
+        f.debug_struct("VaultFileReaderSync")
+            .field("path", &self.decryptor.path)
+            .field("cipher_combo", &self.decryptor.cipher_combo)
+            .field("plaintext_size", &self.plaintext_size)
+            .field("cached_chunks", &cached_chunks)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VaultFileReaderSync {
+    /// Open an encrypted file for synchronous streaming reads (assumes SIV_GCM cipher combo).
+    #[instrument(level = "debug", skip(master_key), fields(path = %path.as_ref().display()))]
+    pub fn open(path: impl AsRef<Path>, master_key: &MasterKey) -> Result<Self, StreamingError> {
+        Self::open_with_cipher(path, master_key, CipherCombo::SivGcm)
+    }
+
+    /// Open an encrypted file for synchronous streaming reads with specified cipher combo.
+    #[instrument(level = "debug", skip(master_key), fields(path = %path.as_ref().display(), cipher = ?cipher_combo))]
+    pub fn open_with_cipher(
+        path: impl AsRef<Path>,
+        master_key: &MasterKey,
+        cipher_combo: CipherCombo,
+    ) -> Result<Self, StreamingError> {
+        let path = path.as_ref();
+        let context = StreamingContext::new()
+            .with_path(path)
+            .with_operation("open");
+
+        // Get format-specific constants
+        let (header_size, nonce_size) = match cipher_combo {
+            CipherCombo::SivGcm => (HEADER_SIZE, HEADER_NONCE_SIZE),
+            CipherCombo::SivCtrMac => (CTRMAC_HEADER_SIZE, CTRMAC_HEADER_NONCE_SIZE),
+        };
+
+        debug!(cipher_combo = ?cipher_combo, "Opening encrypted file for streaming read (sync)");
+
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+
+        // Get file size
+        let metadata = file
+            .metadata()
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+        let encrypted_size = metadata.len();
+
+        if encrypted_size < header_size as u64 {
+            let actual = encrypted_size.try_into().unwrap_or(0);
+            return Err(StreamingError::FileTooSmall {
+                expected: header_size,
+                actual,
+                context,
+            });
+        }
+
+        // Read header
+        let mut header_bytes = vec![0u8; header_size];
+        use std::io::Read;
+        file.read_exact(&mut header_bytes)
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+
+        // Extract header nonce
+        let header_nonce = header_bytes[..nonce_size].to_vec();
+
+        // Decrypt header to get content key
+        let file_context = FileContext::new().with_path(path);
+        let (content_key, mac_key) = match cipher_combo {
+            CipherCombo::SivGcm => {
+                let header = super::file::decrypt_file_header_with_context(
+                    &header_bytes,
+                    master_key,
+                    &file_context,
+                )?;
+                (header.content_key, None)
+            }
+            CipherCombo::SivCtrMac => {
+                let header = file_ctrmac::decrypt_header(&header_bytes, master_key, &file_context)
+                    .map_err(|e| {
+                        warn!(error = %e, "CTRMAC header decryption failed");
+                        StreamingError::HeaderDecryption(FileDecryptionError::HeaderDecryption {
+                            context: FileContext::new().with_path(path),
+                        })
+                    })?;
+                let mac_key = master_key
+                    .with_mac_key(|key| Zeroizing::new(key.to_vec()))
+                    .map_err(|e| {
+                        warn!(error = %e, "Failed to extract MAC key");
+                        StreamingError::HeaderDecryption(FileDecryptionError::HeaderDecryption {
+                            context: FileContext::new().with_path(path),
+                        })
+                    })?;
+                (header.content_key, Some(mac_key))
+            }
+        };
+
+        // Calculate plaintext size
+        let plaintext_size =
+            encrypted_to_plaintext_size_or_zero_for_cipher(encrypted_size, cipher_combo);
+
+        debug!(
+            cipher_combo = ?cipher_combo,
+            encrypted_size = encrypted_size,
+            plaintext_size = plaintext_size,
+            "File opened for streaming read (sync)"
+        );
+
+        let decryptor = ChunkDecryptor::new(
+            content_key,
+            header_nonce,
+            mac_key,
+            cipher_combo,
+            path.to_path_buf(),
+        );
+
+        Ok(Self {
+            file,
+            decryptor,
+            plaintext_size,
+            chunk_cache: LruCache::new(NonZeroUsize::new(CHUNK_CACHE_CAPACITY).unwrap()),
+        })
+    }
+
+    /// Get the total plaintext size of the file.
+    #[inline]
+    pub fn plaintext_size(&self) -> u64 {
+        self.plaintext_size
+    }
+
+    /// Read a range of bytes from the file.
+    #[instrument(level = "debug", skip(self), fields(path = %self.decryptor.path.display()))]
+    pub fn read_range(&mut self, offset: u64, len: usize) -> Result<Vec<u8>, StreamingError> {
+        if offset >= self.plaintext_size {
+            trace!(offset = offset, size = self.plaintext_size, "Read past EOF");
+            return Ok(Vec::new());
+        }
+
+        let available = usize::try_from(self.plaintext_size - offset).unwrap_or(0);
+        let actual_len = len.min(available);
+
+        if actual_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        trace!(
+            offset = offset,
+            requested = len,
+            actual = actual_len,
+            "Reading range (sync)"
+        );
+
+        let start_chunk = plaintext_to_chunk_number(offset);
+        let end_offset = offset + actual_len as u64 - 1;
+        let end_chunk = plaintext_to_chunk_number(end_offset);
+
+        let mut result = Vec::with_capacity(actual_len);
+        let start_within_chunk = plaintext_to_chunk_offset(offset);
+
+        for chunk_num in start_chunk..=end_chunk {
+            let chunk_data = self.read_chunk(chunk_num)?;
+
+            let chunk_start = if chunk_num == start_chunk {
+                start_within_chunk
+            } else {
+                0
+            };
+
+            let chunk_end = if chunk_num == end_chunk {
+                let remaining = actual_len - result.len();
+                (chunk_start + remaining).min(chunk_data.len())
+            } else {
+                chunk_data.len()
+            };
+
+            if chunk_start < chunk_data.len() {
+                let end = chunk_end.min(chunk_data.len());
+                result.extend_from_slice(&chunk_data[chunk_start..end]);
+            }
+
+            if result.len() >= actual_len {
+                break;
+            }
+        }
+
+        result.truncate(actual_len);
+        trace!(read_bytes = result.len(), "Range read complete");
+        Ok(result)
+    }
+
+    /// Read and decrypt a single chunk.
+    fn read_chunk(&mut self, chunk_num: u64) -> Result<Arc<Zeroizing<Vec<u8>>>, StreamingError> {
+        if let Some(data) = self.chunk_cache.get(&chunk_num) {
+            trace!(chunk = chunk_num, "Cache hit");
+            return Ok(Arc::clone(data));
+        }
+
+        trace!(chunk = chunk_num, cipher_combo = ?self.decryptor.cipher_combo, "Cache miss, reading from disk (sync)");
+
+        let context = StreamingContext::new()
+            .with_path(&self.decryptor.path)
+            .with_chunk(chunk_num)
+            .with_operation("read_chunk");
+
+        let (chunk_encrypted_size, chunk_overhead) = match self.decryptor.cipher_combo {
+            CipherCombo::SivGcm => (CHUNK_ENCRYPTED_SIZE, CHUNK_OVERHEAD),
+            CipherCombo::SivCtrMac => (CTRMAC_CHUNK_ENCRYPTED_SIZE, CTRMAC_CHUNK_OVERHEAD),
+        };
+
+        let encrypted_offset =
+            chunk_to_encrypted_offset_for_cipher(chunk_num, self.decryptor.cipher_combo);
+        use std::io::{Read, Seek};
+        self.file
+            .seek(SeekFrom::Start(encrypted_offset))
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+
+        let mut encrypted_chunk = vec![0u8; chunk_encrypted_size];
+        let bytes_read = self
+            .file
+            .read(&mut encrypted_chunk)
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+
+        if bytes_read == 0 {
+            return Err(StreamingError::IncompleteChunk {
+                chunk_number: chunk_num,
+                expected: chunk_overhead,
+                actual: 0,
+                context,
+            });
+        }
+
+        encrypted_chunk.truncate(bytes_read);
+
+        if encrypted_chunk.len() < chunk_overhead {
+            return Err(StreamingError::IncompleteChunk {
+                chunk_number: chunk_num,
+                expected: chunk_overhead,
+                actual: encrypted_chunk.len(),
+                context,
+            });
+        }
+
+        let decrypted = self.decryptor.decrypt_chunk(chunk_num, &encrypted_chunk)?;
+        let decrypted = Arc::new(Zeroizing::new(decrypted));
+
+        self.chunk_cache.put(chunk_num, Arc::clone(&decrypted));
+
+        Ok(decrypted)
+    }
+}
+
+impl Drop for VaultFileReaderSync {
+    fn drop(&mut self) {
+        self.chunk_cache.clear();
+        trace!(path = %self.decryptor.path.display(), "VaultFileReaderSync dropped");
     }
 }
 
@@ -934,17 +1276,14 @@ impl VaultFileWriter {
         let temp_name = format!(".tmp_{}", hex::encode(temp_suffix));
         let temp_path = parent.join(&temp_name);
 
-        let temp_file = File::create(&temp_path).await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
+        let temp_file = File::create(&temp_path)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
 
         // Encrypt and write header
         let file_context = FileContext::new().with_path(dest);
-        let encrypted_header = super::file::encrypt_file_header_with_context(
-            &content_key,
-            master_key,
-            &file_context,
-        )?;
+        let encrypted_header =
+            super::file::encrypt_file_header_with_context(&content_key, master_key, &file_context)?;
 
         // Update header_nonce from the actual encrypted header
         let mut actual_header_nonce = [0u8; HEADER_NONCE_SIZE];
@@ -965,9 +1304,11 @@ impl VaultFileWriter {
         };
 
         // Write header immediately
-        writer.temp_file.write_all(&encrypted_header).await.map_err(|e| {
-            StreamingError::io_with_context(e, context)
-        })?;
+        writer
+            .temp_file
+            .write_all(&encrypted_header)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context))?;
         writer.header_written = true;
 
         debug!(temp_path = %writer.temp_path.display(), "Writer created with temp file");
@@ -1052,24 +1393,30 @@ impl VaultFileWriter {
             aad: &aad,
         };
 
-        let ciphertext = cipher.encrypt(Nonce::from_slice(&chunk_nonce), payload).map_err(|e| {
-            StreamingError::ChunkEncryptionFailed {
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&chunk_nonce), payload)
+            .map_err(|e| StreamingError::ChunkEncryptionFailed {
                 chunk_number: chunk_num,
                 reason: e.to_string(),
                 context: context.clone(),
-            }
-        })?;
+            })?;
 
         // Write nonce + ciphertext (ciphertext includes tag)
-        self.temp_file.write_all(&chunk_nonce).await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
-        self.temp_file.write_all(&ciphertext).await.map_err(|e| {
-            StreamingError::io_with_context(e, context)
-        })?;
+        self.temp_file
+            .write_all(&chunk_nonce)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+        self.temp_file
+            .write_all(&ciphertext)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context))?;
 
         self.chunks_written += 1;
-        trace!(chunk = chunk_num, plaintext_size = plaintext.len(), "Chunk written");
+        trace!(
+            chunk = chunk_num,
+            plaintext_size = plaintext.len(),
+            "Chunk written"
+        );
 
         Ok(())
     }
@@ -1101,17 +1448,19 @@ impl VaultFileWriter {
         }
 
         // Flush and sync to disk
-        self.temp_file.flush().await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
-        self.temp_file.sync_all().await.map_err(|e| {
-            StreamingError::io_with_context(e, context.clone())
-        })?;
+        self.temp_file
+            .flush()
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
+        self.temp_file
+            .sync_all()
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context.clone()))?;
 
         // Atomic rename
-        tokio::fs::rename(&self.temp_path, &self.dest_path).await.map_err(|e| {
-            StreamingError::io_with_context(e, context)
-        })?;
+        tokio::fs::rename(&self.temp_path, &self.dest_path)
+            .await
+            .map_err(|e| StreamingError::io_with_context(e, context))?;
 
         debug!(
             chunks = self.chunks_written,
@@ -1216,7 +1565,10 @@ mod tests {
         assert_eq!(encrypted_to_plaintext_size(68 + 2 * 32796), Some(65536));
 
         // One full + one partial chunk (100 bytes in second)
-        assert_eq!(encrypted_to_plaintext_size(68 + 32796 + 28 + 100), Some(32768 + 100));
+        assert_eq!(
+            encrypted_to_plaintext_size(68 + 32796 + 28 + 100),
+            Some(32768 + 100)
+        );
     }
 
     #[test]

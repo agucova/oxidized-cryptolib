@@ -39,8 +39,8 @@ use thiserror::Error;
 
 use crate::crypto::keys::MasterKey;
 use crate::fs::file::{
-    decrypt_file_content, decrypt_file_header, encrypt_file_content, encrypt_file_header,
-    FileDecryptionError, FileEncryptionError,
+    FileDecryptionError, FileEncryptionError, decrypt_file_content, decrypt_file_header,
+    encrypt_file_content, encrypt_file_header,
 };
 
 /// Context for symlink operations, providing debugging information.
@@ -139,19 +139,31 @@ pub enum SymlinkError {
     /// - The wrong master key was used
     /// - The file is corrupted
     #[error("[INTEGRITY VIOLATION] Failed to decrypt symlink target for {context}: {reason}")]
-    DecryptionFailed { reason: String, context: SymlinkContext },
+    DecryptionFailed {
+        reason: String,
+        context: SymlinkContext,
+    },
 
     /// UTF-8 decoding failed after decryption.
     #[error("Invalid UTF-8 after decryption for {context}: {reason}")]
-    Utf8Decode { reason: String, context: SymlinkContext },
+    Utf8Decode {
+        reason: String,
+        context: SymlinkContext,
+    },
 
     /// Encryption failed unexpectedly.
     #[error("Encryption failure for {context}: {reason}")]
-    EncryptionFailed { reason: String, context: SymlinkContext },
+    EncryptionFailed {
+        reason: String,
+        context: SymlinkContext,
+    },
 
     /// The encrypted data is too small to contain a valid file header.
     #[error("Invalid symlink file for {context}: too small ({size} bytes, minimum 68)")]
-    TooSmall { size: usize, context: SymlinkContext },
+    TooSmall {
+        size: usize,
+        context: SymlinkContext,
+    },
 
     /// IO error during symlink operations.
     #[error("IO error for {context}: {source}")]
@@ -194,21 +206,26 @@ impl SymlinkError {
     #[must_use]
     pub fn with_context(self, new_context: SymlinkContext) -> Self {
         match self {
-            SymlinkError::DecryptionFailed { reason, .. } => {
-                SymlinkError::DecryptionFailed { reason, context: new_context }
-            }
-            SymlinkError::Utf8Decode { reason, .. } => {
-                SymlinkError::Utf8Decode { reason, context: new_context }
-            }
-            SymlinkError::EncryptionFailed { reason, .. } => {
-                SymlinkError::EncryptionFailed { reason, context: new_context }
-            }
-            SymlinkError::TooSmall { size, .. } => {
-                SymlinkError::TooSmall { size, context: new_context }
-            }
-            SymlinkError::Io { source, .. } => {
-                SymlinkError::Io { source, context: new_context }
-            }
+            SymlinkError::DecryptionFailed { reason, .. } => SymlinkError::DecryptionFailed {
+                reason,
+                context: new_context,
+            },
+            SymlinkError::Utf8Decode { reason, .. } => SymlinkError::Utf8Decode {
+                reason,
+                context: new_context,
+            },
+            SymlinkError::EncryptionFailed { reason, .. } => SymlinkError::EncryptionFailed {
+                reason,
+                context: new_context,
+            },
+            SymlinkError::TooSmall { size, .. } => SymlinkError::TooSmall {
+                size,
+                context: new_context,
+            },
+            SymlinkError::Io { source, .. } => SymlinkError::Io {
+                source,
+                context: new_context,
+            },
         }
     }
 }
@@ -245,11 +262,12 @@ pub fn encrypt_symlink_target(
     rand::rng().fill_bytes(&mut content_key);
 
     // Encrypt the file header (contains the content key)
-    let encrypted_header = encrypt_file_header(&content_key, master_key)
-        .map_err(|e| SymlinkError::EncryptionFailed {
+    let encrypted_header = encrypt_file_header(&content_key, master_key).map_err(|e| {
+        SymlinkError::EncryptionFailed {
             reason: e.to_string(),
             context: context.clone(),
-        })?;
+        }
+    })?;
 
     // Extract the header nonce (first 12 bytes of the encrypted header)
     let header_nonce: [u8; 12] = encrypted_header[0..12].try_into().unwrap();
@@ -305,25 +323,24 @@ pub fn decrypt_symlink_target(
     }
 
     // Decrypt the file header to get the content key
-    let header = decrypt_file_header(&encrypted_data[0..68], master_key)
-        .map_err(|e| SymlinkError::DecryptionFailed {
+    let header = decrypt_file_header(&encrypted_data[0..68], master_key).map_err(|e| {
+        SymlinkError::DecryptionFailed {
             reason: e.to_string(),
             context: context.clone(),
-        })?;
+        }
+    })?;
 
     // Extract the header nonce (first 12 bytes)
     let header_nonce = &encrypted_data[0..12];
 
     // Decrypt the file content
-    let decrypted_bytes = decrypt_file_content(
-        &encrypted_data[68..],
-        &header.content_key,
-        header_nonce,
-    )
-    .map_err(|e| SymlinkError::DecryptionFailed {
-        reason: e.to_string(),
-        context: context.clone(),
-    })?;
+    let decrypted_bytes =
+        decrypt_file_content(&encrypted_data[68..], &header.content_key, header_nonce).map_err(
+            |e| SymlinkError::DecryptionFailed {
+                reason: e.to_string(),
+                context: context.clone(),
+            },
+        )?;
 
     // Convert to UTF-8 string
     String::from_utf8(decrypted_bytes).map_err(|e| SymlinkError::Utf8Decode {
@@ -401,7 +418,10 @@ mod tests {
         let encrypted2 = encrypt_symlink_target(target, &master_key).unwrap();
 
         // The encrypted outputs should be different (random nonces)
-        assert_ne!(encrypted1, encrypted2, "Encryption should use random nonces");
+        assert_ne!(
+            encrypted1, encrypted2,
+            "Encryption should use random nonces"
+        );
 
         // But both should decrypt to the same value
         let decrypted1 = decrypt_symlink_target(&encrypted1, &master_key).unwrap();
@@ -426,7 +446,10 @@ mod tests {
         // Should fail with wrong key
         let failed = decrypt_symlink_target(&encrypted, &master_key2);
         assert!(failed.is_err());
-        assert!(matches!(failed.unwrap_err(), SymlinkError::DecryptionFailed { .. }));
+        assert!(matches!(
+            failed.unwrap_err(),
+            SymlinkError::DecryptionFailed { .. }
+        ));
     }
 
     #[test]
@@ -443,7 +466,10 @@ mod tests {
 
         let failed = decrypt_symlink_target(&encrypted, &master_key);
         assert!(failed.is_err());
-        assert!(matches!(failed.unwrap_err(), SymlinkError::DecryptionFailed { .. }));
+        assert!(matches!(
+            failed.unwrap_err(),
+            SymlinkError::DecryptionFailed { .. }
+        ));
     }
 
     #[test]
@@ -458,7 +484,10 @@ mod tests {
 
         let failed = decrypt_symlink_target(&encrypted, &master_key);
         assert!(failed.is_err());
-        assert!(matches!(failed.unwrap_err(), SymlinkError::DecryptionFailed { .. }));
+        assert!(matches!(
+            failed.unwrap_err(),
+            SymlinkError::DecryptionFailed { .. }
+        ));
     }
 
     #[test]
@@ -469,7 +498,10 @@ mod tests {
         let too_small = vec![0u8; 50];
         let failed = decrypt_symlink_target(&too_small, &master_key);
         assert!(failed.is_err());
-        assert!(matches!(failed.unwrap_err(), SymlinkError::TooSmall { size: 50, .. }));
+        assert!(matches!(
+            failed.unwrap_err(),
+            SymlinkError::TooSmall { size: 50, .. }
+        ));
     }
 
     #[test]
@@ -477,10 +509,7 @@ mod tests {
         let master_key = create_test_master_key();
 
         // Create a very long target path
-        let long_target = format!(
-            "/very/long/path/{}",
-            "a".repeat(500)
-        );
+        let long_target = format!("/very/long/path/{}", "a".repeat(500));
 
         let encrypted = encrypt_symlink_target(&long_target, &master_key).unwrap();
         let decrypted = decrypt_symlink_target(&encrypted, &master_key).unwrap();
@@ -497,7 +526,10 @@ mod tests {
 
         // Minimum size: 68-byte header + 12-byte chunk nonce + encrypted payload + 16-byte tag
         // For "short" (5 bytes): 68 + 12 + 5 + 16 = 101 bytes
-        assert!(encrypted.len() >= 68 + 28, "Encrypted data should include header + chunk overhead");
+        assert!(
+            encrypted.len() >= 68 + 28,
+            "Encrypted data should include header + chunk overhead"
+        );
 
         // The encrypted size should be: header (68) + chunk_nonce (12) + content + tag (16)
         // = 68 + 12 + 5 + 16 = 101

@@ -2,7 +2,7 @@
 
 use std::sync::RwLock;
 
-use generic_array::{typenum::U64, GenericArray};
+use generic_array::{GenericArray, typenum::U64};
 use memsafe::MemSafe;
 use rand::RngCore;
 use thiserror::Error;

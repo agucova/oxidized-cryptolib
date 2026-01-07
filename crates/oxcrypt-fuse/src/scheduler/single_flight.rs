@@ -29,7 +29,11 @@ pub struct ReadKey {
 impl ReadKey {
     /// Create a new read key.
     pub fn new(inode: u64, offset: u64, size: usize) -> Self {
-        Self { inode, offset, size }
+        Self {
+            inode,
+            offset,
+            size,
+        }
     }
 }
 

@@ -42,7 +42,9 @@ fn test_size_exactly_one_chunk() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     let content = one_chunk_content();
-    mount.write("one_chunk.bin", &content).expect("write failed");
+    mount
+        .write("one_chunk.bin", &content)
+        .expect("write failed");
     assert_file_size(&mount, "one_chunk.bin", CHUNK_SIZE as u64);
 }
 
@@ -81,13 +83,19 @@ fn test_size_after_overwrite() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("overwrite.txt", b"short").expect("write 1 failed");
+    mount
+        .write("overwrite.txt", b"short")
+        .expect("write 1 failed");
     assert_file_size(&mount, "overwrite.txt", 5);
 
-    mount.write("overwrite.txt", b"much longer content").expect("write 2 failed");
+    mount
+        .write("overwrite.txt", b"much longer content")
+        .expect("write 2 failed");
     assert_file_size(&mount, "overwrite.txt", 19);
 
-    mount.write("overwrite.txt", b"tiny").expect("write 3 failed");
+    mount
+        .write("overwrite.txt", b"tiny")
+        .expect("write 3 failed");
     assert_file_size(&mount, "overwrite.txt", 4);
 }
 
@@ -96,7 +104,9 @@ fn test_size_after_truncate() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("truncate.txt", b"some content").expect("write failed");
+    mount
+        .write("truncate.txt", b"some content")
+        .expect("write failed");
     assert_file_size(&mount, "truncate.txt", 12);
 
     mount.truncate("truncate.txt", 5).expect("truncate failed");
@@ -154,7 +164,9 @@ fn test_listing_updates_after_create() {
     let initial_count = initial.len();
 
     // Add a file
-    mount.write("new_file.txt", b"content").expect("write failed");
+    mount
+        .write("new_file.txt", b"content")
+        .expect("write failed");
 
     // Listing should update
     let after = mount.list("/").expect("list failed");
@@ -167,11 +179,23 @@ fn test_listing_updates_after_delete() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("to_delete.txt", b"content").expect("write failed");
-    assert!(mount.list("/").unwrap().contains(&"to_delete.txt".to_string()));
+    mount
+        .write("to_delete.txt", b"content")
+        .expect("write failed");
+    assert!(
+        mount
+            .list("/")
+            .unwrap()
+            .contains(&"to_delete.txt".to_string())
+    );
 
     mount.remove("to_delete.txt").expect("delete failed");
-    assert!(!mount.list("/").unwrap().contains(&"to_delete.txt".to_string()));
+    assert!(
+        !mount
+            .list("/")
+            .unwrap()
+            .contains(&"to_delete.txt".to_string())
+    );
 }
 
 #[test]
@@ -179,10 +203,19 @@ fn test_listing_updates_after_rename() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("old_name.txt", b"content").expect("write failed");
-    assert!(mount.list("/").unwrap().contains(&"old_name.txt".to_string()));
+    mount
+        .write("old_name.txt", b"content")
+        .expect("write failed");
+    assert!(
+        mount
+            .list("/")
+            .unwrap()
+            .contains(&"old_name.txt".to_string())
+    );
 
-    mount.rename("old_name.txt", "new_name.txt").expect("rename failed");
+    mount
+        .rename("old_name.txt", "new_name.txt")
+        .expect("rename failed");
 
     let entries = mount.list("/").expect("list failed");
     assert!(!entries.contains(&"old_name.txt".to_string()));
@@ -198,7 +231,9 @@ fn test_is_file() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("regular.txt", b"content").expect("write failed");
+    mount
+        .write("regular.txt", b"content")
+        .expect("write failed");
 
     assert!(mount.is_file("regular.txt"));
     assert!(!mount.is_dir("regular.txt"));
@@ -233,7 +268,9 @@ fn test_file_readable() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("readable.txt", b"content").expect("write failed");
+    mount
+        .write("readable.txt", b"content")
+        .expect("write failed");
 
     let metadata = mount.metadata("readable.txt").expect("stat failed");
     let mode = metadata.permissions().mode();
@@ -253,10 +290,7 @@ fn test_directory_executable() {
     let mode = metadata.permissions().mode();
 
     // Directories should have execute (search) permission
-    assert!(
-        mode & 0o100 != 0,
-        "Directory should be executable by owner"
-    );
+    assert!(mode & 0o100 != 0, "Directory should be executable by owner");
 }
 
 // =============================================================================
@@ -269,8 +303,12 @@ fn test_symlink_metadata() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.write("target.txt", b"target content").expect("write failed");
-    mount.symlink("target.txt", "link.txt").expect("symlink failed");
+    mount
+        .write("target.txt", b"target content")
+        .expect("write failed");
+    mount
+        .symlink("target.txt", "link.txt")
+        .expect("symlink failed");
 
     // Regular metadata follows the link
     let meta = mount.metadata("link.txt").expect("metadata failed");
@@ -278,7 +316,9 @@ fn test_symlink_metadata() {
     assert_eq!(meta.len(), 14);
 
     // Symlink metadata doesn't follow
-    let link_meta = mount.symlink_metadata("link.txt").expect("symlink_metadata failed");
+    let link_meta = mount
+        .symlink_metadata("link.txt")
+        .expect("symlink_metadata failed");
     assert!(link_meta.file_type().is_symlink());
 }
 
@@ -288,7 +328,9 @@ fn test_symlink_target() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.symlink("target_path", "my_link").expect("symlink failed");
+    mount
+        .symlink("target_path", "my_link")
+        .expect("symlink failed");
     assert_symlink_target(&mount, "my_link", "target_path");
 }
 
@@ -302,7 +344,9 @@ fn test_unicode_files_in_listing() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     let unicode_name = unicode_filename();
-    mount.write(&unicode_name, b"content").expect("write failed");
+    mount
+        .write(&unicode_name, b"content")
+        .expect("write failed");
 
     let entries = mount.list("/").expect("list failed");
     assert!(entries.contains(&unicode_name));
@@ -315,7 +359,9 @@ fn test_mixed_ascii_unicode_listing() {
 
     mount.write("ascii.txt", b"a").expect("write ascii failed");
     mount.write("中文.txt", b"b").expect("write chinese failed");
-    mount.write("emoji_🎉.txt", b"c").expect("write emoji failed");
+    mount
+        .write("emoji_🎉.txt", b"c")
+        .expect("write emoji failed");
 
     let entries = mount.list("/").expect("list failed");
     assert!(entries.contains(&"ascii.txt".to_string()));
@@ -347,8 +393,12 @@ fn test_file_in_deep_directory() {
     skip_if_no_fuse!();
     let mount = require_mount!(TestMount::with_temp_vault());
 
-    mount.mkdir_all("deep/path/to/dir").expect("mkdir_all failed");
-    mount.write("deep/path/to/dir/file.txt", b"content").expect("write failed");
+    mount
+        .mkdir_all("deep/path/to/dir")
+        .expect("mkdir_all failed");
+    mount
+        .write("deep/path/to/dir/file.txt", b"content")
+        .expect("write failed");
 
     assert_is_file(&mount, "deep/path/to/dir/file.txt");
     assert_file_size(&mount, "deep/path/to/dir/file.txt", 7);
@@ -367,7 +417,9 @@ fn test_mtime_is_not_current_time() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create a file
-    mount.write("timestamp_test.txt", b"content").expect("write failed");
+    mount
+        .write("timestamp_test.txt", b"content")
+        .expect("write failed");
 
     // Wait a bit to ensure any clock drift is noticeable
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -396,7 +448,9 @@ fn test_mtime_changes_on_write() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create initial file
-    mount.write("mtime_write.txt", b"initial").expect("write 1 failed");
+    mount
+        .write("mtime_write.txt", b"initial")
+        .expect("write 1 failed");
     let meta1 = mount.metadata("mtime_write.txt").expect("stat 1 failed");
     let mtime1 = meta1.modified().expect("mtime1 unavailable");
 
@@ -404,7 +458,9 @@ fn test_mtime_changes_on_write() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Modify file
-    mount.write("mtime_write.txt", b"modified content").expect("write 2 failed");
+    mount
+        .write("mtime_write.txt", b"modified content")
+        .expect("write 2 failed");
     let meta2 = mount.metadata("mtime_write.txt").expect("stat 2 failed");
     let mtime2 = meta2.modified().expect("mtime2 unavailable");
 
@@ -451,7 +507,9 @@ fn test_touch_updates_mtime() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create a file
-    mount.write("touch_test.txt", b"content").expect("write failed");
+    mount
+        .write("touch_test.txt", b"content")
+        .expect("write failed");
     let meta1 = mount.metadata("touch_test.txt").expect("stat 1 failed");
     let mtime1 = meta1.modified().expect("mtime1 unavailable");
 
@@ -459,7 +517,7 @@ fn test_touch_updates_mtime() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Touch the file (update mtime to now)
-    use filetime::{set_file_mtime, FileTime};
+    use filetime::{FileTime, set_file_mtime};
     let new_mtime = FileTime::now();
     set_file_mtime(mount.path("touch_test.txt"), new_mtime).expect("touch failed");
 
@@ -483,7 +541,9 @@ fn test_mtime_persists_across_close_reopen() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create a file and record mtime
-    mount.write("persist_mtime.txt", b"content").expect("write failed");
+    mount
+        .write("persist_mtime.txt", b"content")
+        .expect("write failed");
     let meta1 = mount.metadata("persist_mtime.txt").expect("stat 1 failed");
     let mtime1 = meta1.modified().expect("mtime1 unavailable");
 

@@ -1,13 +1,16 @@
 mod common;
 
-use insta::assert_debug_snapshot;
-use oxcrypt_core::vault::{operations::VaultOperations, DirId};
 use common::{
+    test_data::{
+        patterns,
+        sizes::{CHUNK_PLUS_ONE, CHUNK_SIZE},
+    },
+    test_filenames::{HIDDEN_FILES, NORMAL_FILES, SPECIAL_CHAR_FILES},
+    test_structures::{edge_case_structure, nested_structure},
     vault_builder::VaultBuilder,
-    test_structures::{nested_structure, edge_case_structure},
-    test_data::{patterns, sizes::{CHUNK_SIZE, CHUNK_PLUS_ONE}},
-    test_filenames::{NORMAL_FILES, SPECIAL_CHAR_FILES, HIDDEN_FILES},
 };
+use insta::assert_debug_snapshot;
+use oxcrypt_core::vault::{DirId, operations::VaultOperations};
 
 #[test]
 fn test_vault_structure_snapshot() {
@@ -15,19 +18,21 @@ fn test_vault_structure_snapshot() {
         .with_rng_seed(42) // Deterministic for snapshots
         .add_file_structure(nested_structure())
         .build();
-    
+
     let vault_ops = VaultOperations::new(&vault_path, master_key);
-    
+
     // Capture the complete structure of the vault for regression testing
     let mut vault_structure = VaultStructure::default();
-    
+
     // Recursively collect all files and directories
     collect_directory_structure(&vault_ops, &DirId::root(), &mut vault_structure);
-    
+
     // Sort for deterministic snapshots
-    vault_structure.directories.sort_by(|a, b| a.path.cmp(&b.path));
+    vault_structure
+        .directories
+        .sort_by(|a, b| a.path.cmp(&b.path));
     vault_structure.files.sort_by(|a, b| a.path.cmp(&b.path));
-    
+
     assert_debug_snapshot!(vault_structure);
 }
 
@@ -37,22 +42,23 @@ fn test_edge_case_vault_snapshot() {
         .with_rng_seed(123) // Different seed for different test
         .add_file_structure(edge_case_structure())
         .build();
-    
+
     let vault_ops = VaultOperations::new(&vault_path, master_key);
     let mut vault_structure = VaultStructure::default();
-    
+
     collect_directory_structure(&vault_ops, &DirId::root(), &mut vault_structure);
-    
+
     // Sort for deterministic snapshots
-    vault_structure.directories.sort_by(|a, b| a.path.cmp(&b.path));
+    vault_structure
+        .directories
+        .sort_by(|a, b| a.path.cmp(&b.path));
     vault_structure.files.sort_by(|a, b| a.path.cmp(&b.path));
-    
+
     assert_debug_snapshot!(vault_structure);
 }
 
 #[test]
 fn test_file_content_patterns_snapshot() {
-    
     // Test various content patterns for regression
     let patterns_data = vec![
         ("all_bytes", patterns::all_bytes_pattern()),
@@ -60,23 +66,26 @@ fn test_file_content_patterns_snapshot() {
         ("compressible", patterns::compressible_data(100)),
         ("incompressible", patterns::incompressible_data(100)),
         ("chunk_size", patterns::pseudo_random_data(CHUNK_SIZE, 42)),
-        ("chunk_plus_one", patterns::pseudo_random_data(CHUNK_PLUS_ONE, 42)),
+        (
+            "chunk_plus_one",
+            patterns::pseudo_random_data(CHUNK_PLUS_ONE, 42),
+        ),
     ];
-    
+
     let mut builder = VaultBuilder::new().with_rng_seed(456);
     for (name, content) in &patterns_data {
         builder = builder.add_file(format!("{name}.bin"), content.clone());
     }
     let (vault_path, master_key) = builder.build();
-    
+
     let vault_ops = VaultOperations::new(&vault_path, master_key);
-    
+
     // Create a summary of file sizes and checksums for snapshot testing
     let mut file_summary = Vec::new();
     for (name, _) in patterns_data {
         let filename = format!("{name}.bin");
         let decrypted = vault_ops.read_file(&DirId::root(), &filename).unwrap();
-        
+
         file_summary.push(FileSummary {
             name: filename,
             size: decrypted.content.len(),
@@ -88,48 +97,50 @@ fn test_file_content_patterns_snapshot() {
             },
         });
     }
-    
+
     assert_debug_snapshot!(file_summary);
 }
 
 #[test]
 fn test_filename_encryption_snapshot() {
-    
     let mut files = Vec::new();
-    
+
     // Add various filename types
     for &filename in NORMAL_FILES {
         files.push((filename, b"normal content" as &[u8]));
     }
-    
+
     for &filename in SPECIAL_CHAR_FILES {
         files.push((filename, b"special char content" as &[u8]));
     }
-    
+
     for &filename in HIDDEN_FILES {
         files.push((filename, b"hidden content" as &[u8]));
     }
-    
+
     let mut builder = VaultBuilder::new().with_rng_seed(789);
     for (name, content) in files {
         builder = builder.add_file(name, content);
     }
     let (vault_path, master_key) = builder.build();
-    
+
     let vault_ops = VaultOperations::new(&vault_path, master_key);
-    
+
     // Collect file metadata for snapshot
     let files = vault_ops.list_files(&DirId::root()).unwrap();
-    let mut file_metadata: Vec<FileMetadata> = files.into_iter().map(|f| FileMetadata {
-        decrypted_name: f.name,
-        encrypted_name: f.encrypted_name,
-        size: f.encrypted_size,
-        is_shortened: f.is_shortened,
-    }).collect();
-    
+    let mut file_metadata: Vec<FileMetadata> = files
+        .into_iter()
+        .map(|f| FileMetadata {
+            decrypted_name: f.name,
+            encrypted_name: f.encrypted_name,
+            size: f.encrypted_size,
+            is_shortened: f.is_shortened,
+        })
+        .collect();
+
     // Sort for deterministic snapshots
     file_metadata.sort_by(|a, b| a.decrypted_name.cmp(&b.decrypted_name));
-    
+
     assert_debug_snapshot!(file_metadata);
 }
 
@@ -224,8 +235,14 @@ fn collect_directory_structure_with_path(
             };
 
             // Count children
-            let children_files = vault_ops.list_files(&dir.directory_id).unwrap_or_default().len();
-            let children_dirs = vault_ops.list_directories(&dir.directory_id).unwrap_or_default().len();
+            let children_files = vault_ops
+                .list_files(&dir.directory_id)
+                .unwrap_or_default()
+                .len();
+            let children_dirs = vault_ops
+                .list_directories(&dir.directory_id)
+                .unwrap_or_default()
+                .len();
 
             structure.directories.push(DirectoryInfo {
                 path: full_path.clone(),
@@ -234,7 +251,12 @@ fn collect_directory_structure_with_path(
             });
 
             // Recurse into subdirectory
-            collect_directory_structure_with_path(vault_ops, &dir.directory_id, &full_path, structure);
+            collect_directory_structure_with_path(
+                vault_ops,
+                &dir.directory_id,
+                &full_path,
+                structure,
+            );
         }
     }
 }

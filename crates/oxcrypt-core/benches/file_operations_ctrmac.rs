@@ -7,11 +7,11 @@
 //! These benchmarks mirror `file_operations.rs` (which benchmarks AES-GCM)
 //! for easy comparison between the two cipher combos.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::file::FileContext;
 use oxcrypt_core::fs::file_ctrmac::{
-    decrypt_content, decrypt_header, encrypt_content, encrypt_header, HEADER_SIZE, NONCE_SIZE,
+    HEADER_SIZE, NONCE_SIZE, decrypt_content, decrypt_header, encrypt_content, encrypt_header,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -57,9 +57,9 @@ fn bench_ctrmac_file_decryption(c: &mut Criterion) {
     let test_sizes = [
         ("empty", 0),
         ("1KB", 1024),
-        ("32KB", 32 * 1024),       // One chunk exactly
-        ("100KB", 100 * 1024),     // Multiple chunks
-        ("1MB", 1024 * 1024),      // Large file
+        ("32KB", 32 * 1024),        // One chunk exactly
+        ("100KB", 100 * 1024),      // Multiple chunks
+        ("1MB", 1024 * 1024),       // Large file
         ("10MB", 10 * 1024 * 1024), // Very large file
     ];
 
@@ -76,11 +76,13 @@ fn bench_ctrmac_file_decryption(c: &mut Criterion) {
 
             // Get MAC key from master key for content encryption
             let mac_key = generate_mac_key();
-            let ciphertext = encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
+            let ciphertext =
+                encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
 
             b.iter(|| {
                 // Realistic workflow: decrypt header first, then content
-                let header = decrypt_header(&encrypted_header, &master_key, &FileContext::new()).unwrap();
+                let header =
+                    decrypt_header(&encrypted_header, &master_key, &FileContext::new()).unwrap();
                 let decrypted_content = decrypt_content(
                     &ciphertext,
                     &header.content_key,
@@ -117,8 +119,10 @@ fn bench_ctrmac_file_encryption(c: &mut Criterion) {
             b.iter(|| {
                 // Realistic workflow: encrypt header and content together
                 let encrypted_header = encrypt_header(&content_key, &master_key).unwrap();
-                let header_nonce: [u8; NONCE_SIZE] = encrypted_header[..NONCE_SIZE].try_into().unwrap();
-                let ciphertext = encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
+                let header_nonce: [u8; NONCE_SIZE] =
+                    encrypted_header[..NONCE_SIZE].try_into().unwrap();
+                let ciphertext =
+                    encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
                 black_box((encrypted_header, ciphertext));
             });
         });
@@ -149,7 +153,8 @@ fn bench_ctrmac_chunked_operations(c: &mut Criterion) {
             let header_nonce = generate_header_nonce();
             let mac_key = generate_mac_key();
 
-            let ciphertext = encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
+            let ciphertext =
+                encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
 
             b.iter(|| {
                 let decrypted = decrypt_content(
@@ -184,7 +189,8 @@ fn bench_ctrmac_header_operations(c: &mut Criterion) {
         b.iter(|| {
             // Simulate opening multiple files (e.g., for directory stats)
             for encrypted_header in &encrypted_headers {
-                let header = decrypt_header(encrypted_header, &master_key, &FileContext::new()).unwrap();
+                let header =
+                    decrypt_header(encrypted_header, &master_key, &FileContext::new()).unwrap();
                 black_box(header);
             }
         });

@@ -87,7 +87,9 @@ fn test_o_trunc_without_write_truncates_file() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create file with content
-    mount.write("truncate_test.txt", b"This should be deleted").unwrap();
+    mount
+        .write("truncate_test.txt", b"This should be deleted")
+        .unwrap();
 
     // Verify file has content
     assert_file_size(&mount, "truncate_test.txt", 22);
@@ -326,7 +328,7 @@ fn test_fallocate_negative_offset() {
     let result = unsafe {
         libc::fallocate(
             file.as_raw_fd(),
-            0, // mode: allocate
+            0,     // mode: allocate
             -1i64, // negative offset
             1000,
         )
@@ -397,7 +399,10 @@ fn test_unlink_with_open_handle_deferred() {
     // After unlink, the kernel's dcache is invalidated and lookup returns ENOENT
     // for files marked for deferred deletion.
     let result = File::open(mount.path("open_unlink.txt"));
-    assert!(result.is_err(), "Opening a new handle to unlinked file should fail");
+    assert!(
+        result.is_err(),
+        "Opening a new handle to unlinked file should fail"
+    );
     if let Err(e) = result {
         assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "Should get ENOENT");
     }
@@ -405,16 +410,26 @@ fn test_unlink_with_open_handle_deferred() {
     // BUT we should still be able to read from the open file handle
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).unwrap();
-    assert_eq!(buf, content, "Should still read from unlinked but open file");
+    assert_eq!(
+        buf, content,
+        "Should still read from unlinked but open file"
+    );
 
     // Close the file - now it should be truly deleted from vault
     drop(file);
 
     // Verify file is gone and cannot be re-opened (forces fresh lookup, bypasses cache)
     let result = File::open(mount.path("open_unlink.txt"));
-    assert!(result.is_err(), "File should be deleted after last handle closes");
+    assert!(
+        result.is_err(),
+        "File should be deleted after last handle closes"
+    );
     if let Err(e) = result {
-        assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "Should get ENOENT after deletion");
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::NotFound,
+            "Should get ENOENT after deletion"
+        );
     }
 }
 
@@ -588,7 +603,11 @@ fn test_multi_handle_size_consistency() {
 
     // Query size while both handles are open - should show extended size
     let meta1 = mount.path("multi_handle.txt").metadata().unwrap();
-    assert_eq!(meta1.len(), 29, "Size should reflect extension while both handles open");
+    assert_eq!(
+        meta1.len(),
+        29,
+        "Size should reflect extension while both handles open"
+    );
 
     // Close file1 (but file2 is still open!)
     drop(file1);
@@ -597,7 +616,11 @@ fn test_multi_handle_size_consistency() {
     // The bug was that buffer_sizes was cleared on first handle close,
     // causing getattr to return 60s TTL and the kernel to cache stale size.
     let meta2 = mount.path("multi_handle.txt").metadata().unwrap();
-    assert_eq!(meta2.len(), 29, "Size should remain correct after closing one handle");
+    assert_eq!(
+        meta2.len(),
+        29,
+        "Size should remain correct after closing one handle"
+    );
 
     // Close the second handle
     drop(file2);
@@ -638,7 +661,11 @@ fn test_ftruncate_extend_with_multiple_handles() {
 
     // Size should STILL be 100 after closing one handle
     let meta2 = mount.path("ftrunc_multi.txt").metadata().unwrap();
-    assert_eq!(meta2.len(), 100, "Size should remain 100 after closing one handle");
+    assert_eq!(
+        meta2.len(),
+        100,
+        "Size should remain 100 after closing one handle"
+    );
 
     // Close file2
     drop(file2);
@@ -660,20 +687,38 @@ fn test_sqlite_like_multi_file_pattern() {
     mount.write("test.db-shm", b"shm").unwrap();
 
     // Open multiple handles per file (simulating SQLite's behavior)
-    let db1 = OpenOptions::new().read(true).write(true)
-        .open(mount.path("test.db")).unwrap();
-    let db2 = OpenOptions::new().read(true).write(true)
-        .open(mount.path("test.db")).unwrap();
+    let db1 = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("test.db"))
+        .unwrap();
+    let db2 = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("test.db"))
+        .unwrap();
 
-    let wal1 = OpenOptions::new().read(true).write(true)
-        .open(mount.path("test.db-wal")).unwrap();
-    let wal2 = OpenOptions::new().read(true).write(true)
-        .open(mount.path("test.db-wal")).unwrap();
+    let wal1 = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("test.db-wal"))
+        .unwrap();
+    let wal2 = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("test.db-wal"))
+        .unwrap();
 
-    let shm1 = OpenOptions::new().read(true).write(true)
-        .open(mount.path("test.db-shm")).unwrap();
-    let shm2 = OpenOptions::new().read(true).write(true)
-        .open(mount.path("test.db-shm")).unwrap();
+    let shm1 = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("test.db-shm"))
+        .unwrap();
+    let shm2 = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("test.db-shm"))
+        .unwrap();
 
     // Extend all files via ftruncate (SQLite does this during WAL checkpoint)
     db1.set_len(4096).unwrap();
@@ -709,19 +754,31 @@ fn test_rapid_open_close_size_consistency() {
     mount.write("rapid.txt", b"x").unwrap();
 
     // Rapidly open/extend/close handles while keeping at least one open
-    let anchor = OpenOptions::new().read(true).write(true)
-        .open(mount.path("rapid.txt")).unwrap();
+    let anchor = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.path("rapid.txt"))
+        .unwrap();
 
     for i in 1..=10u64 {
-        let handle = OpenOptions::new().read(true).write(true)
-            .open(mount.path("rapid.txt")).unwrap();
+        let handle = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(mount.path("rapid.txt"))
+            .unwrap();
 
         handle.set_len(i * 1000).unwrap();
         drop(handle);
 
         // Size should be consistent after each close
         let size = mount.path("rapid.txt").metadata().unwrap().len();
-        assert_eq!(size, i * 1000, "Size should be {} after iteration {}", i * 1000, i);
+        assert_eq!(
+            size,
+            i * 1000,
+            "Size should be {} after iteration {}",
+            i * 1000,
+            i
+        );
     }
 
     drop(anchor);
@@ -766,7 +823,12 @@ fn test_fsync_syncs_data() {
     // Call fsync - this should sync data to disk
     let fd = file.as_raw_fd();
     let result = unsafe { libc::fsync(fd) };
-    assert_eq!(result, 0, "fsync should succeed, errno: {}", std::io::Error::last_os_error());
+    assert_eq!(
+        result,
+        0,
+        "fsync should succeed, errno: {}",
+        std::io::Error::last_os_error()
+    );
 
     drop(file);
 
@@ -802,7 +864,12 @@ fn test_fdatasync_syncs_data() {
     let result = unsafe { libc::fdatasync(fd) };
     #[cfg(not(target_os = "linux"))]
     let result = unsafe { libc::fsync(fd) }; // Fallback for macOS/BSD
-    assert_eq!(result, 0, "fdatasync/fsync should succeed, errno: {}", std::io::Error::last_os_error());
+    assert_eq!(
+        result,
+        0,
+        "fdatasync/fsync should succeed, errno: {}",
+        std::io::Error::last_os_error()
+    );
 
     drop(file);
 
@@ -818,7 +885,9 @@ fn test_fsync_after_modify_existing_file() {
     use std::os::unix::io::AsRawFd;
 
     // Create initial file
-    mount.write("modify_fsync.txt", b"Original content").unwrap();
+    mount
+        .write("modify_fsync.txt", b"Original content")
+        .unwrap();
 
     // Open for read-write and modify
     let mut file = OpenOptions::new()

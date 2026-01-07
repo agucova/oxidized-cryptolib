@@ -3,15 +3,14 @@
 //! These tests exercise the scheduler components under high concurrency
 //! to verify correctness and detect race conditions.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use oxcrypt_fuse::scheduler::{
-    DeadlineHeap, PerFileOrdering, ReadCacheKey, ReadCache, ReadCacheConfig,
-    RequestIdGenerator, RequestState, SchedulerStats,
-    InFlightReads, ReadKey, AttachResult,
+    AttachResult, DeadlineHeap, InFlightReads, PerFileOrdering, ReadCache, ReadCacheConfig,
+    ReadCacheKey, ReadKey, RequestIdGenerator, RequestState, SchedulerStats,
 };
 
 /// Number of threads for concurrent tests.
@@ -141,7 +140,10 @@ fn stress_deadline_heap_concurrent_insert_pop() {
     // All inserted should eventually be popped
     let total_inserted = inserted.load(Ordering::Relaxed);
     let total_popped = popped.load(Ordering::Relaxed);
-    assert_eq!(total_inserted, total_popped, "inserted={total_inserted}, popped={total_popped}");
+    assert_eq!(
+        total_inserted, total_popped,
+        "inserted={total_inserted}, popped={total_popped}"
+    );
 }
 
 #[test]
@@ -181,7 +183,12 @@ fn stress_deadline_heap_ordering() {
         for (id, _generation) in expired {
             // IDs should come out in roughly increasing order
             // (they were inserted with deadlines proportional to ID)
-            assert!(id.raw() > last_id.saturating_sub(10), "out of order: {} after {}", id.raw(), last_id);
+            assert!(
+                id.raw() > last_id.saturating_sub(10),
+                "out of order: {} after {}",
+                id.raw(),
+                last_id
+            );
             last_id = id.raw();
         }
     }
@@ -247,7 +254,8 @@ fn stress_per_file_ordering_single_file() {
     let expected = (THREAD_COUNT * OPS_PER_THREAD) as u64;
     assert!(
         total > expected / 2,
-        "too few completions: {total} < {}", expected / 2
+        "too few completions: {total} < {}",
+        expected / 2
     );
 }
 
@@ -380,7 +388,8 @@ fn stress_read_cache_eviction() {
     let size = cache.weighted_size();
     assert!(
         size <= 128 * 1024, // Allow 2x for eviction lag
-        "cache exceeded bounds: {} bytes", size
+        "cache exceeded bounds: {} bytes",
+        size
     );
 }
 
@@ -558,7 +567,8 @@ fn stress_mixed_workload() {
                             match in_flight.try_attach(key) {
                                 AttachResult::Leader => {
                                     thread::yield_now();
-                                    in_flight.complete(&key, Ok(bytes::Bytes::from_static(b"data")));
+                                    in_flight
+                                        .complete(&key, Ok(bytes::Bytes::from_static(b"data")));
                                 }
                                 AttachResult::Waiter(_) => {}
                             }
@@ -593,7 +603,8 @@ fn stress_mixed_workload() {
     // Should complete in reasonable time (< 10s for 8000 ops)
     assert!(
         elapsed < Duration::from_secs(10),
-        "mixed workload too slow: {:?}", elapsed
+        "mixed workload too slow: {:?}",
+        elapsed
     );
 
     // All operations should be recorded

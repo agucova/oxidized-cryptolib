@@ -3,9 +3,7 @@
 //! This module provides configuration options for tuning the filesystem
 //! behavior, particularly for different storage backends (local vs network).
 
-use oxcrypt_mount::{
-    DEFAULT_NEGATIVE_TTL, DEFAULT_TTL, LOCAL_NEGATIVE_TTL, LOCAL_TTL,
-};
+use oxcrypt_mount::{DEFAULT_NEGATIVE_TTL, DEFAULT_TTL, LOCAL_NEGATIVE_TTL, LOCAL_TTL};
 use std::time::Duration;
 
 /// Default I/O timeout for network backends (30 seconds).

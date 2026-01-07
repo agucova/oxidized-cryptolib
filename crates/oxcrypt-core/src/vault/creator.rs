@@ -4,9 +4,12 @@
 //! from scratch.
 
 use crate::{
-    crypto::keys::{MasterKey, KeyAccessError},
+    crypto::keys::{KeyAccessError, MasterKey},
     vault::{
-        config::{create_vault_config, CiphertextDir, VaultConfig, VaultConfigCreationError, DEFAULT_SHORTENING_THRESHOLD},
+        config::{
+            CiphertextDir, DEFAULT_SHORTENING_THRESHOLD, VaultConfig, VaultConfigCreationError,
+            create_vault_config,
+        },
         master_key::create_masterkey_file,
         operations::VaultOperations,
         path::DirId,
@@ -155,7 +158,9 @@ impl VaultCreator {
         let masterkey_content = create_masterkey_file(&master_key, &self.passphrase)
             .map_err(|e| VaultCreationError::MasterkeyCreation(e.to_string()))?;
         fs::write(
-            self.vault_path.join("masterkey").join("masterkey.cryptomator"),
+            self.vault_path
+                .join("masterkey")
+                .join("masterkey.cryptomator"),
             &masterkey_content,
         )?;
 
@@ -235,17 +240,19 @@ mod tests {
 
         // Read vault.cryptomator and verify the jti
         let jwt = fs::read_to_string(vault_path.join("vault.cryptomator")).unwrap();
-        assert!(jwt.contains("my-custom-vault-id") || {
-            // The ID is in the JWT claims, decode to verify
-            let parts: Vec<&str> = jwt.split('.').collect();
-            let claims = base64::Engine::decode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                parts[1],
-            )
-            .unwrap();
-            let claims_str = String::from_utf8(claims).unwrap();
-            claims_str.contains(custom_id)
-        });
+        assert!(
+            jwt.contains("my-custom-vault-id") || {
+                // The ID is in the JWT claims, decode to verify
+                let parts: Vec<&str> = jwt.split('.').collect();
+                let claims = base64::Engine::decode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    parts[1],
+                )
+                .unwrap();
+                let claims_str = String::from_utf8(claims).unwrap();
+                claims_str.contains(custom_id)
+            }
+        );
     }
 
     #[test]
@@ -265,11 +272,9 @@ mod tests {
         // Verify the threshold is persisted in vault.cryptomator
         let jwt = fs::read_to_string(vault_path.join("vault.cryptomator")).unwrap();
         let parts: Vec<&str> = jwt.split('.').collect();
-        let claims = base64::Engine::decode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            parts[1],
-        )
-        .unwrap();
+        let claims =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1])
+                .unwrap();
         let claims_str = String::from_utf8(claims).unwrap();
         assert!(claims_str.contains("\"shorteningThreshold\":100"));
     }
@@ -285,6 +290,9 @@ mod tests {
             .expect("Failed to create vault");
 
         // Verify the vault ops has the default threshold (220)
-        assert_eq!(vault_ops.shortening_threshold(), DEFAULT_SHORTENING_THRESHOLD);
+        assert_eq!(
+            vault_ops.shortening_threshold(),
+            DEFAULT_SHORTENING_THRESHOLD
+        );
     }
 }

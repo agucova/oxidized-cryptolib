@@ -26,24 +26,36 @@ fn test_directory_create_populate_delete() {
     assert_is_directory(&mount, "project");
 
     // Populate with files
-    mount.write("project/readme.txt", b"README content").expect("write readme failed");
-    mount.write("project/main.rs", b"fn main() {}").expect("write main failed");
+    mount
+        .write("project/readme.txt", b"README content")
+        .expect("write readme failed");
+    mount
+        .write("project/main.rs", b"fn main() {}")
+        .expect("write main failed");
     mount.mkdir("project/src").expect("mkdir src failed");
-    mount.write("project/src/lib.rs", b"pub fn hello() {}").expect("write lib failed");
+    mount
+        .write("project/src/lib.rs", b"pub fn hello() {}")
+        .expect("write lib failed");
 
     // Verify structure
     assert_dir_contains(&mount, "project", &["readme.txt", "main.rs", "src"]);
     assert_dir_entries(&mount, "project/src", &["lib.rs"]);
 
     // Modify files
-    mount.write("project/readme.txt", b"Updated README").expect("update readme failed");
+    mount
+        .write("project/readme.txt", b"Updated README")
+        .expect("update readme failed");
     assert_file_content(&mount, "project/readme.txt", b"Updated README");
 
     // Clean up in correct order
-    mount.remove("project/src/lib.rs").expect("remove lib failed");
+    mount
+        .remove("project/src/lib.rs")
+        .expect("remove lib failed");
     mount.rmdir("project/src").expect("rmdir src failed");
     mount.remove("project/main.rs").expect("remove main failed");
-    mount.remove("project/readme.txt").expect("remove readme failed");
+    mount
+        .remove("project/readme.txt")
+        .expect("remove readme failed");
     mount.rmdir("project").expect("rmdir project failed");
 
     assert_not_found(&mount, "project");
@@ -59,9 +71,15 @@ fn test_nested_directory_operations() {
 
     // Place files at each level
     mount.write("a/file.txt", b"level 1").expect("write failed");
-    mount.write("a/b/file.txt", b"level 2").expect("write failed");
-    mount.write("a/b/c/file.txt", b"level 3").expect("write failed");
-    mount.write("a/b/c/d/file.txt", b"level 4").expect("write failed");
+    mount
+        .write("a/b/file.txt", b"level 2")
+        .expect("write failed");
+    mount
+        .write("a/b/c/file.txt", b"level 3")
+        .expect("write failed");
+    mount
+        .write("a/b/c/d/file.txt", b"level 4")
+        .expect("write failed");
 
     // Verify all files
     assert_file_content(&mount, "a/file.txt", b"level 1");
@@ -70,7 +88,9 @@ fn test_nested_directory_operations() {
     assert_file_content(&mount, "a/b/c/d/file.txt", b"level 4");
 
     // Modify files at different levels
-    mount.write("a/b/file.txt", b"level 2 updated").expect("update failed");
+    mount
+        .write("a/b/file.txt", b"level 2 updated")
+        .expect("update failed");
     assert_file_content(&mount, "a/b/file.txt", b"level 2 updated");
 
     // Other files should be unchanged
@@ -90,13 +110,17 @@ fn test_delete_and_recreate() {
     let original = b"original content";
     let replacement = b"replacement content";
 
-    mount.write("file.txt", original).expect("write original failed");
+    mount
+        .write("file.txt", original)
+        .expect("write original failed");
     assert_file_content(&mount, "file.txt", original);
 
     mount.remove("file.txt").expect("delete failed");
     assert_not_found(&mount, "file.txt");
 
-    mount.write("file.txt", replacement).expect("write replacement failed");
+    mount
+        .write("file.txt", replacement)
+        .expect("write replacement failed");
     assert_file_content(&mount, "file.txt", replacement);
 }
 
@@ -107,7 +131,9 @@ fn test_rapid_replace_cycle() {
 
     for i in 0..10 {
         let content = format!("iteration {}", i);
-        mount.write("cycle.txt", content.as_bytes()).expect("write failed");
+        mount
+            .write("cycle.txt", content.as_bytes())
+            .expect("write failed");
         assert_file_content(&mount, "cycle.txt", content.as_bytes());
 
         mount.remove("cycle.txt").expect("delete failed");
@@ -128,31 +154,43 @@ fn test_size_transition_workflow() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Empty
-    mount.write("transitions.bin", b"").expect("write empty failed");
+    mount
+        .write("transitions.bin", b"")
+        .expect("write empty failed");
     assert_file_size(&mount, "transitions.bin", 0);
 
     // Small (100 bytes)
     let small = random_bytes(100);
-    mount.write("transitions.bin", &small).expect("write small failed");
+    mount
+        .write("transitions.bin", &small)
+        .expect("write small failed");
     assert_file_content(&mount, "transitions.bin", &small);
 
     // One chunk (32KB)
     let one_chunk = one_chunk_content();
-    mount.write("transitions.bin", &one_chunk).expect("write chunk failed");
+    mount
+        .write("transitions.bin", &one_chunk)
+        .expect("write chunk failed");
     assert_file_content(&mount, "transitions.bin", &one_chunk);
 
     // Multiple chunks (3 * 32KB)
     let multi = multi_chunk_content(3);
     let multi_hash = sha256(&multi);
-    mount.write("transitions.bin", &multi).expect("write multi failed");
+    mount
+        .write("transitions.bin", &multi)
+        .expect("write multi failed");
     assert_file_hash(&mount, "transitions.bin", &multi_hash);
 
     // Back to small
-    mount.write("transitions.bin", &small).expect("write small again failed");
+    mount
+        .write("transitions.bin", &small)
+        .expect("write small again failed");
     assert_file_content(&mount, "transitions.bin", &small);
 
     // Back to empty
-    mount.write("transitions.bin", b"").expect("write empty again failed");
+    mount
+        .write("transitions.bin", b"")
+        .expect("write empty again failed");
     assert_file_size(&mount, "transitions.bin", 0);
 }
 
@@ -191,18 +229,26 @@ fn test_interleaved_read_write() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create initial file
-    mount.write("interleave.txt", b"initial").expect("write failed");
+    mount
+        .write("interleave.txt", b"initial")
+        .expect("write failed");
 
     // Interleave reads and writes
     assert_file_content(&mount, "interleave.txt", b"initial");
 
-    mount.write("interleave.txt", b"update 1").expect("write 1 failed");
+    mount
+        .write("interleave.txt", b"update 1")
+        .expect("write 1 failed");
     assert_file_content(&mount, "interleave.txt", b"update 1");
 
-    mount.write("interleave.txt", b"update 2").expect("write 2 failed");
+    mount
+        .write("interleave.txt", b"update 2")
+        .expect("write 2 failed");
     assert_file_content(&mount, "interleave.txt", b"update 2");
 
-    mount.write("interleave.txt", b"update 3").expect("write 3 failed");
+    mount
+        .write("interleave.txt", b"update 3")
+        .expect("write 3 failed");
     assert_file_content(&mount, "interleave.txt", b"update 3");
 }
 
@@ -212,14 +258,22 @@ fn test_read_during_write_workflow() {
     let mount = require_mount!(TestMount::with_temp_vault());
 
     // Create two files
-    mount.write("file_a.txt", b"content A").expect("write a failed");
-    mount.write("file_b.txt", b"content B").expect("write b failed");
+    mount
+        .write("file_a.txt", b"content A")
+        .expect("write a failed");
+    mount
+        .write("file_b.txt", b"content B")
+        .expect("write b failed");
 
     // Interleaved operations on both files
     let a = mount.read("file_a.txt").expect("read a failed");
-    mount.write("file_b.txt", b"content B updated").expect("update b failed");
+    mount
+        .write("file_b.txt", b"content B updated")
+        .expect("update b failed");
     let b = mount.read("file_b.txt").expect("read b failed");
-    mount.write("file_a.txt", b"content A updated").expect("update a failed");
+    mount
+        .write("file_a.txt", b"content A updated")
+        .expect("update a failed");
 
     assert_eq!(a, b"content A");
     assert_eq!(b, b"content B updated");
@@ -242,7 +296,9 @@ fn test_bulk_create_then_delete() {
     for i in 0..file_count {
         let filename = format!("bulk_{}.txt", i);
         let content = format!("content {}", i);
-        mount.write(&filename, content.as_bytes()).expect("write failed");
+        mount
+            .write(&filename, content.as_bytes())
+            .expect("write failed");
     }
 
     // Verify all exist
@@ -278,7 +334,9 @@ fn test_bulk_directory_creation() {
 
     // Place file in each
     for i in 0..10 {
-        mount.write(&format!("dir_{}/file.txt", i), b"content").expect("write failed");
+        mount
+            .write(&format!("dir_{}/file.txt", i), b"content")
+            .expect("write failed");
     }
 
     // Verify all
@@ -304,29 +362,61 @@ fn test_project_setup_workflow() {
     mount.mkdir("myproject/docs").expect("mkdir docs failed");
 
     // Create source files
-    mount.write("myproject/src/main.rs", b"fn main() {\n    println!(\"Hello\");\n}\n").expect("write main failed");
-    mount.write("myproject/src/lib.rs", b"pub mod utils;\n").expect("write lib failed");
-    mount.write("myproject/src/utils.rs", b"pub fn helper() {}\n").expect("write utils failed");
+    mount
+        .write(
+            "myproject/src/main.rs",
+            b"fn main() {\n    println!(\"Hello\");\n}\n",
+        )
+        .expect("write main failed");
+    mount
+        .write("myproject/src/lib.rs", b"pub mod utils;\n")
+        .expect("write lib failed");
+    mount
+        .write("myproject/src/utils.rs", b"pub fn helper() {}\n")
+        .expect("write utils failed");
 
     // Create config files
-    mount.write("myproject/Cargo.toml", b"[package]\nname = \"myproject\"\n").expect("write cargo failed");
-    mount.write("myproject/.gitignore", b"/target\n").expect("write gitignore failed");
+    mount
+        .write("myproject/Cargo.toml", b"[package]\nname = \"myproject\"\n")
+        .expect("write cargo failed");
+    mount
+        .write("myproject/.gitignore", b"/target\n")
+        .expect("write gitignore failed");
 
     // Create test files
-    mount.write("myproject/tests/integration.rs", b"#[test]\nfn it_works() {}\n").expect("write test failed");
+    mount
+        .write(
+            "myproject/tests/integration.rs",
+            b"#[test]\nfn it_works() {}\n",
+        )
+        .expect("write test failed");
 
     // Create docs
-    mount.write("myproject/docs/README.md", b"# My Project\n").expect("write readme failed");
+    mount
+        .write("myproject/docs/README.md", b"# My Project\n")
+        .expect("write readme failed");
 
     // Verify structure
-    assert_dir_contains(&mount, "myproject", &["src", "tests", "docs", "Cargo.toml", ".gitignore"]);
+    assert_dir_contains(
+        &mount,
+        "myproject",
+        &["src", "tests", "docs", "Cargo.toml", ".gitignore"],
+    );
     assert_dir_entries(&mount, "myproject/src", &["main.rs", "lib.rs", "utils.rs"]);
     assert_dir_entries(&mount, "myproject/tests", &["integration.rs"]);
     assert_dir_entries(&mount, "myproject/docs", &["README.md"]);
 
     // Verify file contents
-    assert_file_content(&mount, "myproject/Cargo.toml", b"[package]\nname = \"myproject\"\n");
-    assert_file_content(&mount, "myproject/src/main.rs", b"fn main() {\n    println!(\"Hello\");\n}\n");
+    assert_file_content(
+        &mount,
+        "myproject/Cargo.toml",
+        b"[package]\nname = \"myproject\"\n",
+    );
+    assert_file_content(
+        &mount,
+        "myproject/src/main.rs",
+        b"fn main() {\n    println!(\"Hello\");\n}\n",
+    );
 }
 
 // =============================================================================
@@ -345,9 +435,15 @@ fn test_reorganize_files() {
 
     // Reorganize into directories
     mount.mkdir("letters").expect("mkdir failed");
-    mount.rename("a.txt", "letters/a.txt").expect("move a failed");
-    mount.rename("b.txt", "letters/b.txt").expect("move b failed");
-    mount.rename("c.txt", "letters/c.txt").expect("move c failed");
+    mount
+        .rename("a.txt", "letters/a.txt")
+        .expect("move a failed");
+    mount
+        .rename("b.txt", "letters/b.txt")
+        .expect("move b failed");
+    mount
+        .rename("c.txt", "letters/c.txt")
+        .expect("move c failed");
 
     // Verify new structure
     assert_not_found(&mount, "a.txt");
@@ -373,10 +469,18 @@ fn test_rename_workflow_with_content_verify() {
     mount.mkdir("step2").expect("mkdir 2 failed");
     mount.mkdir("step3").expect("mkdir 3 failed");
 
-    mount.rename("large.bin", "step1/large.bin").expect("move 1 failed");
-    mount.rename("step1/large.bin", "step2/large.bin").expect("move 2 failed");
-    mount.rename("step2/large.bin", "step3/large.bin").expect("move 3 failed");
-    mount.rename("step3/large.bin", "final.bin").expect("move final failed");
+    mount
+        .rename("large.bin", "step1/large.bin")
+        .expect("move 1 failed");
+    mount
+        .rename("step1/large.bin", "step2/large.bin")
+        .expect("move 2 failed");
+    mount
+        .rename("step2/large.bin", "step3/large.bin")
+        .expect("move 3 failed");
+    mount
+        .rename("step3/large.bin", "final.bin")
+        .expect("move final failed");
 
     // Verify content preserved through all moves
     assert_file_hash(&mount, "final.bin", &expected_hash);
@@ -393,22 +497,38 @@ fn test_complex_mixed_workflow() {
 
     // Create base structure
     mount.mkdir("workspace").expect("mkdir failed");
-    mount.mkdir("workspace/active").expect("mkdir active failed");
-    mount.mkdir("workspace/archive").expect("mkdir archive failed");
+    mount
+        .mkdir("workspace/active")
+        .expect("mkdir active failed");
+    mount
+        .mkdir("workspace/archive")
+        .expect("mkdir archive failed");
 
     // Create active documents
-    mount.write("workspace/active/doc1.txt", b"Document 1").expect("write failed");
-    mount.write("workspace/active/doc2.txt", b"Document 2").expect("write failed");
-    mount.write("workspace/active/doc3.txt", b"Document 3").expect("write failed");
+    mount
+        .write("workspace/active/doc1.txt", b"Document 1")
+        .expect("write failed");
+    mount
+        .write("workspace/active/doc2.txt", b"Document 2")
+        .expect("write failed");
+    mount
+        .write("workspace/active/doc3.txt", b"Document 3")
+        .expect("write failed");
 
     // Modify some documents
-    mount.write("workspace/active/doc1.txt", b"Document 1 - Updated").expect("update failed");
+    mount
+        .write("workspace/active/doc1.txt", b"Document 1 - Updated")
+        .expect("update failed");
 
     // Archive old documents
-    mount.rename("workspace/active/doc2.txt", "workspace/archive/doc2.txt").expect("archive failed");
+    mount
+        .rename("workspace/active/doc2.txt", "workspace/archive/doc2.txt")
+        .expect("archive failed");
 
     // Delete unwanted documents
-    mount.remove("workspace/active/doc3.txt").expect("delete failed");
+    mount
+        .remove("workspace/active/doc3.txt")
+        .expect("delete failed");
 
     // Verify final state
     assert_file_content(&mount, "workspace/active/doc1.txt", b"Document 1 - Updated");
@@ -424,16 +544,26 @@ fn test_incremental_backup_workflow() {
 
     // Initial state
     mount.mkdir("data").expect("mkdir data failed");
-    mount.write("data/file1.txt", b"version 1").expect("write failed");
-    mount.write("data/file2.txt", b"version 1").expect("write failed");
+    mount
+        .write("data/file1.txt", b"version 1")
+        .expect("write failed");
+    mount
+        .write("data/file2.txt", b"version 1")
+        .expect("write failed");
 
     // Create backup
     mount.mkdir("backup").expect("mkdir backup failed");
-    mount.copy("data/file1.txt", "backup/file1.txt").expect("copy failed");
-    mount.copy("data/file2.txt", "backup/file2.txt").expect("copy failed");
+    mount
+        .copy("data/file1.txt", "backup/file1.txt")
+        .expect("copy failed");
+    mount
+        .copy("data/file2.txt", "backup/file2.txt")
+        .expect("copy failed");
 
     // Modify originals
-    mount.write("data/file1.txt", b"version 2").expect("update failed");
+    mount
+        .write("data/file1.txt", b"version 2")
+        .expect("update failed");
 
     // Verify backup unchanged
     assert_file_content(&mount, "backup/file1.txt", b"version 1");
@@ -457,7 +587,9 @@ fn test_operation_after_error() {
     let _ = mount.read("nonexistent.txt"); // Should fail
 
     // Operations should still work after error
-    mount.write("recovery.txt", b"recovered").expect("write after error failed");
+    mount
+        .write("recovery.txt", b"recovered")
+        .expect("write after error failed");
     assert_file_content(&mount, "recovery.txt", b"recovered");
 }
 
@@ -468,8 +600,12 @@ fn test_partial_cleanup_recovery() {
 
     // Create directory with contents
     mount.mkdir("partial").expect("mkdir failed");
-    mount.write("partial/keep.txt", b"keep me").expect("write failed");
-    mount.write("partial/delete.txt", b"delete me").expect("write failed");
+    mount
+        .write("partial/keep.txt", b"keep me")
+        .expect("write failed");
+    mount
+        .write("partial/delete.txt", b"delete me")
+        .expect("write failed");
 
     // Try to delete directory (should fail - not empty)
     let _ = mount.rmdir("partial"); // Expected to fail

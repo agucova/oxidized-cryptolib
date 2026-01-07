@@ -10,8 +10,8 @@ use tracing::{debug, instrument, trace, warn};
 
 use crate::crypto::keys::MasterKey;
 use crate::fs::file::{
-    decrypt_file_content_with_context, decrypt_file_header_with_context, FileContext,
-    FileDecryptionError, FileError, DecryptedFile,
+    DecryptedFile, FileContext, FileDecryptionError, FileError, decrypt_file_content_with_context,
+    decrypt_file_header_with_context,
 };
 
 /// Async version of `decrypt_file`.
@@ -85,9 +85,15 @@ pub async fn decrypt_file_with_context_async(
 
     // Validate minimum file size
     if encrypted.len() < 68 {
-        warn!(actual_size = encrypted.len(), "File too small for valid encrypted file");
+        warn!(
+            actual_size = encrypted.len(),
+            "File too small for valid encrypted file"
+        );
         return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
-            reason: format!("file too small: expected at least 68 bytes, got {}", encrypted.len()),
+            reason: format!(
+                "file too small: expected at least 68 bytes, got {}",
+                encrypted.len()
+            ),
             context,
         }));
     }

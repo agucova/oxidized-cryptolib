@@ -6,7 +6,7 @@
 use dioxus::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::{mount_manager, ActivityStatus, SchedulerStatsSnapshot, VaultStats};
 use crate::state::ThemePreference;
@@ -292,7 +292,21 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
         root.present().ok();
     }
 
-    svg_buffer
+    make_svg_responsive(svg_buffer, width, height)
+}
+
+fn make_svg_responsive(svg: String, width: u32, height: u32) -> String {
+    let needle = format!("width=\"{width}\" height=\"{height}\"");
+    if svg.contains(&needle) {
+        svg.replace(
+            &needle,
+            &format!(
+                "viewBox=\"0 0 {width} {height}\" width=\"100%\" height=\"100%\" preserveAspectRatio=\"xMidYMid meet\""
+            ),
+        )
+    } else {
+        svg
+    }
 }
 
 /// Format rate for Y-axis labels (compact)
@@ -433,134 +447,152 @@ fn StatsContent(
     // Record sample and get current rates
     let (read_rate, write_rate) = history.write().record(bytes_read, bytes_written);
 
-    // Render chart SVG (width matches container, ~460px with padding)
-    let chart_svg = render_throughput_chart(&history.read(), is_dark, 460, 180);
+    // Render chart SVG (responsive via viewBox, higher base size for crispness)
+    let chart_svg = render_throughput_chart(&history.read(), is_dark, 640, 260);
 
     rsx! {
-        // Activity Status Badge
         div {
-            class: "flex items-center justify-between mb-4",
-            ActivityBadge { status: activity }
+            class: "grid",
+            style: "grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); column-gap: 20px; row-gap: 20px;",
+
             div {
-                class: "flex items-center gap-3",
-                // Error indicator (shows only if errors > 0)
-                if error_count > 0 {
-                    ErrorBadge { count: error_count }
+                class: "flex items-center justify-between",
+                style: "grid-column: 1 / -1; gap: 16px;",
+                div {
+                    class: "flex items-center gap-3",
+                    ActivityBadge { status: activity }
+                    if error_count > 0 {
+                        ErrorBadge { count: error_count }
+                    }
                 }
                 span {
                     class: "text-sm text-gray-600 dark:text-gray-300",
                     "Session: {format_duration(session_duration)}"
                 }
             }
-        }
 
-        // Read/Write Performance Cards
-        div {
-            class: "grid grid-cols-2 gap-3",
-
-            // Read Stats Card
-            ThroughputCard {
-                label: "READ",
-                rate: read_rate,
-                latency_ms: read_latency_ms,
-                icon: "📖",
-            }
-
-            // Write Stats Card
-            ThroughputCard {
-                label: "WRITE",
-                rate: write_rate,
-                latency_ms: write_latency_ms,
-                icon: "✏️",
-            }
-        }
-
-        // Operations Grid (reads, writes, metadata, open handles)
-        div {
-            class: "grid grid-cols-4 gap-2 mt-4",
-
-            OperationCounter { label: "Reads", count: total_reads, icon: "📖" }
-            OperationCounter { label: "Writes", count: total_writes, icon: "✏️" }
-            OperationCounter { label: "Metadata", count: metadata_ops, icon: "📋" }
+            // Left column
             div {
-                class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-2 text-center",
-                span {
-                    class: "text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide",
-                    "🔓 Open"
-                }
-                p {
-                    class: "text-sm font-semibold text-gray-900 dark:text-white mt-1",
-                    "{open_files}F / {open_dirs}D"
-                }
-            }
-        }
-
-        // Metadata Latency (if we have metadata ops)
-        if metadata_ops > 0 {
-            div {
-                class: "mt-3 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-between",
-                span {
-                    class: "text-xs text-gray-500 dark:text-gray-400",
-                    "📋 Metadata Latency"
-                }
-                span {
-                    class: "text-sm font-medium text-gray-700 dark:text-gray-200",
-                    "{format_latency(metadata_latency_ms)} avg"
-                }
-            }
-        }
-
-        // Throughput Chart
-        div {
-            class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-3 mt-4",
-
-            div {
-                class: "flex items-center justify-between mb-2",
-
-                span {
-                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide",
-                    "Throughput (last 60s)"
-                }
-
-                // Legend
+                class: "flex flex-col",
+                style: "row-gap: 16px;",
+                // Read/Write Performance Cards
                 div {
-                    class: "flex items-center gap-4 text-xs",
+                    class: "grid",
+                    style: "grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;",
 
-                    div {
-                        class: "flex items-center",
-                        span {
-                            style: "width: 10px; height: 10px; border-radius: 50%; background-color: #60a5fa; display: inline-block; margin-right: 6px;",
-                        }
-                        span { class: "text-gray-500 dark:text-gray-400", "Read" }
+                    // Read Stats Card
+                    ThroughputCard {
+                        label: "READ",
+                        rate: read_rate,
+                        latency_ms: read_latency_ms,
+                        icon: "📖",
                     }
 
+                    // Write Stats Card
+                    ThroughputCard {
+                        label: "WRITE",
+                        rate: write_rate,
+                        latency_ms: write_latency_ms,
+                        icon: "✏️",
+                    }
+                }
+
+                // Operations Grid (reads, writes, metadata, open handles)
+                div {
+                    class: "grid",
+                    style: "grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;",
+
+                    OperationCounter { label: "Reads", count: total_reads, icon: "📖" }
+                    OperationCounter { label: "Writes", count: total_writes, icon: "✏️" }
+                    OperationCounter { label: "Metadata", count: metadata_ops, icon: "📋" }
                     div {
-                        class: "flex items-center",
+                        class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-2 text-center",
                         span {
-                            style: "width: 10px; height: 10px; border-radius: 50%; background-color: #fbbf24; display: inline-block; margin-right: 6px;",
+                            class: "text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                            "🔓 Open"
                         }
-                        span { class: "text-gray-500 dark:text-gray-400", "Write" }
+                        p {
+                            class: "text-sm font-semibold text-gray-900 dark:text-white mt-1",
+                            "{open_files}F / {open_dirs}D"
+                        }
+                    }
+                }
+
+                // Metadata Latency (if we have metadata ops)
+                if metadata_ops > 0 {
+                    div {
+                        class: "px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-between",
+                        span {
+                            class: "text-xs text-gray-500 dark:text-gray-400 pl-0.5",
+                            "📋 Metadata Latency"
+                        }
+                        span {
+                            class: "text-sm font-medium text-gray-700 dark:text-gray-200",
+                            "{format_latency(metadata_latency_ms)} avg"
+                        }
+                    }
+                }
+
+                // Throughput Chart
+                    div {
+                        class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-3",
+
+                        div {
+                            class: "flex items-center justify-between mb-2",
+
+                            span {
+                                class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide pl-0.5",
+                                "Throughput (last 60s)"
+                            }
+
+                        // Legend
+                        div {
+                            class: "flex items-center gap-4 text-xs",
+
+                            div {
+                                class: "flex items-center",
+                                span {
+                                    style: "width: 10px; height: 10px; border-radius: 50%; background-color: #60a5fa; display: inline-block; margin-right: 6px;",
+                                }
+                                span { class: "text-gray-500 dark:text-gray-400", "Read" }
+                            }
+
+                            div {
+                                class: "flex items-center",
+                                span {
+                                    style: "width: 10px; height: 10px; border-radius: 50%; background-color: #fbbf24; display: inline-block; margin-right: 6px;",
+                                }
+                                span { class: "text-gray-500 dark:text-gray-400", "Write" }
+                            }
+                        }
+                    }
+
+                    // Chart SVG
+                    div {
+                        class: "w-full overflow-hidden rounded",
+                        style: "aspect-ratio: 23 / 10; min-height: 160px;",
+                        dangerous_inner_html: "{chart_svg}"
                     }
                 }
             }
 
-            // Chart SVG
+            // Right column
             div {
-                class: "w-full overflow-hidden rounded",
-                dangerous_inner_html: "{chart_svg}"
+                class: "flex flex-col",
+                style: "row-gap: 16px;",
+
+                // Cache Stats
+                CacheHitRateView {
+                    hit_rate: hit_rate,
+                    hits: hits,
+                    misses: misses,
+                }
+
+                // Scheduler Stats (only shown for backends that support it, e.g., FUSE)
+                if let Some(sched) = scheduler_stats {
+                    SchedulerStatsView { stats: sched.clone() }
+                }
             }
-        }
-
-        // Cache Stats
-        CacheHitRateView {
-            hit_rate: hit_rate,
-            hits: hits,
-            misses: misses,
-        }
-
-        // Scheduler Stats (only shown for backends that support it, e.g., FUSE)
-        if let Some(sched) = scheduler_stats {
-            SchedulerStatsView { stats: sched.clone() }
         }
     }
 }
@@ -568,32 +600,45 @@ fn StatsContent(
 /// Scheduler statistics view showing I/O scheduling details
 #[component]
 fn SchedulerStatsView(stats: SchedulerStatsSnapshot) -> Element {
-    // Extract key metrics
     let in_flight = stats.in_flight_total;
-    let rejection_rate_pct = (stats.rejection_rate * 100.0).min(100.0);
-    let timeout_rate_pct = (stats.timeout_rate * 100.0).min(100.0);
+    let queue_total = stats.queue_depth_total;
+    let queue_by_lane = stats.queue_depth_by_lane;
+    let oldest_wait_ms = stats.oldest_queue_wait_ms;
+    let last_dequeue_ago_ms = elapsed_since_ms(stats.last_dequeue_ms);
 
-    // Read cache dedup stats
-    let cache_hits = stats.read_cache_hits;
-    let cache_misses = stats.read_cache_misses;
-    let cache_total = cache_hits + cache_misses;
-    let cache_hit_rate = if cache_total > 0 {
-        (cache_hits as f64 / cache_total as f64 * 100.0) as u32
+    let queued_value_class = if queue_total == 0 {
+        "text-gray-700 dark:text-gray-200"
+    } else if queue_total <= 5 {
+        "text-amber-600 dark:text-amber-400"
     } else {
-        0
+        "text-red-600 dark:text-red-400"
     };
 
-    // Single-flight dedup (concurrent identical reads)
-    let dedup_saved = stats.dedup_waiters;
-    let dedup_total = stats.dedup_leaders + dedup_saved;
-    let dedup_rate = if dedup_total > 0 {
-        (dedup_saved as f64 / dedup_total as f64 * 100.0) as u32
+    let oldest_value_class = if oldest_wait_ms == 0 {
+        "text-gray-700 dark:text-gray-200"
+    } else if oldest_wait_ms < 100 {
+        "text-green-600 dark:text-green-400"
+    } else if oldest_wait_ms < 500 {
+        "text-amber-600 dark:text-amber-400"
     } else {
-        0
+        "text-red-600 dark:text-red-400"
     };
 
-    // Lane stats [L0-Control, L1-Metadata, L2-ReadFg, L3-WriteFg, L4-Bulk]
-    let lanes = stats.in_flight_by_lane;
+    let last_dequeue_value_class = if last_dequeue_ago_ms == 0 {
+        "text-gray-700 dark:text-gray-200"
+    } else if last_dequeue_ago_ms < 250 {
+        "text-green-600 dark:text-green-400"
+    } else if last_dequeue_ago_ms < 1000 {
+        "text-amber-600 dark:text-amber-400"
+    } else {
+        "text-red-600 dark:text-red-400"
+    };
+
+    let inflight_value_class = if in_flight == 0 {
+        "text-gray-700 dark:text-gray-200"
+    } else {
+        "text-blue-600 dark:text-blue-400"
+    };
 
     rsx! {
         div {
@@ -602,7 +647,7 @@ fn SchedulerStatsView(stats: SchedulerStatsSnapshot) -> Element {
             div {
                 class: "flex items-center justify-between mb-3",
                 span {
-                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide pl-0.5",
                     "I/O Scheduler"
                 }
                 span {
@@ -613,45 +658,52 @@ fn SchedulerStatsView(stats: SchedulerStatsSnapshot) -> Element {
 
             // Metrics grid
             div {
-                class: "grid grid-cols-2 gap-2",
+                class: "grid gap-3",
+                style: "grid-template-columns: minmax(190px, 1.2fr) minmax(160px, 1fr);",
 
-                // Read Cache Hit Rate
                 SchedulerMetric {
-                    label: "Read Cache",
-                    value: "{cache_hit_rate}%",
-                    detail: "{cache_hits}/{cache_total}",
-                    good: cache_hit_rate >= 70,
+                    label: "Queued",
+                    value: format!("{queue_total}"),
+                    detail: "Total queued".to_string(),
+                    value_class: queued_value_class,
                 }
 
-                // Single-flight Dedup Rate
                 SchedulerMetric {
-                    label: "Dedup Savings",
-                    value: "{dedup_rate}%",
-                    detail: "{dedup_saved} saved",
-                    good: dedup_rate >= 10,
+                    label: "Oldest Wait",
+                    value: format_elapsed_ms(oldest_wait_ms),
+                    detail: "Oldest queued item".to_string(),
+                    value_class: oldest_value_class,
                 }
 
-                // Timeout Rate
                 SchedulerMetric {
-                    label: "Timeouts",
-                    value: format!("{timeout_rate_pct:.1}%"),
-                    detail: format!("{} ops", stats.timeouts),
-                    good: timeout_rate_pct < 1.0,
+                    label: "Last Dequeue",
+                    value: format_elapsed_ms(last_dequeue_ago_ms),
+                    detail: "Since last dispatch".to_string(),
+                    value_class: last_dequeue_value_class,
                 }
 
-                // Rejection Rate (admission control)
                 SchedulerMetric {
-                    label: "Rejections",
-                    value: format!("{rejection_rate_pct:.1}%"),
-                    detail: format!("{} ops", stats.requests_rejected),
-                    good: rejection_rate_pct < 5.0,
+                    label: "In-Flight",
+                    value: format!("{in_flight}"),
+                    detail: format!("Executor queue {}", stats.executor_queue_depth),
+                    value_class: inflight_value_class,
                 }
             }
 
-            // Lane distribution bar (below metrics, only when there's activity)
-            if in_flight > 0 {
-                LaneDistributionBar { lanes: lanes, total: in_flight }
+            // Lane queue counts
+            div {
+                class: "grid gap-2 mt-3",
+                style: "grid-template-columns: repeat(3, minmax(0, 1fr));",
+
+                LaneCountChip { label: "Control", value: queue_by_lane[0] }
+                LaneCountChip { label: "Metadata", value: queue_by_lane[1] }
+                LaneCountChip { label: "Read", value: queue_by_lane[2] }
+                LaneCountChip { label: "Write", value: queue_by_lane[3] }
+                LaneCountChip { label: "Bulk", value: queue_by_lane[4] }
             }
+
+            // Lane distribution bar (always shown to avoid flashing)
+            LaneDistributionBar { lanes: queue_by_lane, total: queue_total }
         }
     }
 }
@@ -671,6 +723,7 @@ fn LaneDistributionBar(lanes: [u64; 5], total: u64) -> Element {
 
     // Calculate percentages (avoid division by zero)
     let total_f = if total > 0 { total as f64 } else { 1.0 };
+    let empty_class = if total == 0 { "opacity-70" } else { "" };
 
     rsx! {
         div {
@@ -680,49 +733,53 @@ fn LaneDistributionBar(lanes: [u64; 5], total: u64) -> Element {
             div {
                 class: "flex items-center justify-between mb-2",
                 span {
+                    class: "text-xs text-gray-500 dark:text-gray-400 pl-0.5",
+                    "Queue Distribution"
+                }
+                span {
                     class: "text-xs text-gray-500 dark:text-gray-400",
-                    "Lane Distribution"
+                    "{total} queued"
                 }
             }
 
             // Stacked bar
             div {
-                class: "h-1.5 w-full rounded-full overflow-hidden flex bg-gray-200 dark:bg-gray-600",
+                class: "h-4 w-full rounded-full overflow-hidden flex bg-gray-200 dark:bg-gray-600 border border-gray-300/70 dark:border-gray-600/70",
 
                 for (i, &count) in lanes.iter().enumerate() {
-                    if count > 0 {
-                        {
-                            let pct = (count as f64 / total_f * 100.0).max(3.0); // min 3% for visibility
-                            let (_, color) = lane_info[i];
-                            rsx! {
-                                div {
-                                    class: "{color}",
-                                    style: "width: {pct}%;",
-                                }
+                    {
+                        let pct = if total == 0 {
+                            100.0 / 5.0
+                        } else {
+                            count as f64 / total_f * 100.0
+                        };
+                        let (_, color) = lane_info[i];
+                        rsx! {
+                            div {
+                                class: "{color} {empty_class}",
+                                style: "width: {pct}%;",
                             }
                         }
                     }
                 }
             }
 
-            // Legend (compact, only show non-zero lanes)
+            // Legend (compact, always show all lanes)
             div {
-                class: "flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs",
+                class: "flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs pl-0.5",
 
                 for (i, &count) in lanes.iter().enumerate() {
-                    if count > 0 {
-                        {
-                            let (name, color) = lane_info[i];
-                            rsx! {
-                                div {
-                                    class: "flex items-center",
-                                    span {
-                                        class: "w-2 h-2 rounded-full {color} mr-1",
-                                    }
-                                    span {
-                                        class: "text-gray-600 dark:text-gray-300",
-                                        "{name}: {count}"
-                                    }
+                    {
+                        let (name, color) = lane_info[i];
+                        rsx! {
+                            div {
+                                class: "flex items-center",
+                                span {
+                                    class: "w-2.5 h-2.5 rounded-full {color} mr-1",
+                                }
+                                span {
+                                    class: "text-gray-600 dark:text-gray-300",
+                                    "{name}: {count}"
                                 }
                             }
                         }
@@ -739,24 +796,18 @@ fn SchedulerMetric(
     label: &'static str,
     value: String,
     detail: String,
-    good: bool,
+    value_class: &'static str,
 ) -> Element {
-    let value_color = if good {
-        "text-green-600 dark:text-green-400"
-    } else {
-        "text-amber-600 dark:text-amber-400"
-    };
-
     rsx! {
         div {
             // Use slightly lighter/darker shade than parent container for subtle depth
-            class: "text-center p-2 bg-gray-50 dark:bg-gray-700 rounded",
+            class: "px-3 py-2 bg-gray-50 dark:bg-gray-700 rounded text-left",
             span {
-                class: "text-xs text-gray-500 dark:text-gray-400 block",
+                class: "text-xs text-gray-500 dark:text-gray-400 block pl-0.5",
                 "{label}"
             }
             span {
-                class: "text-sm font-semibold {value_color} block",
+                class: "text-base font-semibold {value_class} block",
                 "{value}"
             }
             span {
@@ -764,6 +815,18 @@ fn SchedulerMetric(
                 class: "text-xs text-gray-500 dark:text-gray-400",
                 "{detail}"
             }
+        }
+    }
+}
+
+/// Small lane count pill
+#[component]
+fn LaneCountChip(label: &'static str, value: u64) -> Element {
+    rsx! {
+        div {
+            class: "px-2 py-1 rounded-md bg-gray-50 dark:bg-gray-700 text-center",
+            span { class: "text-[11px] text-gray-500 dark:text-gray-400 block", "{label}" }
+            span { class: "text-sm font-semibold text-gray-800 dark:text-gray-200", "{value}" }
         }
     }
 }
@@ -810,7 +873,7 @@ fn ThroughputCard(label: &'static str, rate: f64, latency_ms: f64, icon: &'stati
                 class: "flex items-start justify-between mb-2",
 
                 span {
-                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide pl-0.5",
                     "{icon} {label}"
                 }
             }
@@ -887,7 +950,7 @@ fn CacheHitRateView(hit_rate: f64, hits: u64, misses: u64) -> Element {
                 class: "flex items-center justify-between mb-2",
 
                 span {
-                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide pl-0.5",
                     "Cache Hit Rate"
                 }
 
@@ -935,6 +998,37 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn elapsed_since_ms(timestamp_ms: u64) -> u64 {
+    if timestamp_ms == 0 {
+        0
+    } else {
+        now_epoch_ms().saturating_sub(timestamp_ms)
+    }
+}
+
+fn format_elapsed_ms(ms: u64) -> String {
+    if ms == 0 {
+        "—".to_string()
+    } else if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let total_secs = ms / 1000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{mins}m {secs}s")
+    }
+}
+
 /// Operation counter card (reads, writes, metadata)
 #[component]
 fn OperationCounter(label: &'static str, count: u64, icon: &'static str) -> Element {
@@ -942,7 +1036,7 @@ fn OperationCounter(label: &'static str, count: u64, icon: &'static str) -> Elem
         div {
             class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-2 text-center",
             span {
-                class: "text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                class: "text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide pl-0.5",
                 "{icon} {label}"
             }
             p {

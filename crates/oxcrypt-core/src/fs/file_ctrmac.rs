@@ -78,11 +78,17 @@ pub enum CtrMacError {
 
     /// Invalid header structure
     #[error("Invalid header for {context}: {reason}")]
-    InvalidHeader { reason: String, context: FileContext },
+    InvalidHeader {
+        reason: String,
+        context: FileContext,
+    },
 
     /// Invalid chunk structure
     #[error("Invalid chunk for {context}: {reason}")]
-    InvalidChunk { reason: String, context: FileContext },
+    InvalidChunk {
+        reason: String,
+        context: FileContext,
+    },
 
     /// Key access failed
     #[error("Key access failed: {0}")]
@@ -442,9 +448,14 @@ mod tests {
         let plaintext = b"Hello, Cryptomator!";
         let encrypted = encrypt_content(plaintext, &content_key, &header_nonce, &mac_key).unwrap();
 
-        let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
-                .unwrap();
+        let decrypted = decrypt_content(
+            &encrypted,
+            &content_key,
+            &header_nonce,
+            &mac_key,
+            &FileContext::new(),
+        )
+        .unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
@@ -462,12 +473,16 @@ mod tests {
         // Safe cast: (i % 256) always produces values 0-255, fits safely in u8
         let plaintext: Vec<u8> = (0..PAYLOAD_SIZE + 1000).map(|i| (i % 256) as u8).collect();
 
-        let encrypted =
-            encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
+        let encrypted = encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
 
-        let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
-                .unwrap();
+        let decrypted = decrypt_content(
+            &encrypted,
+            &content_key,
+            &header_nonce,
+            &mac_key,
+            &FileContext::new(),
+        )
+        .unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
@@ -504,8 +519,13 @@ mod tests {
         let last = encrypted.len() - 1;
         encrypted[last] ^= 0xFF;
 
-        let result =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new());
+        let result = decrypt_content(
+            &encrypted,
+            &content_key,
+            &header_nonce,
+            &mac_key,
+            &FileContext::new(),
+        );
         assert!(matches!(result, Err(CtrMacError::HmacVerification { .. })));
     }
 }

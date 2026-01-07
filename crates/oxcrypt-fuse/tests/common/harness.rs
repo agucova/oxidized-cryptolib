@@ -10,9 +10,7 @@
 use fuser::{BackgroundSession, MountOption};
 use oxcrypt_fuse::filesystem::CryptomatorFS;
 use oxcrypt_mount::cleanup_test_mounts;
-use oxcrypt_mount::testing::{
-    shared_vault_path, TempVault, SHARED_VAULT_PASSWORD, TEST_PASSWORD,
-};
+use oxcrypt_mount::testing::{SHARED_VAULT_PASSWORD, TEST_PASSWORD, TempVault, shared_vault_path};
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -31,22 +29,21 @@ static CLEANUP_ONCE: Once = Once::new();
 /// and runs at most once per test process. It cleans up mounts with
 /// `cryptomator-test` or `cryptomator:test` in their fsname.
 fn cleanup_stale_test_mounts() {
-    CLEANUP_ONCE.call_once(|| {
-        match cleanup_test_mounts() {
-            Ok(results) => {
-                for result in results {
-                    if result.success
-                        && let oxcrypt_mount::CleanupAction::Unmounted = result.action {
-                            eprintln!(
-                                "[test-harness] Cleaned stale test mount: {}",
-                                result.mountpoint.display()
-                            );
-                        }
+    CLEANUP_ONCE.call_once(|| match cleanup_test_mounts() {
+        Ok(results) => {
+            for result in results {
+                if result.success
+                    && let oxcrypt_mount::CleanupAction::Unmounted = result.action
+                {
+                    eprintln!(
+                        "[test-harness] Cleaned stale test mount: {}",
+                        result.mountpoint.display()
+                    );
                 }
             }
-            Err(e) => {
-                eprintln!("[test-harness] Warning: Failed to clean stale mounts: {e}");
-            }
+        }
+        Err(e) => {
+            eprintln!("[test-harness] Warning: Failed to clean stale mounts: {e}");
         }
     });
 }
@@ -152,8 +149,8 @@ impl TestMount {
         // Clean up any stale test mounts from previous runs
         cleanup_stale_test_mounts();
 
-        let vault_path = shared_vault_path()
-            .ok_or_else(|| "test_vault not found in repository".to_string())?;
+        let vault_path =
+            shared_vault_path().ok_or_else(|| "test_vault not found in repository".to_string())?;
 
         let temp_mount = TempDir::new().map_err(|e| format!("Failed to create temp dir: {e}"))?;
         let mount_path = temp_mount.path().join("mnt");
@@ -202,9 +199,10 @@ impl TestMount {
             // Check if mount point has a different device ID than parent
             // (indicating FUSE filesystem is now mounted)
             if let Ok(mount_meta) = fs::metadata(mount_path)
-                && mount_meta.dev() != parent_dev {
-                    return Ok(());
-                }
+                && mount_meta.dev() != parent_dev
+            {
+                return Ok(());
+            }
             thread::sleep(MOUNT_CHECK_INTERVAL);
         }
         Err("Mount did not become ready in time (device ID unchanged)".to_string())

@@ -48,12 +48,13 @@ fn find_fsx() -> Option<PathBuf> {
 
     // Check if 'fsx' is in PATH
     if let Ok(output) = Command::new("which").arg("fsx").output()
-        && output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
         }
+    }
 
     // Check cargo bin directory
     if let Ok(home) = std::env::var("HOME") {
@@ -167,7 +168,8 @@ fn run_fsx(test_file: &Path, operations: u32, seed: Option<u64>) -> Result<Outpu
 
     eprintln!("Running: {:?}", cmd);
 
-    cmd.output().map_err(|e| format!("Failed to run fsx: {}", e))
+    cmd.output()
+        .map_err(|e| format!("Failed to run fsx: {}", e))
 }
 
 /// Check if fsx passed based on output.
@@ -375,7 +377,10 @@ fn test_fsx_multiple_seeds() {
         let _ = fs::remove_file(&test_file);
     }
 
-    println!("\nFSX multi-seed summary: {} passed, {} failed", passed, failed);
+    println!(
+        "\nFSX multi-seed summary: {} passed, {} failed",
+        passed, failed
+    );
 }
 
 #[test]
@@ -406,9 +411,12 @@ fn test_fsx_small_file() {
 
     // Run with small file size limit
     let mut cmd = Command::new(&fsx_bin);
-    cmd.arg("-N").arg("500")
-        .arg("-l").arg("4096")  // Max file size 4KB
-        .arg("-S").arg("11111")
+    cmd.arg("-N")
+        .arg("500")
+        .arg("-l")
+        .arg("4096") // Max file size 4KB
+        .arg("-S")
+        .arg("11111")
         .arg("-q")
         .arg(&test_file);
 
@@ -461,9 +469,12 @@ fn test_fsx_large_file() {
 
     // Run with larger file size limit
     let mut cmd = Command::new(&fsx_bin);
-    cmd.arg("-N").arg("500")
-        .arg("-l").arg("131072")  // Max file size 128KB
-        .arg("-S").arg("22222")
+    cmd.arg("-N")
+        .arg("500")
+        .arg("-l")
+        .arg("131072") // Max file size 128KB
+        .arg("-S")
+        .arg("22222")
         .arg("-q")
         .arg(&test_file);
 

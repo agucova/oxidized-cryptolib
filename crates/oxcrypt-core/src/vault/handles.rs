@@ -25,8 +25,8 @@
 //! table.remove(handle);
 //! ```
 
-use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
+use dashmap::mapref::one::{Ref, RefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fs::streaming::{VaultFileReader, VaultFileWriter};
@@ -270,7 +270,11 @@ mod tests {
         let mut sorted_ids = ids.clone();
         sorted_ids.sort_unstable();
         sorted_ids.dedup();
-        assert_eq!(ids.len(), sorted_ids.len(), "All handle IDs should be unique");
+        assert_eq!(
+            ids.len(),
+            sorted_ids.len(),
+            "All handle IDs should be unique"
+        );
 
         // Verify IDs are in ascending order
         for i in 1..ids.len() {
@@ -418,8 +422,7 @@ mod integration_tests {
         // Insert multiple writers
         let mut handle_ids = Vec::new();
         for i in 0..5 {
-            let writer =
-                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
+            let writer = create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             let id = table.insert(OpenHandle::Writer(writer));
             handle_ids.push(id);
         }
@@ -503,8 +506,7 @@ mod integration_tests {
         // Insert multiple handles
         let mut handle_ids = Vec::new();
         for i in 0..3 {
-            let writer =
-                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
+            let writer = create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             handle_ids.push(table.insert(OpenHandle::Writer(writer)));
         }
 
@@ -534,8 +536,7 @@ mod integration_tests {
         let mut all_ids = Vec::new();
 
         for i in 0..5 {
-            let writer =
-                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
+            let writer = create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             let id = table.insert(OpenHandle::Writer(writer));
             all_ids.push(id);
 
@@ -547,8 +548,7 @@ mod integration_tests {
 
         // Insert more handles
         for i in 5..10 {
-            let writer =
-                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
+            let writer = create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             let id = table.insert(OpenHandle::Writer(writer));
             all_ids.push(id);
 

@@ -28,10 +28,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
-use crate::crypto::keys::MasterKey;
 use crate::crypto::CryptoError;
+use crate::crypto::keys::MasterKey;
 
-use super::config::{validate_vault_claims, CipherCombo};
+use super::config::{CipherCombo, validate_vault_claims};
 use super::master_key::MasterKeyFile;
 
 /// Default timeout for filesystem operations during password validation.
@@ -143,7 +143,10 @@ impl PasswordValidator {
     /// Validate a password with the default timeout.
     ///
     /// This is equivalent to calling `validate(password, DEFAULT_VALIDATION_TIMEOUT)`.
-    pub fn validate_default(&self, password: &str) -> Result<ValidatedPassword, PasswordValidationError> {
+    pub fn validate_default(
+        &self,
+        password: &str,
+    ) -> Result<ValidatedPassword, PasswordValidationError> {
         self.validate(password, DEFAULT_VALIDATION_TIMEOUT)
     }
 
@@ -168,14 +171,21 @@ impl PasswordValidator {
     /// * `PasswordValidationError::Timeout` - Filesystem operation timed out
     /// * `PasswordValidationError::ConfigNotFound` - vault.cryptomator not found
     /// * `PasswordValidationError::MasterKeyNotFound` - masterkey.cryptomator not found
-    pub fn validate(&self, password: &str, timeout: Duration) -> Result<ValidatedPassword, PasswordValidationError> {
-        tracing::info!("PasswordValidator::validate() starting for {:?}", self.vault_path);
+    pub fn validate(
+        &self,
+        password: &str,
+        timeout: Duration,
+    ) -> Result<ValidatedPassword, PasswordValidationError> {
+        tracing::info!(
+            "PasswordValidator::validate() starting for {:?}",
+            self.vault_path
+        );
 
         // Read vault.cryptomator with timeout
         let vault_config_path = self.vault_path.join("vault.cryptomator");
         tracing::info!("Reading vault.cryptomator...");
-        let vault_config_jwt = read_with_timeout(&vault_config_path, timeout)
-            .map_err(|e| match e.kind() {
+        let vault_config_jwt =
+            read_with_timeout(&vault_config_path, timeout).map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     PasswordValidationError::ConfigNotFound(vault_config_path.clone())
                 }
@@ -204,8 +214,8 @@ impl PasswordValidator {
         // Read masterkey.cryptomator with timeout
         let masterkey_path = self.vault_path.join(Path::new(masterkey_uri.path()));
         tracing::info!("Reading masterkey.cryptomator...");
-        let masterkey_json = read_with_timeout(&masterkey_path, timeout)
-            .map_err(|e| match e.kind() {
+        let masterkey_json =
+            read_with_timeout(&masterkey_path, timeout).map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     PasswordValidationError::MasterKeyNotFound(masterkey_path.clone())
                 }
@@ -237,7 +247,9 @@ impl PasswordValidator {
         })?;
 
         let cipher_combo = claims.cipher_combo().ok_or_else(|| {
-            PasswordValidationError::InvalidFormat("Unsupported cipher combo in vault config".to_string())
+            PasswordValidationError::InvalidFormat(
+                "Unsupported cipher combo in vault config".to_string(),
+            )
         })?;
 
         let shortening_threshold = claims.shortening_threshold();
@@ -285,7 +297,10 @@ mod tests {
     fn test_validator_nonexistent_vault() {
         let validator = PasswordValidator::new("/nonexistent/vault/path");
         let result = validator.validate("password", Duration::from_secs(1));
-        assert!(matches!(result, Err(PasswordValidationError::ConfigNotFound(_))));
+        assert!(matches!(
+            result,
+            Err(PasswordValidationError::ConfigNotFound(_))
+        ));
     }
 
     #[test]

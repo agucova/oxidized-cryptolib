@@ -24,8 +24,12 @@ struct DeadlineEntry {
 
 impl Ord for DeadlineEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Compare by deadline (earliest first, hence Reverse)
-        self.deadline.cmp(&other.deadline)
+        // Compare by (deadline, request_id, generation) for total ordering.
+        // Reverse in the heap makes earliest deadlines pop first.
+        self.deadline
+            .cmp(&other.deadline)
+            .then_with(|| self.request_id.raw().cmp(&other.request_id.raw()))
+            .then_with(|| self.generation.cmp(&other.generation))
     }
 }
 

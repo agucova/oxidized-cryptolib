@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::crypto::keys::MasterKey;
-use crate::fs::name::{create_c9s_filename, hash_dir_id, NameError};
+use crate::fs::name::{NameError, create_c9s_filename, hash_dir_id};
 use crate::vault::path::DirId;
 
 // ============================================================================
@@ -370,13 +370,17 @@ mod tests {
         assert!(paths.is_shortened);
         assert_eq!(paths.encrypted_name, long_name);
         // Entry path should be a .c9s directory
-        assert!(Path::new(paths.entry_path.to_string_lossy().as_ref())
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s")));
+        assert!(
+            Path::new(paths.entry_path.to_string_lossy().as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s"))
+        );
         // Content path should be contents.c9r inside
-        assert!(Path::new(paths.content_path.to_string_lossy().as_ref())
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")));
+        assert!(
+            Path::new(paths.content_path.to_string_lossy().as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r"))
+        );
         assert!(paths.content_path.starts_with(&paths.entry_path));
     }
 
@@ -422,13 +426,17 @@ mod tests {
         assert!(paths.is_shortened);
         assert_eq!(paths.encrypted_name, long_name);
         // Entry path should be a .c9s directory
-        assert!(Path::new(paths.entry_path.to_string_lossy().as_ref())
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s")));
+        assert!(
+            Path::new(paths.entry_path.to_string_lossy().as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s"))
+        );
         // Content path should be dir.c9r inside
-        assert!(Path::new(paths.content_path.to_string_lossy().as_ref())
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")));
+        assert!(
+            Path::new(paths.content_path.to_string_lossy().as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r"))
+        );
         assert!(paths.content_path.starts_with(&paths.entry_path));
     }
 
@@ -498,7 +506,10 @@ mod tests {
     fn test_classify_entry_format_not_vault() {
         assert_eq!(classify_entry_format("regular_file.txt"), None);
         assert_eq!(classify_entry_format("no_extension"), None);
-        assert_eq!(classify_entry_format(".c9r"), Some((EntryFormat::Regular, "")));
+        assert_eq!(
+            classify_entry_format(".c9r"),
+            Some((EntryFormat::Regular, ""))
+        );
     }
 
     #[test]

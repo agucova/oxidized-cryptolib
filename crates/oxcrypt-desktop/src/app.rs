@@ -139,8 +139,8 @@ pub fn open_stats_window(vault_id: String, vault_name: &str) {
         .with_window(
             dioxus::desktop::WindowBuilder::new()
                 .with_title(format!("Statistics - {vault_name}"))
-                .with_inner_size(dioxus::desktop::LogicalSize::new(500.0, 700.0))
-                .with_min_inner_size(dioxus::desktop::LogicalSize::new(420.0, 550.0))
+                .with_inner_size(dioxus::desktop::LogicalSize::new(880.0, 700.0))
+                .with_min_inner_size(dioxus::desktop::LogicalSize::new(760.0, 600.0))
                 .with_resizable(true),
         )
         .with_custom_head(custom_head)

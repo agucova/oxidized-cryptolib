@@ -99,7 +99,9 @@ impl VaultLockRegistry {
     pub fn get_or_create(&self, vault_path: &Path) -> Arc<VaultLockManager> {
         // Canonicalize the path to handle symlinks, .., etc.
         // If canonicalization fails (e.g., path doesn't exist yet), use the original path.
-        let canonical_path = vault_path.canonicalize().unwrap_or_else(|_| vault_path.to_path_buf());
+        let canonical_path = vault_path
+            .canonicalize()
+            .unwrap_or_else(|_| vault_path.to_path_buf());
 
         self.managers
             .entry(canonical_path)
@@ -117,7 +119,9 @@ impl VaultLockRegistry {
     /// This only removes from the registry. Any existing references to the
     /// lock manager will continue to work until all clones are dropped.
     pub fn remove(&self, vault_path: &Path) -> Option<Arc<VaultLockManager>> {
-        let canonical_path = vault_path.canonicalize().unwrap_or_else(|_| vault_path.to_path_buf());
+        let canonical_path = vault_path
+            .canonicalize()
+            .unwrap_or_else(|_| vault_path.to_path_buf());
         self.managers.remove(&canonical_path).map(|(_, v)| v)
     }
 
@@ -312,8 +316,10 @@ impl VaultLockManager {
     ///
     /// Call this periodically to prevent unbounded memory growth.
     pub fn cleanup_unused_locks(&self) {
-        self.directory_locks.retain(|_, lock| Arc::strong_count(lock) > 1);
-        self.file_locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.directory_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.file_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
     }
 
     /// Get the number of cached directory locks.
@@ -433,7 +439,10 @@ mod tests {
 
         // Now read should complete
         let result = timeout(Duration::from_millis(100), read_handle).await;
-        assert!(result.is_ok(), "Read should complete after write is released");
+        assert!(
+            result.is_ok(),
+            "Read should complete after write is released"
+        );
         assert!(
             read_acquired.load(Ordering::SeqCst),
             "Read lock should have been acquired after write released"

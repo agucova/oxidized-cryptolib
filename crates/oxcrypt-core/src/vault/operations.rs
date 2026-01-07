@@ -36,11 +36,17 @@
 use crate::{
     crypto::keys::MasterKey,
     fs::file::{DecryptedFile, FileContext},
-    fs::name::{create_c9s_filename, decrypt_filename, decrypt_parent_dir_id, encrypt_filename, hash_dir_id, NameError},
-    fs::symlink::{decrypt_symlink_target, encrypt_symlink_target, SymlinkError},
+    fs::name::{
+        NameError, create_c9s_filename, decrypt_filename, decrypt_parent_dir_id, encrypt_filename,
+        hash_dir_id,
+    },
+    fs::symlink::{SymlinkError, decrypt_symlink_target, encrypt_symlink_target},
     vault::cache::VaultCache,
-    vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
-    vault::ops::{calculate_directory_lookup_paths, calculate_file_lookup_paths, calculate_symlink_lookup_paths, is_regular_entry, is_shortened_entry, VaultCore},
+    vault::config::{CipherCombo, VaultError, extract_master_key, validate_vault_claims},
+    vault::ops::{
+        VaultCore, calculate_directory_lookup_paths, calculate_file_lookup_paths,
+        calculate_symlink_lookup_paths, is_regular_entry, is_shortened_entry,
+    },
     vault::path::{DirId, EntryType, VaultPath},
 };
 use std::{
@@ -85,7 +91,11 @@ impl VaultOpContext {
     #[must_use]
     pub fn with_dir_id(mut self, dir_id: impl AsRef<str>) -> Self {
         let id = dir_id.as_ref();
-        self.dir_id = Some(if id.is_empty() { "<root>".to_string() } else { id.to_string() });
+        self.dir_id = Some(if id.is_empty() {
+            "<root>".to_string()
+        } else {
+            id.to_string()
+        });
         self
     }
 
@@ -352,10 +362,16 @@ pub struct DeleteStats {
 impl From<VaultOperationError> for VaultWriteError {
     fn from(err: VaultOperationError) -> Self {
         match err {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                source,
+                context: Box::new(context),
+            },
             VaultOperationError::Filename(e) => VaultWriteError::Filename(e),
             VaultOperationError::DirectoryNotFound { name, context } => {
-                VaultWriteError::DirectoryNotFound { name, context: Box::new(context) }
+                VaultWriteError::DirectoryNotFound {
+                    name,
+                    context: Box::new(context),
+                }
             }
             VaultOperationError::FileDecryption(e) => VaultWriteError::Io {
                 source: std::io::Error::other(e.to_string()),
@@ -382,7 +398,10 @@ impl From<VaultOperationError> for VaultWriteError {
                 context: Box::new(VaultOpContext::new()),
             },
             VaultOperationError::FileNotFound { filename, context } => {
-                VaultWriteError::FileNotFound { filename, context: Box::new(context) }
+                VaultWriteError::FileNotFound {
+                    filename,
+                    context: Box::new(context),
+                }
             }
             VaultOperationError::Symlink(e) => VaultWriteError::Symlink(e),
             VaultOperationError::SymlinkNotFound { name, context } => {
@@ -613,7 +632,9 @@ impl VaultOperations {
         let vault_config_jwt = fs::read_to_string(&vault_config_path)?;
         let claims = validate_vault_claims(&vault_config_jwt, &master_key)?;
 
-        let cipher_combo = claims.cipher_combo().expect("cipher combo already validated");
+        let cipher_combo = claims
+            .cipher_combo()
+            .expect("cipher combo already validated");
         let shortening_threshold = claims.shortening_threshold();
 
         info!(
@@ -622,7 +643,12 @@ impl VaultOperations {
             "Vault opened successfully"
         );
 
-        Ok(Self::with_options(vault_path, master_key, shortening_threshold, cipher_combo))
+        Ok(Self::with_options(
+            vault_path,
+            master_key,
+            shortening_threshold,
+            cipher_combo,
+        ))
     }
 
     /// Create a new VaultOperations instance with default shortening threshold (220) and SIV_GCM cipher combo.
@@ -632,7 +658,12 @@ impl VaultOperations {
     /// Use this method only when you need manual control over the configuration.
     #[instrument(level = "info", skip(master_key), fields(vault_path = %vault_path.display()))]
     pub fn new(vault_path: &Path, master_key: MasterKey) -> Self {
-        Self::with_options(vault_path, master_key, DEFAULT_SHORTENING_THRESHOLD, CipherCombo::SivGcm)
+        Self::with_options(
+            vault_path,
+            master_key,
+            DEFAULT_SHORTENING_THRESHOLD,
+            CipherCombo::SivGcm,
+        )
     }
 
     /// Create a new VaultOperations instance with a custom shortening threshold
@@ -651,7 +682,12 @@ impl VaultOperations {
         master_key: MasterKey,
         shortening_threshold: usize,
     ) -> Self {
-        Self::with_options(vault_path, master_key, shortening_threshold, CipherCombo::SivGcm)
+        Self::with_options(
+            vault_path,
+            master_key,
+            shortening_threshold,
+            CipherCombo::SivGcm,
+        )
     }
 
     /// Create a new VaultOperations instance with full configuration options
@@ -758,7 +794,8 @@ impl VaultOperations {
 
         // Cache miss - encrypt and store
         let encrypted = encrypt_filename(name, dir_id, &self.master_key)?;
-        self.cache.insert_encrypted_name(dir_id, name, encrypted.clone());
+        self.cache
+            .insert_encrypted_name(dir_id, name, encrypted.clone());
         trace!(name = %name, dir_id = %dir_id, "encrypted filename cache miss");
         Ok(encrypted)
     }
@@ -774,7 +811,8 @@ impl VaultOperations {
             context: VaultOpContext::new().with_encrypted_path(path),
         })?;
 
-        self.core.cipher_combo()
+        self.core
+            .cipher_combo()
             .decrypt_file_with_context(&encrypted, &self.master_key, context)
             .map_err(VaultOperationError::FileContentDecryption)
     }
@@ -784,7 +822,10 @@ impl VaultOperations {
     /// # Errors
     /// Returns `VaultOperationError::FilenameEncryption` if hashing the directory ID fails.
     #[instrument(level = "trace", skip(self), fields(dir_id = %dir_id.as_str()))]
-    pub fn calculate_directory_storage_path(&self, dir_id: &DirId) -> Result<PathBuf, VaultOperationError> {
+    pub fn calculate_directory_storage_path(
+        &self,
+        dir_id: &DirId,
+    ) -> Result<PathBuf, VaultOperationError> {
         let hashed = hash_dir_id(dir_id.as_str(), &self.master_key)?;
         let hash_chars: Vec<char> = hashed.chars().collect();
 
@@ -798,9 +839,14 @@ impl VaultOperations {
         let first_two: String = hash_chars[0..2].iter().collect();
         let remaining: String = hash_chars[2..32].iter().collect();
 
-        Ok(self.core.vault_path().join("d").join(&first_two).join(&remaining))
+        Ok(self
+            .core
+            .vault_path()
+            .join("d")
+            .join(&first_two)
+            .join(&remaining))
     }
-    
+
     /// List all files in a directory (by directory ID)
     #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str()))]
     pub fn list_files(
@@ -933,7 +979,8 @@ impl VaultOperations {
                 let symlink_file = path.join("symlink.c9r");
                 if symlink_file.exists() {
                     trace!(encrypted_name = %file_name, "Processing symlink entry");
-                    if let Ok(info) = self.read_symlink_info(&path, &file_name, directory_id, false) {
+                    if let Ok(info) = self.read_symlink_info(&path, &file_name, directory_id, false)
+                    {
                         symlinks.push(info);
                     }
                 }
@@ -949,7 +996,10 @@ impl VaultOperations {
             }
         }
 
-        debug!(symlink_count = symlinks.len(), "Listed symlinks in directory");
+        debug!(
+            symlink_count = symlinks.len(),
+            "Listed symlinks in directory"
+        );
         Ok(symlinks)
     }
 
@@ -989,7 +1039,10 @@ impl VaultOperations {
             entries.push(DirEntry::Symlink(symlink));
         }
 
-        debug!(entry_count = entries.len(), "Listed all entries in directory");
+        debug!(
+            entry_count = entries.len(),
+            "Listed all entries in directory"
+        );
         Ok(entries)
     }
 
@@ -1014,7 +1067,10 @@ impl VaultOperations {
     /// }
     /// ```
     #[instrument(level = "debug", skip(self), fields(path = %path.as_ref()))]
-    pub fn list_by_path(&self, path: impl AsRef<str>) -> Result<Vec<DirEntry>, VaultOperationError> {
+    pub fn list_by_path(
+        &self,
+        path: impl AsRef<str>,
+    ) -> Result<Vec<DirEntry>, VaultOperationError> {
         let vault_path = VaultPath::new(path.as_ref());
 
         let dir_id = if vault_path.is_root() {
@@ -1124,7 +1180,8 @@ impl VaultOperations {
         let storage_path = self.calculate_directory_storage_path(parent_directory_id)?;
 
         // Encrypt the directory name to get the expected path
-        let encrypted_name = self.encrypt_filename_cached(dir_name, parent_directory_id.as_str())?;
+        let encrypted_name =
+            self.encrypt_filename_cached(dir_name, parent_directory_id.as_str())?;
 
         // Calculate paths using shared helper
         let paths = calculate_directory_lookup_paths(
@@ -1201,7 +1258,11 @@ impl VaultOperations {
         match fs::read(&paths.content_path) {
             Ok(encrypted_data) => {
                 let target = decrypt_symlink_target(&encrypted_data, &self.master_key)?;
-                trace!(target_len = target.len(), shortened = paths.is_shortened, "Found symlink");
+                trace!(
+                    target_len = target.len(),
+                    shortened = paths.is_shortened,
+                    "Found symlink"
+                );
                 Ok(Some(VaultSymlinkInfo {
                     name: name.to_string(),
                     target,
@@ -1258,10 +1319,60 @@ impl VaultOperations {
         // Then decrypt it using the appropriate cipher combo
         debug!(encrypted_path = %file_info.encrypted_path.display(), encrypted_size = file_info.encrypted_size, cipher_combo = ?self.core.cipher_combo(), "Decrypting file");
         let decrypted = self.decrypt_file_internal(&file_info.encrypted_path)?;
-        info!(decrypted_size = decrypted.content.len(), "File decrypted successfully");
+        info!(
+            decrypted_size = decrypted.content.len(),
+            "File decrypted successfully"
+        );
         Ok(decrypted)
     }
-    
+
+    /// Open a file for synchronous streaming reads.
+    ///
+    /// Returns a [`VaultFileReaderSync`](crate::fs::streaming::VaultFileReaderSync)
+    /// that can be used to read the file in chunks without loading it entirely into memory.
+    ///
+    /// # Arguments
+    /// * `directory_id` - The directory containing the file
+    /// * `filename` - The name of the file
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str(), filename = %filename))]
+    pub fn open_file_reader_sync(
+        &self,
+        directory_id: &DirId,
+        filename: &str,
+    ) -> Result<crate::fs::streaming::VaultFileReaderSync, VaultOperationError> {
+        use crate::fs::streaming::VaultFileReaderSync;
+
+        let storage_path = self.calculate_directory_storage_path(directory_id)?;
+        let encrypted_name = self.encrypt_filename_cached(filename, directory_id.as_str())?;
+        let paths = calculate_file_lookup_paths(
+            &storage_path,
+            &encrypted_name,
+            self.core.shortening_threshold(),
+        );
+
+        if !paths.content_path.exists() {
+            return Err(VaultOperationError::FileNotFound {
+                filename: filename.to_string(),
+                context: VaultOpContext::new()
+                    .with_filename(filename)
+                    .with_dir_id(directory_id.as_str()),
+            });
+        }
+
+        VaultFileReaderSync::open_with_cipher(
+            &paths.content_path,
+            &self.master_key,
+            self.core.cipher_combo(),
+        )
+        .map_err(|e| VaultOperationError::Io {
+            source: std::io::Error::other(e.to_string()),
+            context: VaultOpContext::new()
+                .with_filename(filename)
+                .with_dir_id(directory_id.as_str())
+                .with_encrypted_path(paths.content_path),
+        })
+    }
+
     /// Get the full path for a file/directory by walking from root
     ///
     /// Returns the directory ID and whether it's a directory (vs file).
@@ -1338,9 +1449,7 @@ impl VaultOperations {
     ) -> Result<(DirId, String), VaultOperationError> {
         let vault_path = VaultPath::new(path.as_ref());
 
-        let (parent_path, filename) = vault_path
-            .split()
-            .ok_or(VaultOperationError::EmptyPath)?;
+        let (parent_path, filename) = vault_path.split().ok_or(VaultOperationError::EmptyPath)?;
 
         // Walk to the parent directory
         let parent_dir_id = if parent_path.is_root() {
@@ -1477,24 +1586,27 @@ impl VaultOperations {
 
         // Check for symlink first (symlinks can have same name as files/dirs in theory)
         if let Ok(symlinks) = self.list_symlinks(&parent_dir_id)
-            && symlinks.iter().any(|s| s.name == entry_name) {
-                trace!(entry_type = "symlink", "Found symlink at path");
-                return Some(EntryType::Symlink);
-            }
+            && symlinks.iter().any(|s| s.name == entry_name)
+        {
+            trace!(entry_type = "symlink", "Found symlink at path");
+            return Some(EntryType::Symlink);
+        }
 
         // Check for directory
         if let Ok(dirs) = self.list_directories(&parent_dir_id)
-            && dirs.iter().any(|d| d.name == entry_name) {
-                trace!(entry_type = "directory", "Found directory at path");
-                return Some(EntryType::Directory);
-            }
+            && dirs.iter().any(|d| d.name == entry_name)
+        {
+            trace!(entry_type = "directory", "Found directory at path");
+            return Some(EntryType::Directory);
+        }
 
         // Check for file
         if let Ok(files) = self.list_files(&parent_dir_id)
-            && files.iter().any(|f| f.name == entry_name) {
-                trace!(entry_type = "file", "Found file at path");
-                return Some(EntryType::File);
-            }
+            && files.iter().any(|f| f.name == entry_name)
+        {
+            trace!(entry_type = "file", "Found file at path");
+            return Some(EntryType::File);
+        }
 
         trace!("Path does not exist");
         None
@@ -1549,10 +1661,7 @@ impl VaultOperations {
     /// let dir_id = vault_ops.create_directory_all("a/b/c")?;
     /// ```
     #[instrument(level = "debug", skip(self), fields(path = path.as_ref()))]
-    pub fn create_directory_all(
-        &self,
-        path: impl AsRef<str>,
-    ) -> Result<DirId, VaultWriteError> {
+    pub fn create_directory_all(&self, path: impl AsRef<str>) -> Result<DirId, VaultWriteError> {
         let vault_path = VaultPath::new(path.as_ref());
 
         if vault_path.is_root() {
@@ -1748,9 +1857,11 @@ impl VaultOperations {
 
         if src_dir_id == dest_dir_id && src_name == dest_name {
             return Err(VaultWriteError::SameSourceAndDestination {
-                context: Box::new(VaultOpContext::new()
-                    .with_dir_id(src_dir_id.as_str())
-                    .with_filename(&src_name)),
+                context: Box::new(
+                    VaultOpContext::new()
+                        .with_dir_id(src_dir_id.as_str())
+                        .with_filename(&src_name),
+                ),
             });
         }
 
@@ -1803,7 +1914,10 @@ impl VaultOperations {
     /// println!("Symlink points to: {}", target);
     /// ```
     #[instrument(level = "debug", skip(self), fields(path = path.as_ref()))]
-    pub fn read_symlink_by_path(&self, path: impl AsRef<str>) -> Result<String, VaultOperationError> {
+    pub fn read_symlink_by_path(
+        &self,
+        path: impl AsRef<str>,
+    ) -> Result<String, VaultOperationError> {
         let (dir_id, name) = self.resolve_parent_path(path.as_ref())?;
         debug!(dir_id = %dir_id, name = %name, "Resolved path for symlink read");
         self.read_symlink(&dir_id, &name)
@@ -1897,21 +2011,24 @@ impl VaultOperations {
 
         // Check for symlink first
         if let Ok(symlinks) = self.list_symlinks(&parent_dir_id)
-            && let Some(symlink) = symlinks.into_iter().find(|s| s.name == entry_name) {
-                return Some(DirEntry::Symlink(symlink));
-            }
+            && let Some(symlink) = symlinks.into_iter().find(|s| s.name == entry_name)
+        {
+            return Some(DirEntry::Symlink(symlink));
+        }
 
         // Check for directory
         if let Ok(dirs) = self.list_directories(&parent_dir_id)
-            && let Some(dir) = dirs.into_iter().find(|d| d.name == entry_name) {
-                return Some(DirEntry::Directory(dir));
-            }
+            && let Some(dir) = dirs.into_iter().find(|d| d.name == entry_name)
+        {
+            return Some(DirEntry::Directory(dir));
+        }
 
         // Check for file
         if let Ok(files) = self.list_files(&parent_dir_id)
-            && let Some(file) = files.into_iter().find(|f| f.name == entry_name) {
-                return Some(DirEntry::File(file));
-            }
+            && let Some(file) = files.into_iter().find(|f| f.name == entry_name)
+        {
+            return Some(DirEntry::File(file));
+        }
 
         None
     }
@@ -1935,7 +2052,8 @@ impl VaultOperations {
             .trim()
             .to_string();
 
-        let decrypted_name = decrypt_filename(encrypted_name, parent_dir_id.as_str(), &self.master_key)?;
+        let decrypted_name =
+            decrypt_filename(encrypted_name, parent_dir_id.as_str(), &self.master_key)?;
 
         Ok(VaultDirectoryInfo {
             name: decrypted_name,
@@ -1944,7 +2062,7 @@ impl VaultOperations {
             parent_directory_id: parent_dir_id.clone(),
         })
     }
-    
+
     fn read_shortened_directory_info(
         &self,
         dir_path: &Path,
@@ -1972,7 +2090,8 @@ impl VaultOperations {
             .trim()
             .to_string();
 
-        let decrypted_name = decrypt_filename(&original_name, parent_dir_id.as_str(), &self.master_key)?;
+        let decrypted_name =
+            decrypt_filename(&original_name, parent_dir_id.as_str(), &self.master_key)?;
 
         Ok(VaultDirectoryInfo {
             name: decrypted_name,
@@ -1981,7 +2100,7 @@ impl VaultOperations {
             parent_directory_id: parent_dir_id.clone(),
         })
     }
-    
+
     fn read_shortened_file_info(
         &self,
         dir_path: &Path,
@@ -1998,14 +2117,16 @@ impl VaultOperations {
             .trim()
             .to_string();
 
-        let decrypted_name = decrypt_filename(&original_name, parent_dir_id.as_str(), &self.master_key)?;
+        let decrypted_name =
+            decrypt_filename(&original_name, parent_dir_id.as_str(), &self.master_key)?;
 
         let contents_file = dir_path.join("contents.c9r");
         let metadata = fs::metadata(&contents_file)?;
 
         Ok(VaultFileInfo {
             name: decrypted_name,
-            encrypted_name: dir_path.file_name()
+            encrypted_name: dir_path
+                .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
@@ -2023,18 +2144,18 @@ impl VaultOperations {
         is_shortened: bool,
     ) -> Result<VaultSymlinkInfo, VaultOperationError> {
         // Decrypt the filename
-        let decrypted_name = decrypt_filename(encrypted_name, parent_dir_id.as_str(), &self.master_key)?;
+        let decrypted_name =
+            decrypt_filename(encrypted_name, parent_dir_id.as_str(), &self.master_key)?;
 
         // Read and decrypt the symlink target
         let symlink_file = symlink_path.join("symlink.c9r");
-        let encrypted_data = fs::read(&symlink_file).map_err(|_| {
-            VaultOperationError::SymlinkNotFound {
+        let encrypted_data =
+            fs::read(&symlink_file).map_err(|_| VaultOperationError::SymlinkNotFound {
                 name: decrypted_name.clone(),
                 context: VaultOpContext::new()
                     .with_encrypted_path(&symlink_file)
                     .with_dir_id(parent_dir_id.as_str()),
-            }
-        })?;
+            })?;
         let target = decrypt_symlink_target(&encrypted_data, &self.master_key)?;
 
         Ok(VaultSymlinkInfo {
@@ -2097,11 +2218,18 @@ impl VaultOperations {
         let encrypted_name = self.encrypt_filename_cached(filename, dir_id.as_str())?;
 
         // 4-8. Encrypt file using the vault's cipher combo
-        let file_data = self.core.cipher_combo().encrypt_file(content, &self.master_key)?;
+        let file_data = self
+            .core
+            .cipher_combo()
+            .encrypt_file(content, &self.master_key)?;
 
         // 10. Determine file path and write (handle long filenames)
         let is_shortened = encrypted_name.len() > self.core.shortening_threshold();
-        debug!(is_shortened = is_shortened, encrypted_size = file_data.len(), "Writing encrypted file");
+        debug!(
+            is_shortened = is_shortened,
+            encrypted_size = file_data.len(),
+            "Writing encrypted file"
+        );
 
         let file_path = if is_shortened {
             trace!("Using shortened filename format (.c9s)");
@@ -2147,15 +2275,14 @@ impl VaultOperations {
 
         // 4. Create the encrypted directory structure
         if encrypted_name.len() > self.core.shortening_threshold() {
-            self.create_shortened_directory(
-                &parent_storage_path,
-                &encrypted_name,
-                &dir_id,
-            )?;
+            self.create_shortened_directory(&parent_storage_path, &encrypted_name, &dir_id)?;
         } else {
             let encrypted_dir_path = parent_storage_path.join(format!("{encrypted_name}.c9r"));
             fs::create_dir_all(&encrypted_dir_path)?;
-            Self::atomic_write(&encrypted_dir_path.join("dir.c9r"), dir_id.as_str().as_bytes())?;
+            Self::atomic_write(
+                &encrypted_dir_path.join("dir.c9r"),
+                dir_id.as_str().as_bytes(),
+            )?;
         }
 
         // 5. Create the storage directory for this new directory
@@ -2166,7 +2293,10 @@ impl VaultOperations {
         // This stores the directory's OWN ID (not the parent's) using the vault's cipher combo.
         // The file is placed in the content directory (new_storage_path), not the .c9r folder.
         // Reference: Java DirectoryIdBackup.write() stores ciphertextDir.dirId() in ciphertextDir.path()
-        let encrypted_dir_id = self.core.cipher_combo().encrypt_dir_id_backup(dir_id.as_str(), &self.master_key)?;
+        let encrypted_dir_id = self
+            .core
+            .cipher_combo()
+            .encrypt_dir_id_backup(dir_id.as_str(), &self.master_key)?;
         Self::atomic_write(&new_storage_path.join("dirid.c9r"), &encrypted_dir_id)?;
 
         info!(created_dir_id = %dir_id.as_str(), "Directory created successfully");
@@ -2188,7 +2318,10 @@ impl VaultOperations {
             .with_filename(filename)
             .with_dir_id(dir_id.as_str());
         let files = self.list_files(dir_id).map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                source,
+                context: Box::new(context),
+            },
             _ => VaultWriteError::Io {
                 source: std::io::Error::other(e.to_string()),
                 context: Box::new(ctx.clone()),
@@ -2210,13 +2343,12 @@ impl VaultOperations {
         debug!(is_shortened = file_info.is_shortened, encrypted_path = %file_info.encrypted_path.display(), "Removing encrypted file");
         if file_info.is_shortened {
             // Remove the entire .c9s directory
-            let parent = file_info
-                .encrypted_path
-                .parent()
-                .ok_or_else(|| VaultWriteError::AtomicWriteFailed {
+            let parent = file_info.encrypted_path.parent().ok_or_else(|| {
+                VaultWriteError::AtomicWriteFailed {
                     reason: "No parent directory".to_string(),
                     context: Box::new(ctx.clone().with_encrypted_path(&file_info.encrypted_path)),
-                })?;
+                }
+            })?;
             fs::remove_dir_all(parent)?;
         } else {
             // Remove the .c9r file
@@ -2247,7 +2379,10 @@ impl VaultOperations {
         // 1. Find the directory to get its ID
         debug!("Looking up directory to delete");
         let dirs = self.list_directories(parent_dir_id).map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                source,
+                context: Box::new(context),
+            },
             _ => VaultWriteError::Io {
                 source: std::io::Error::other(e.to_string()),
                 context: Box::new(ctx.clone()),
@@ -2270,17 +2405,25 @@ impl VaultOperations {
         // 2. Check directory is empty
         debug!("Checking if directory is empty");
         let target_ctx = ctx.clone().with_dir_id(dir_info.directory_id.as_str());
-        let files = self.list_files(&dir_info.directory_id).map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
-            _ => VaultWriteError::Io {
-                source: std::io::Error::other(e.to_string()),
-                context: Box::new(target_ctx.clone()),
-            },
-        })?;
+        let files = self
+            .list_files(&dir_info.directory_id)
+            .map_err(|e| match e {
+                VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                    source,
+                    context: Box::new(context),
+                },
+                _ => VaultWriteError::Io {
+                    source: std::io::Error::other(e.to_string()),
+                    context: Box::new(target_ctx.clone()),
+                },
+            })?;
         let subdirs = self
             .list_directories(&dir_info.directory_id)
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                    source,
+                    context: Box::new(context),
+                },
                 _ => VaultWriteError::Io {
                     source: std::io::Error::other(e.to_string()),
                     context: Box::new(target_ctx.clone()),
@@ -2288,7 +2431,11 @@ impl VaultOperations {
             })?;
 
         if !files.is_empty() || !subdirs.is_empty() {
-            warn!(file_count = files.len(), subdir_count = subdirs.len(), "Cannot delete non-empty directory");
+            warn!(
+                file_count = files.len(),
+                subdir_count = subdirs.len(),
+                "Cannot delete non-empty directory"
+            );
             return Err(VaultWriteError::DirectoryNotEmpty {
                 context: Box::new(target_ctx.with_encrypted_path(&dir_info.encrypted_path)),
             });
@@ -2348,13 +2495,12 @@ impl VaultOperations {
 
         // Find the source file
         let files = self.list_files(dir_id)?;
-        let source_info = files
-            .iter()
-            .find(|f| f.name == old_name)
-            .ok_or_else(|| VaultWriteError::FileNotFound {
+        let source_info = files.iter().find(|f| f.name == old_name).ok_or_else(|| {
+            VaultWriteError::FileNotFound {
                 filename: old_name.to_string(),
                 context: Box::new(ctx.clone()),
-            })?;
+            }
+        })?;
 
         // Check that target doesn't exist
         if files.iter().any(|f| f.name == new_name) {
@@ -2384,13 +2530,12 @@ impl VaultOperations {
         // Remove the old file
         if source_info.is_shortened {
             // Remove entire .c9s directory
-            let parent = source_info
-                .encrypted_path
-                .parent()
-                .ok_or_else(|| VaultWriteError::AtomicWriteFailed {
+            let parent = source_info.encrypted_path.parent().ok_or_else(|| {
+                VaultWriteError::AtomicWriteFailed {
                     reason: "No parent directory".to_string(),
                     context: Box::new(ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
-                })?;
+                }
+            })?;
             fs::remove_dir_all(parent)?;
         } else {
             fs::remove_file(&source_info.encrypted_path)?;
@@ -2432,13 +2577,12 @@ impl VaultOperations {
 
         // Find the source directory
         let dirs = self.list_directories(parent_dir_id)?;
-        let source_info = dirs
-            .iter()
-            .find(|d| d.name == old_name)
-            .ok_or_else(|| VaultWriteError::DirectoryNotFound {
+        let source_info = dirs.iter().find(|d| d.name == old_name).ok_or_else(|| {
+            VaultWriteError::DirectoryNotFound {
                 name: old_name.to_string(),
                 context: Box::new(ctx.clone()),
-            })?;
+            }
+        })?;
 
         // Check that target doesn't exist
         if dirs.iter().any(|d| d.name == new_name) {
@@ -2459,11 +2603,7 @@ impl VaultOperations {
 
         // Create new directory entry first (crash-safe)
         if new_is_long {
-            self.create_shortened_directory(
-                &parent_storage_path,
-                &new_encrypted_name,
-                dir_id,
-            )?;
+            self.create_shortened_directory(&parent_storage_path, &new_encrypted_name, dir_id)?;
         } else {
             let new_path = parent_storage_path.join(format!("{new_encrypted_name}.c9r"));
             fs::create_dir_all(&new_path)?;
@@ -2586,9 +2726,11 @@ impl VaultOperations {
         if dest_files.iter().any(|f| f.name == filename) {
             return Err(VaultWriteError::FileAlreadyExists {
                 filename: filename.to_string(),
-                context: Box::new(VaultOpContext::new()
-                    .with_filename(filename)
-                    .with_dir_id(dest_dir_id.as_str())),
+                context: Box::new(
+                    VaultOpContext::new()
+                        .with_filename(filename)
+                        .with_dir_id(dest_dir_id.as_str()),
+                ),
             });
         }
 
@@ -2614,13 +2756,16 @@ impl VaultOperations {
 
         // Remove from source
         if source_info.is_shortened {
-            let parent = source_info
-                .encrypted_path
-                .parent()
-                .ok_or_else(|| VaultWriteError::AtomicWriteFailed {
+            let parent = source_info.encrypted_path.parent().ok_or_else(|| {
+                VaultWriteError::AtomicWriteFailed {
                     reason: "No parent directory".to_string(),
-                    context: Box::new(src_ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
-                })?;
+                    context: Box::new(
+                        src_ctx
+                            .clone()
+                            .with_encrypted_path(&source_info.encrypted_path),
+                    ),
+                }
+            })?;
             fs::remove_dir_all(parent)?;
         } else {
             fs::remove_file(&source_info.encrypted_path)?;
@@ -2648,9 +2793,11 @@ impl VaultOperations {
         // Check for no-op
         if src_dir_id == dest_dir_id && old_name == new_name {
             return Err(VaultWriteError::SameSourceAndDestination {
-                context: Box::new(VaultOpContext::new()
-                    .with_dir_id(src_dir_id.as_str())
-                    .with_filename(old_name)),
+                context: Box::new(
+                    VaultOpContext::new()
+                        .with_dir_id(src_dir_id.as_str())
+                        .with_filename(old_name),
+                ),
             });
         }
 
@@ -2699,13 +2846,15 @@ impl VaultOperations {
 
         // Remove from source
         if source_info.is_shortened {
-            let parent = source_info
-                .encrypted_path
-                .parent()
-                .ok_or_else(|| VaultWriteError::AtomicWriteFailed {
+            let parent = source_info.encrypted_path.parent().ok_or_else(|| {
+                VaultWriteError::AtomicWriteFailed {
                     reason: "No parent directory".to_string(),
-                    context: Box::new(VaultOpContext::new().with_vault_path(source_info.encrypted_path.display().to_string())),
-                })?;
+                    context: Box::new(
+                        VaultOpContext::new()
+                            .with_vault_path(source_info.encrypted_path.display().to_string()),
+                    ),
+                }
+            })?;
             fs::remove_dir_all(parent)?;
         } else {
             fs::remove_file(&source_info.encrypted_path)?;
@@ -2797,22 +2946,26 @@ impl VaultOperations {
 
     /// Write data atomically using temp file + rename pattern
     fn atomic_write(path: &Path, content: &[u8]) -> Result<(), VaultWriteError> {
-        let parent = path.parent().ok_or_else(|| {
-            VaultWriteError::AtomicWriteFailed {
+        let parent = path
+            .parent()
+            .ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory".to_string(),
-                context: Box::new(VaultOpContext::new().with_vault_path(path.display().to_string())),
-            }
-        })?;
+                context: Box::new(
+                    VaultOpContext::new().with_vault_path(path.display().to_string()),
+                ),
+            })?;
 
         // Create temp file in the same directory (ensures same filesystem for rename)
         let mut temp_file = tempfile::NamedTempFile::new_in(parent)?;
         temp_file.write_all(content)?;
-        temp_file.persist(path).map_err(|e| {
-            VaultWriteError::AtomicWriteFailed {
+        temp_file
+            .persist(path)
+            .map_err(|e| VaultWriteError::AtomicWriteFailed {
                 reason: format!("Failed to persist temp file: {e}"),
-                context: Box::new(VaultOpContext::new().with_vault_path(path.display().to_string())),
-            }
-        })?;
+                context: Box::new(
+                    VaultOpContext::new().with_vault_path(path.display().to_string()),
+                ),
+            })?;
 
         Ok(())
     }
@@ -2848,7 +3001,10 @@ impl VaultOperations {
                 if symlink_file.exists() {
                     let encrypted_data = fs::read(&symlink_file)?;
                     let target = decrypt_symlink_target(&encrypted_data, &self.master_key)?;
-                    info!(target_len = target.len(), "Symlink target decrypted successfully");
+                    info!(
+                        target_len = target.len(),
+                        "Symlink target decrypted successfully"
+                    );
                     return Ok(target);
                 }
             }
@@ -2870,7 +3026,10 @@ impl VaultOperations {
 
         let encrypted_data = fs::read(&symlink_file)?;
         let target = decrypt_symlink_target(&encrypted_data, &self.master_key)?;
-        info!(target_len = target.len(), "Symlink target decrypted successfully");
+        info!(
+            target_len = target.len(),
+            "Symlink target decrypted successfully"
+        );
         Ok(target)
     }
 
@@ -2888,9 +3047,13 @@ impl VaultOperations {
         debug!(target = %target, "Creating symlink");
 
         // Calculate the directory storage path
-        let dir_path = self.calculate_directory_storage_path(directory_id)
+        let dir_path = self
+            .calculate_directory_storage_path(directory_id)
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                    source,
+                    context: Box::new(context),
+                },
                 VaultOperationError::Filename(e) => VaultWriteError::Filename(e),
                 VaultOperationError::InvalidVaultStructure { reason, context } => {
                     VaultWriteError::DirectoryNotFound {
@@ -2911,7 +3074,8 @@ impl VaultOperations {
         let encrypted_name = self.encrypt_filename_cached(name, directory_id.as_str())?;
 
         // Check if name is too long and needs shortening
-        let (symlink_dir, is_shortened) = if encrypted_name.len() > self.core.shortening_threshold() {
+        let (symlink_dir, is_shortened) = if encrypted_name.len() > self.core.shortening_threshold()
+        {
             let shortened_hash = create_c9s_filename(&encrypted_name);
             (dir_path.join(format!("{shortened_hash}.c9s")), true)
         } else {
@@ -2922,9 +3086,11 @@ impl VaultOperations {
         if symlink_dir.exists() {
             return Err(VaultWriteError::SymlinkAlreadyExists {
                 name: name.to_string(),
-                context: Box::new(VaultOpContext::new()
-                    .with_filename(name)
-                    .with_dir_id(directory_id.as_str())),
+                context: Box::new(
+                    VaultOpContext::new()
+                        .with_filename(name)
+                        .with_dir_id(directory_id.as_str()),
+                ),
             });
         }
 
@@ -2946,16 +3112,16 @@ impl VaultOperations {
 
     /// Delete a symlink from the vault
     #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str(), name = %name))]
-    pub fn delete_symlink(
-        &self,
-        directory_id: &DirId,
-        name: &str,
-    ) -> Result<(), VaultWriteError> {
+    pub fn delete_symlink(&self, directory_id: &DirId, name: &str) -> Result<(), VaultWriteError> {
         debug!("Deleting symlink");
 
-        let dir_path = self.calculate_directory_storage_path(directory_id)
+        let dir_path = self
+            .calculate_directory_storage_path(directory_id)
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io {
+                    source,
+                    context: Box::new(context),
+                },
                 VaultOperationError::Filename(e) => VaultWriteError::Filename(e),
                 _ => VaultWriteError::DirectoryNotFound {
                     name: directory_id.as_str().to_string(),
@@ -2985,9 +3151,11 @@ impl VaultOperations {
 
         Err(VaultWriteError::FileNotFound {
             filename: name.to_string(),
-            context: Box::new(VaultOpContext::new()
-                .with_filename(name)
-                .with_dir_id(directory_id.as_str())),
+            context: Box::new(
+                VaultOpContext::new()
+                    .with_filename(name)
+                    .with_dir_id(directory_id.as_str()),
+            ),
         })
     }
 
@@ -3022,7 +3190,10 @@ impl VaultOperations {
         let dirid_file = content_dir_path.join("dirid.c9r");
         let encrypted_data = fs::read(&dirid_file)?;
 
-        let dir_id_str = self.core.cipher_combo().decrypt_dir_id_backup(&encrypted_data, &self.master_key)?;
+        let dir_id_str = self
+            .core
+            .cipher_combo()
+            .decrypt_dir_id_backup(&encrypted_data, &self.master_key)?;
 
         Ok(DirId::from_raw(&dir_id_str))
     }
@@ -3040,11 +3211,7 @@ impl VaultOperations {
     /// # Returns
     ///
     /// `true` if the backup matches, `false` if it doesn't match or can't be read.
-    pub fn verify_dir_id_backup(
-        &self,
-        content_dir_path: &Path,
-        expected_dir_id: &DirId,
-    ) -> bool {
+    pub fn verify_dir_id_backup(&self, content_dir_path: &Path, expected_dir_id: &DirId) -> bool {
         match self.recover_dir_id_from_backup(content_dir_path) {
             Ok(recovered_id) => recovered_id.as_str() == expected_dir_id.as_str(),
             Err(_) => false,
@@ -3074,7 +3241,8 @@ impl VaultOperations {
             source: e,
             context: VaultOpContext::new().with_vault_path(dir_path.to_string_lossy()),
         })?;
-        let parent_id_str = decrypt_parent_dir_id(&encrypted_data, dir_id.as_str(), &self.master_key)?;
+        let parent_id_str =
+            decrypt_parent_dir_id(&encrypted_data, dir_id.as_str(), &self.master_key)?;
         Ok(DirId::from_raw(parent_id_str))
     }
 
@@ -3094,7 +3262,9 @@ impl VaultOperations {
     /// Directories without dirid.c9r files or with corrupted backup files will
     /// be skipped with a warning printed to stderr. The root directory (empty ID)
     /// has no parent and won't appear in the results as a child.
-    pub fn recover_directory_tree(&self) -> Result<Vec<RecoveredDirectoryInfo>, VaultOperationError> {
+    pub fn recover_directory_tree(
+        &self,
+    ) -> Result<Vec<RecoveredDirectoryInfo>, VaultOperationError> {
         let mut recovered = Vec::new();
         let d_dir = self.core.vault_path().join("d");
 
@@ -3205,21 +3375,29 @@ pub(crate) fn debug_read_files_in_tree(
     let files = vault_ops.list_files(directory_id)?;
     for file in files {
         println!("\n{}📄 {}", indent, file.name);
-        println!("{}   Size: {} bytes (encrypted)", indent, file.encrypted_size);
+        println!(
+            "{}   Size: {} bytes (encrypted)",
+            indent, file.encrypted_size
+        );
 
         // For text files, show content preview
         let is_text_file = Path::new(&file.name)
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("txt") || ext.eq_ignore_ascii_case("md")
-                    || ext.eq_ignore_ascii_case("c") || ext.eq_ignore_ascii_case("rs")
+                ext.eq_ignore_ascii_case("txt")
+                    || ext.eq_ignore_ascii_case("md")
+                    || ext.eq_ignore_ascii_case("c")
+                    || ext.eq_ignore_ascii_case("rs")
             });
         if is_text_file {
-
             match vault_ops.decrypt_file_internal(&file.encrypted_path) {
                 Ok(decrypted) => {
-                    println!("{}   Decrypted size: {} bytes", indent, decrypted.content.len());
+                    println!(
+                        "{}   Decrypted size: {} bytes",
+                        indent,
+                        decrypted.content.len()
+                    );
 
                     let content_str = if decrypted.content.is_empty() {
                         "(empty file)".to_string()
@@ -3227,7 +3405,7 @@ pub(crate) fn debug_read_files_in_tree(
                         let preview_len = decrypted.content.len().min(200);
                         match String::from_utf8(decrypted.content[..preview_len].to_vec()) {
                             Ok(s) => s,
-                            Err(_) => "(binary content)".to_string()
+                            Err(_) => "(binary content)".to_string(),
                         }
                     };
 

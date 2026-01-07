@@ -3,12 +3,12 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use aes_siv::{siv::Aes256Siv, KeyInit};
-use base64::{engine::general_purpose, Engine as _};
+use aes_siv::{KeyInit, siv::Aes256Siv};
+use base64::{Engine as _, engine::general_purpose};
 use data_encoding::BASE32;
 use ring::digest;
 use thiserror::Error;
-use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
+use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
 use crate::crypto::keys::{KeyAccessError, MasterKey};
 
@@ -101,7 +101,9 @@ pub enum NameError {
     /// - The encrypted filename was tampered with
     /// - The wrong master key was used
     /// - The wrong parent directory ID was used (filename moved/swapped)
-    #[error("[INTEGRITY VIOLATION] Failed to decrypt {context}: authentication failed - possible tampering, wrong key, or filename moved between directories")]
+    #[error(
+        "[INTEGRITY VIOLATION] Failed to decrypt {context}: authentication failed - possible tampering, wrong key, or filename moved between directories"
+    )]
     DecryptionFailed { context: NameContext },
 
     // =========================================================================
@@ -112,14 +114,20 @@ pub enum NameError {
     /// **[INPUT ERROR]** The base64-encoded portion of the filename is invalid.
     /// This could indicate corruption or an improperly formatted filename.
     #[error("Invalid base64 encoding for {context}: {reason}")]
-    Base64Decode { reason: String, context: NameContext },
+    Base64Decode {
+        reason: String,
+        context: NameContext,
+    },
 
     /// UTF-8 decoding failed after decryption.
     ///
     /// **[INPUT ERROR]** The decrypted bytes are not valid UTF-8.
     /// This could indicate the original filename was binary data, or corruption.
     #[error("Invalid UTF-8 after decryption for {context}: {reason}")]
-    Utf8Decode { reason: String, context: NameContext },
+    Utf8Decode {
+        reason: String,
+        context: NameContext,
+    },
 
     // =========================================================================
     // PROGRAMMING ERRORS - Should not happen in normal operation
@@ -149,21 +157,21 @@ impl NameError {
     #[must_use]
     pub fn with_context(self, new_context: NameContext) -> Self {
         match self {
-            NameError::DecryptionFailed { .. } => {
-                NameError::DecryptionFailed { context: new_context }
-            }
-            NameError::Base64Decode { reason, .. } => {
-                NameError::Base64Decode { reason, context: new_context }
-            }
-            NameError::Utf8Decode { reason, .. } => {
-                NameError::Utf8Decode { reason, context: new_context }
-            }
-            NameError::EncryptionFailed { .. } => {
-                NameError::EncryptionFailed { context: new_context }
-            }
-            NameError::DirIdHashFailed { dir_id } => {
-                NameError::DirIdHashFailed { dir_id }
-            }
+            NameError::DecryptionFailed { .. } => NameError::DecryptionFailed {
+                context: new_context,
+            },
+            NameError::Base64Decode { reason, .. } => NameError::Base64Decode {
+                reason,
+                context: new_context,
+            },
+            NameError::Utf8Decode { reason, .. } => NameError::Utf8Decode {
+                reason,
+                context: new_context,
+            },
+            NameError::EncryptionFailed { .. } => NameError::EncryptionFailed {
+                context: new_context,
+            },
+            NameError::DirIdHashFailed { dir_id } => NameError::DirIdHashFailed { dir_id },
             NameError::KeyAccess(e) => NameError::KeyAccess(e),
         }
     }
@@ -261,7 +269,9 @@ pub fn encrypt_filename(
         let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
         let encrypted = cipher
             .encrypt(associated_data, normalized_name.as_bytes())
-            .map_err(|_| NameError::EncryptionFailed { context: context.clone() })?;
+            .map_err(|_| NameError::EncryptionFailed {
+                context: context.clone(),
+            })?;
 
         // Encode using Base64URL with padding to match Java Cryptomator's Guava BaseEncoding.base64Url()
         let encoded = general_purpose::URL_SAFE.encode(&encrypted);
@@ -311,15 +321,17 @@ pub fn decrypt_filename(
 
         // Decrypt with parent directory ID as associated data
         let associated_data: &[&[u8]] = &[parent_dir_id.as_bytes()];
-        let decrypted = cipher
-            .decrypt(associated_data, &decoded)
-            .map_err(|_| NameError::DecryptionFailed { context: context.clone() })?;
+        let decrypted =
+            cipher
+                .decrypt(associated_data, &decoded)
+                .map_err(|_| NameError::DecryptionFailed {
+                    context: context.clone(),
+                })?;
 
-        let result = String::from_utf8(decrypted.clone())
-            .map_err(|e| NameError::Utf8Decode {
-                reason: e.to_string(),
-                context: context.clone(),
-            })?;
+        let result = String::from_utf8(decrypted.clone()).map_err(|e| NameError::Utf8Decode {
+            reason: e.to_string(),
+            context: context.clone(),
+        })?;
 
         Ok(result)
     })?
@@ -334,7 +346,10 @@ pub fn decrypt_filename(
 /// # Reference Implementation
 /// - Java: [`LongFileNameProvider.deflate()`](https://github.com/cryptomator/cryptofs/blob/develop/src/main/java/org/cryptomator/cryptofs/LongFileNameProvider.java)
 pub fn create_c9s_filename(long_encrypted_name: &str) -> String {
-    let hash = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, long_encrypted_name.as_bytes());
+    let hash = digest::digest(
+        &digest::SHA1_FOR_LEGACY_USE_ONLY,
+        long_encrypted_name.as_bytes(),
+    );
     let hash_bytes = hash.as_ref();
 
     // Convert to Base64URL with padding (matches Guava's BaseEncoding.base64Url())
@@ -376,7 +391,9 @@ pub fn encrypt_parent_dir_id(
         let associated_data: &[&[u8]] = &[child_dir_id.as_bytes()];
         cipher
             .encrypt(associated_data, parent_dir_id.as_bytes())
-            .map_err(|_| NameError::EncryptionFailed { context: context.clone() })
+            .map_err(|_| NameError::EncryptionFailed {
+                context: context.clone(),
+            })
     })?
 }
 
@@ -415,13 +432,14 @@ pub fn decrypt_parent_dir_id(
         let associated_data: &[&[u8]] = &[child_dir_id.as_bytes()];
         let decrypted = cipher
             .decrypt(associated_data, encrypted_parent_id)
-            .map_err(|_| NameError::DecryptionFailed { context: context.clone() })?;
-
-        String::from_utf8(decrypted.clone())
-            .map_err(|e| NameError::Utf8Decode {
-                reason: e.to_string(),
+            .map_err(|_| NameError::DecryptionFailed {
                 context: context.clone(),
-            })
+            })?;
+
+        String::from_utf8(decrypted.clone()).map_err(|e| NameError::Utf8Decode {
+            reason: e.to_string(),
+            context: context.clone(),
+        })
     })?
 }
 
@@ -486,10 +504,13 @@ mod tests {
             ("unicode-café.txt", ""),
             ("numbers123.dat", ""),
             ("special!@#$%^&*()_+-=[]{}|;':\",./<>?.tmp", ""),
-            ("very_long_filename_that_tests_the_limits_of_what_can_be_encrypted.extension", ""),
-            ("", ""), // Empty filename
-            (".", ""), // Current directory
-            ("..", ""), // Parent directory
+            (
+                "very_long_filename_that_tests_the_limits_of_what_can_be_encrypted.extension",
+                "",
+            ),
+            ("", ""),        // Empty filename
+            (".", ""),       // Current directory
+            ("..", ""),      // Parent directory
             (".hidden", ""), // Hidden file
             ("file.with.multiple.dots", ""),
         ];
@@ -518,12 +539,17 @@ mod tests {
         ];
 
         for parent_dir_id in parent_dir_ids {
-            let encrypted = encrypt_filename(filename, parent_dir_id, &master_key)
-                .unwrap_or_else(|e| panic!("Failed to encrypt with parent_dir_id '{parent_dir_id}': {e}"));
+            let encrypted =
+                encrypt_filename(filename, parent_dir_id, &master_key).unwrap_or_else(|e| {
+                    panic!("Failed to encrypt with parent_dir_id '{parent_dir_id}': {e}")
+                });
             let decrypted = decrypt_filename(&encrypted, parent_dir_id, &master_key)
                 .unwrap_or_else(|e| panic!("Failed with parent_dir_id '{parent_dir_id}': {e}"));
 
-            assert_eq!(filename, decrypted, "Failed with parent_dir_id '{parent_dir_id}'");
+            assert_eq!(
+                filename, decrypted,
+                "Failed with parent_dir_id '{parent_dir_id}'"
+            );
         }
     }
 
@@ -607,7 +633,7 @@ mod tests {
     fn test_filename_with_invalid_base64_fails() {
         let master_key = create_test_master_key();
         let parent_dir_id = "";
-        
+
         let invalid_filenames = vec![
             "invalid-base64!.c9r",
             "not-base64-at-all.c9r",
@@ -618,7 +644,10 @@ mod tests {
 
         for invalid_filename in invalid_filenames {
             let result = decrypt_filename(invalid_filename, parent_dir_id, &master_key);
-            assert!(result.is_err(), "Invalid filename '{invalid_filename}' should fail to decrypt");
+            assert!(
+                result.is_err(),
+                "Invalid filename '{invalid_filename}' should fail to decrypt"
+            );
         }
     }
 
@@ -637,7 +666,10 @@ mod tests {
         let dir_id2 = "different-directory-id";
         let hash3 = hash_dir_id(dir_id2, &master_key).unwrap();
 
-        assert_ne!(hash1, hash3, "Different directory IDs should produce different hashes");
+        assert_ne!(
+            hash1, hash3,
+            "Different directory IDs should produce different hashes"
+        );
 
         // Test root directory (empty string)
         let root_hash = hash_dir_id("", &master_key).unwrap();
@@ -671,7 +703,10 @@ mod tests {
 
         // Should be Base32 encoded (A-Z, 2-7, no padding for SHA1)
         assert!(!hash.is_empty(), "Hash should not be empty");
-        assert!(hash.len() >= 32, "Hash should be at least 32 characters long");
+        assert!(
+            hash.len() >= 32,
+            "Hash should be at least 32 characters long"
+        );
 
         // Should only contain valid Base32 characters
         for ch in hash.chars() {
@@ -687,8 +722,8 @@ mod tests {
         let master_key = create_test_master_key();
 
         let test_cases = vec![
-            "",                       // Root directory
-            "a",                      // Single character
+            "",  // Root directory
+            "a", // Single character
             "very-long-directory-id-that-might-cause-issues-with-encryption-or-hashing",
             "unicode-café-directory-id",
             "special!@#$%^&*()_+-=[]{}|;':\",./<>?",
@@ -699,7 +734,10 @@ mod tests {
 
         for dir_id in test_cases {
             let hash = hash_dir_id(dir_id, &master_key).unwrap();
-            assert!(!hash.is_empty(), "Hash should not be empty for dir_id: '{dir_id}'");
+            assert!(
+                !hash.is_empty(),
+                "Hash should not be empty for dir_id: '{dir_id}'"
+            );
             assert!(
                 hash.len() >= 32,
                 "Hash should be at least 32 characters for dir_id: '{dir_id}'"
@@ -717,7 +755,9 @@ mod tests {
 
         // encrypt_filename should NOT add .c9r extension - the caller adds it
         assert!(
-            !std::path::Path::new(&encrypted).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")),
+            !std::path::Path::new(&encrypted)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")),
             "encrypt_filename should NOT add .c9r extension (caller adds it)"
         );
 
@@ -751,7 +791,9 @@ mod tests {
 
         // Should have exactly one .c9r extension, not two
         assert!(
-            std::path::Path::new(&full_path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")),
+            std::path::Path::new(&full_path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")),
             "Full path should end with .c9r"
         );
         assert!(
@@ -775,12 +817,19 @@ mod tests {
 
         // decrypt_filename should work with plain base64 (no extension)
         let decrypted_no_ext = decrypt_filename(&encrypted, parent_dir_id, &master_key).unwrap();
-        assert_eq!(filename, decrypted_no_ext, "Should decrypt without .c9r extension");
+        assert_eq!(
+            filename, decrypted_no_ext,
+            "Should decrypt without .c9r extension"
+        );
 
         // decrypt_filename should also work with .c9r extension (as stored on disk)
         let with_extension = format!("{encrypted}.c9r");
-        let decrypted_with_ext = decrypt_filename(&with_extension, parent_dir_id, &master_key).unwrap();
-        assert_eq!(filename, decrypted_with_ext, "Should decrypt with .c9r extension");
+        let decrypted_with_ext =
+            decrypt_filename(&with_extension, parent_dir_id, &master_key).unwrap();
+        assert_eq!(
+            filename, decrypted_with_ext,
+            "Should decrypt with .c9r extension"
+        );
     }
 
     #[test]
@@ -801,8 +850,10 @@ mod tests {
         );
 
         // Both should produce the same encrypted output since encryption normalizes to NFC
-        let encrypted_from_nfd = encrypt_filename(nfd_filename, parent_dir_id, &master_key).unwrap();
-        let encrypted_from_nfc = encrypt_filename(nfc_filename, parent_dir_id, &master_key).unwrap();
+        let encrypted_from_nfd =
+            encrypt_filename(nfd_filename, parent_dir_id, &master_key).unwrap();
+        let encrypted_from_nfc =
+            encrypt_filename(nfc_filename, parent_dir_id, &master_key).unwrap();
 
         assert_eq!(
             encrypted_from_nfd, encrypted_from_nfc,
@@ -825,12 +876,12 @@ mod tests {
         // Various NFD test cases with combining characters
         let test_cases = vec![
             // (NFD input, expected NFC output)
-            ("cafe\u{0301}", "caf\u{00E9}"),           // café
-            ("e\u{0301}cole", "\u{00E9}cole"),         // école
-            ("nin\u{0303}o", "ni\u{00F1}o"),           // niño
-            ("A\u{030A}ngstrom", "\u{00C5}ngstrom"),   // Ångström (first char)
-            ("u\u{0308}ber", "\u{00FC}ber"),           // über
-            ("o\u{0302}", "\u{00F4}"),                 // ô
+            ("cafe\u{0301}", "caf\u{00E9}"),         // café
+            ("e\u{0301}cole", "\u{00E9}cole"),       // école
+            ("nin\u{0303}o", "ni\u{00F1}o"),         // niño
+            ("A\u{030A}ngstrom", "\u{00C5}ngstrom"), // Ångström (first char)
+            ("u\u{0308}ber", "\u{00FC}ber"),         // über
+            ("o\u{0302}", "\u{00F4}"),               // ô
         ];
 
         for (nfd_input, expected_nfc) in test_cases {
@@ -880,12 +931,12 @@ mod tests {
 
         // Test various filename lengths to ensure padding is included when needed
         let test_filenames = vec![
-            "a",           // Very short
-            "ab",          // Short
-            "abc",         // 3 chars
-            "test",        // 4 chars
-            "hello",       // 5 chars
-            "test.txt",    // With extension
+            "a",            // Very short
+            "ab",           // Short
+            "abc",          // 3 chars
+            "test",         // 4 chars
+            "hello",        // 5 chars
+            "test.txt",     // With extension
             "document.pdf", // Longer
         ];
 
@@ -901,8 +952,14 @@ mod tests {
             }
 
             // Should NOT contain standard base64 chars that are not URL-safe
-            assert!(!encrypted.contains('+'), "Should not contain '+' (not URL-safe)");
-            assert!(!encrypted.contains('/'), "Should not contain '/' (not URL-safe)");
+            assert!(
+                !encrypted.contains('+'),
+                "Should not contain '+' (not URL-safe)"
+            );
+            assert!(
+                !encrypted.contains('/'),
+                "Should not contain '/' (not URL-safe)"
+            );
 
             // Verify it decrypts correctly
             let decrypted = decrypt_filename(&encrypted, parent_dir_id, &master_key).unwrap();
@@ -919,17 +976,26 @@ mod tests {
         let filename = "test.txt";
 
         // Get the encrypted name (with padding)
-        let encrypted_with_padding = encrypt_filename(filename, parent_dir_id, &master_key).unwrap();
+        let encrypted_with_padding =
+            encrypt_filename(filename, parent_dir_id, &master_key).unwrap();
 
         // Remove any padding characters to simulate unpadded input
         let encrypted_without_padding = encrypted_with_padding.trim_end_matches('=');
 
         // Both should decrypt successfully
-        let decrypted_from_padded = decrypt_filename(&encrypted_with_padding, parent_dir_id, &master_key).unwrap();
-        let decrypted_from_unpadded = decrypt_filename(encrypted_without_padding, parent_dir_id, &master_key).unwrap();
+        let decrypted_from_padded =
+            decrypt_filename(&encrypted_with_padding, parent_dir_id, &master_key).unwrap();
+        let decrypted_from_unpadded =
+            decrypt_filename(encrypted_without_padding, parent_dir_id, &master_key).unwrap();
 
-        assert_eq!(decrypted_from_padded, filename, "Padded input should decrypt correctly");
-        assert_eq!(decrypted_from_unpadded, filename, "Unpadded input should decrypt correctly");
+        assert_eq!(
+            decrypted_from_padded, filename,
+            "Padded input should decrypt correctly"
+        );
+        assert_eq!(
+            decrypted_from_unpadded, filename,
+            "Unpadded input should decrypt correctly"
+        );
     }
 
     #[test]
@@ -969,7 +1035,11 @@ mod tests {
         let result = create_c9s_filename("some_long_encrypted_name.c9r");
 
         // Should be 28 characters: 20 bytes * 8 bits / 6 bits per base64 char = 26.67, rounded up to 27, plus 1 padding
-        assert_eq!(result.len(), 28, "Base64URL encoded SHA1 should be 28 characters");
+        assert_eq!(
+            result.len(),
+            28,
+            "Base64URL encoded SHA1 should be 28 characters"
+        );
 
         // Should end with padding (SHA1 is 20 bytes, which needs 1 padding char in Base64)
         assert!(result.ends_with('='), "Should have Base64 padding");
@@ -983,8 +1053,14 @@ mod tests {
         }
 
         // Should NOT contain standard Base64 characters that are not URL-safe
-        assert!(!result.contains('+'), "Should not contain '+' (not URL-safe)");
-        assert!(!result.contains('/'), "Should not contain '/' (not URL-safe)");
+        assert!(
+            !result.contains('+'),
+            "Should not contain '+' (not URL-safe)"
+        );
+        assert!(
+            !result.contains('/'),
+            "Should not contain '/' (not URL-safe)"
+        );
     }
 
     #[test]
@@ -994,7 +1070,10 @@ mod tests {
         let result1 = create_c9s_filename(input);
         let result2 = create_c9s_filename(input);
 
-        assert_eq!(result1, result2, "c9s filename generation should be deterministic");
+        assert_eq!(
+            result1, result2,
+            "c9s filename generation should be deterministic"
+        );
     }
 
     #[test]
@@ -1002,7 +1081,10 @@ mod tests {
         let result1 = create_c9s_filename("file1.c9r");
         let result2 = create_c9s_filename("file2.c9r");
 
-        assert_ne!(result1, result2, "Different inputs should produce different hashes");
+        assert_ne!(
+            result1, result2,
+            "Different inputs should produce different hashes"
+        );
     }
 
     #[test]
@@ -1012,9 +1094,9 @@ mod tests {
 
         let test_cases = vec![
             // (input, expected Base64URL-encoded SHA1)
-            ("", "2jmj7l5rSw0yVb_vlWAYkK_YBwk="),  // SHA1 of empty string
-            ("a", "hvfkN_qlp_zhXR3cuerq6jd2Z7g="),  // SHA1 of "a"
-            ("hello.c9r", "sIwZmZBQGt254xDzjNkpOp7cddQ="),  // SHA1 of "hello.c9r"
+            ("", "2jmj7l5rSw0yVb_vlWAYkK_YBwk="), // SHA1 of empty string
+            ("a", "hvfkN_qlp_zhXR3cuerq6jd2Z7g="), // SHA1 of "a"
+            ("hello.c9r", "sIwZmZBQGt254xDzjNkpOp7cddQ="), // SHA1 of "hello.c9r"
         ];
 
         for (input, expected) in test_cases {
@@ -1066,8 +1148,7 @@ mod tests {
         assert_eq!(root_hash, root_hash2, "Hash should be deterministic");
 
         // Different directory IDs should produce different hashes
-        let uuid_hash =
-            hash_dir_id("e9250eb8-078d-4fc0-8835-be92a313360c", &master_key).unwrap();
+        let uuid_hash = hash_dir_id("e9250eb8-078d-4fc0-8835-be92a313360c", &master_key).unwrap();
         assert_ne!(
             root_hash, uuid_hash,
             "Different dir IDs should produce different hashes"
@@ -1100,8 +1181,7 @@ mod tests {
         // 3. Update the expected values below
 
         let root_hash = hash_dir_id("", &master_key).unwrap();
-        let uuid_hash =
-            hash_dir_id("e9250eb8-078d-4fc0-8835-be92a313360c", &master_key).unwrap();
+        let uuid_hash = hash_dir_id("e9250eb8-078d-4fc0-8835-be92a313360c", &master_key).unwrap();
 
         // Store reference values (update these if implementation changes intentionally)
         // Note: These are NOT from the Java reference implementation - they are

@@ -11,8 +11,8 @@
 //!   provides directory listing functionality
 
 use crate::crypto::keys::MasterKey;
-use crate::fs::name::{decrypt_filename, hash_dir_id, NameError};
-use crate::fs::symlink::{decrypt_symlink_target, SymlinkError};
+use crate::fs::name::{NameError, decrypt_filename, hash_dir_id};
+use crate::fs::symlink::{SymlinkError, decrypt_symlink_target};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -187,9 +187,12 @@ impl VaultExplorer {
         // Clone the directory ID to avoid borrow issues
         let parent_dir_id = parent_entry
             .directory_id()
-            .ok_or_else(|| DirectoryError::InvalidStructure(
-                format!("Directory '{}' has no directory ID", parent_entry.name)
-            ))?
+            .ok_or_else(|| {
+                DirectoryError::InvalidStructure(format!(
+                    "Directory '{}' has no directory ID",
+                    parent_entry.name
+                ))
+            })?
             .to_string();
 
         debug!(
@@ -206,12 +209,7 @@ impl VaultExplorer {
             return Ok(());
         }
 
-        self.process_items_in_directory(
-            parent_entry,
-            &storage_path,
-            &parent_dir_id,
-            master_key,
-        )?;
+        self.process_items_in_directory(parent_entry, &storage_path, &parent_dir_id, master_key)?;
 
         Ok(())
     }
@@ -233,11 +231,7 @@ impl VaultExplorer {
             let path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
 
-            trace!(
-                "Found item: {} (is_dir: {})",
-                file_name,
-                path.is_dir()
-            );
+            trace!("Found item: {} (is_dir: {})", file_name, path.is_dir());
             item_count += 1;
 
             // Skip special files
@@ -250,14 +244,26 @@ impl VaultExplorer {
             if has_cryptomator_extension(&file_name, "c9r") {
                 if path.is_dir() {
                     // This is a directory
-                    self.process_directory(&path, &file_name, parent_dir_id, master_key, parent_entry)?;
+                    self.process_directory(
+                        &path,
+                        &file_name,
+                        parent_dir_id,
+                        master_key,
+                        parent_entry,
+                    )?;
                 } else {
                     // This is a regular file
                     Self::process_file(&path, &file_name, parent_dir_id, master_key, parent_entry)?;
                 }
             } else if has_cryptomator_extension(&file_name, "c9s") {
                 // Handle shortened names
-                self.process_shortened_item(&path, &file_name, parent_dir_id, master_key, parent_entry)?;
+                self.process_shortened_item(
+                    &path,
+                    &file_name,
+                    parent_dir_id,
+                    master_key,
+                    parent_entry,
+                )?;
             }
         }
 
@@ -283,7 +289,14 @@ impl VaultExplorer {
         let symlink_file = path.join("symlink.c9r");
         if symlink_file.exists() {
             trace!("Found symlink.c9r - processing as symlink");
-            return Self::process_symlink(path, file_name, parent_dir_id, master_key, parent_entry, false);
+            return Self::process_symlink(
+                path,
+                file_name,
+                parent_dir_id,
+                master_key,
+                parent_entry,
+                false,
+            );
         }
 
         let dir_id = Self::read_directory_id(path)?;
@@ -416,7 +429,11 @@ impl VaultExplorer {
         Ok(())
     }
 
-    fn calculate_directory_path(&self, dir_id: &str, master_key: &MasterKey) -> Result<PathBuf, DirectoryError> {
+    fn calculate_directory_path(
+        &self,
+        dir_id: &str,
+        master_key: &MasterKey,
+    ) -> Result<PathBuf, DirectoryError> {
         trace!("Calculating directory path for ID: '{dir_id}'");
 
         let hashed = hash_dir_id(dir_id, master_key)?;
@@ -518,7 +535,7 @@ mod tests {
     fn test_vault_explorer_creation() {
         let temp_dir = TempDir::new().unwrap();
         let vault_path = temp_dir.path();
-        
+
         let explorer = VaultExplorer::new(vault_path);
         assert_eq!(explorer.vault_path, vault_path);
     }
@@ -537,18 +554,26 @@ mod tests {
         let expected_hash_chars: Vec<char> = expected_hash.chars().collect();
         let expected_first_two: String = expected_hash_chars[0..2].iter().collect();
         let expected_remaining: String = expected_hash_chars[2..32].iter().collect();
-        let expected_path = vault_path.join("d").join(&expected_first_two).join(&expected_remaining);
+        let expected_path = vault_path
+            .join("d")
+            .join(&expected_first_two)
+            .join(&expected_remaining);
 
         assert_eq!(root_path, expected_path);
 
         // Test non-root directory path calculation
         let test_dir_id = "test-dir-123";
-        let test_path = explorer.calculate_directory_path(test_dir_id, &master_key).unwrap();
+        let test_path = explorer
+            .calculate_directory_path(test_dir_id, &master_key)
+            .unwrap();
         let test_hash = hash_dir_id(test_dir_id, &master_key).unwrap();
         let test_hash_chars: Vec<char> = test_hash.chars().collect();
         let test_first_two: String = test_hash_chars[0..2].iter().collect();
         let test_remaining: String = test_hash_chars[2..32].iter().collect();
-        let expected_test_path = vault_path.join("d").join(&test_first_two).join(&test_remaining);
+        let expected_test_path = vault_path
+            .join("d")
+            .join(&test_first_two)
+            .join(&test_remaining);
 
         assert_eq!(test_path, expected_test_path);
     }
@@ -558,13 +583,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let test_dir = temp_dir.path().join("test_dir");
         fs::create_dir_all(&test_dir).unwrap();
-        
+
         let test_dir_id = "test-directory-id-12345";
         let dir_file = test_dir.join("dir.c9r");
-        
+
         let mut file = fs::File::create(&dir_file).unwrap();
         file.write_all(test_dir_id.as_bytes()).unwrap();
-        
+
         let read_id = VaultExplorer::read_directory_id(&test_dir).unwrap();
         assert_eq!(read_id, test_dir_id);
     }
@@ -576,9 +601,8 @@ mod tests {
         fs::create_dir_all(&test_dir).unwrap();
 
         // Should panic because dir.c9r doesn't exist
-        let result = std::panic::catch_unwind(|| {
-            VaultExplorer::read_directory_id(&test_dir).unwrap()
-        });
+        let result =
+            std::panic::catch_unwind(|| VaultExplorer::read_directory_id(&test_dir).unwrap());
         assert!(result.is_err(), "Should panic when dir.c9r is missing");
     }
 
@@ -587,7 +611,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let test_dir = temp_dir.path().join("test_dir");
         fs::create_dir_all(&test_dir).unwrap();
-        
+
         let original_name = "very-long-encrypted-filename-that-needs-shortening.c9r";
         let name_file = test_dir.join("name.c9s");
 
@@ -605,9 +629,8 @@ mod tests {
         fs::create_dir_all(&test_dir).unwrap();
 
         // Should panic because name.c9s doesn't exist
-        let result = std::panic::catch_unwind(|| {
-            VaultExplorer::read_shortened_name(&test_dir).unwrap()
-        });
+        let result =
+            std::panic::catch_unwind(|| VaultExplorer::read_shortened_name(&test_dir).unwrap());
         assert!(result.is_err(), "Should panic when name.c9s is missing");
     }
 
@@ -617,7 +640,9 @@ mod tests {
         let entry = DirectoryEntry {
             name: "test".to_string(),
             path: test_path.clone(),
-            kind: EntryKind::Directory { id: "test-id".to_string() },
+            kind: EntryKind::Directory {
+                id: "test-id".to_string(),
+            },
             children: vec![],
         };
 
@@ -642,7 +667,9 @@ mod tests {
         let symlink_entry = DirectoryEntry {
             name: "link".to_string(),
             path: PathBuf::from("/test/link"),
-            kind: EntryKind::Symlink { target: "/target/path".to_string() },
+            kind: EntryKind::Symlink {
+                target: "/target/path".to_string(),
+            },
             children: vec![],
         };
         assert!(symlink_entry.is_symlink());
@@ -668,20 +695,22 @@ mod tests {
                 DirectoryEntry {
                     name: "subdir".to_string(),
                     path: PathBuf::from("/subdir"),
-                    kind: EntryKind::Directory { id: "subdir-id".to_string() },
-                    children: vec![
-                        DirectoryEntry {
-                            name: "nested.txt".to_string(),
-                            path: PathBuf::from("/subdir/nested.txt"),
-                            kind: EntryKind::File,
-                            children: vec![],
-                        },
-                    ],
+                    kind: EntryKind::Directory {
+                        id: "subdir-id".to_string(),
+                    },
+                    children: vec![DirectoryEntry {
+                        name: "nested.txt".to_string(),
+                        path: PathBuf::from("/subdir/nested.txt"),
+                        kind: EntryKind::File,
+                        children: vec![],
+                    }],
                 },
                 DirectoryEntry {
                     name: "link".to_string(),
                     path: PathBuf::from("/link"),
-                    kind: EntryKind::Symlink { target: "/target".to_string() },
+                    kind: EntryKind::Symlink {
+                        target: "/target".to_string(),
+                    },
                     children: vec![],
                 },
             ],
@@ -728,7 +757,9 @@ mod tests {
         let file_kind = EntryKind::File;
         assert!(file_kind.directory_id().is_none());
 
-        let symlink_kind = EntryKind::Symlink { target: "/target".to_string() };
+        let symlink_kind = EntryKind::Symlink {
+            target: "/target".to_string(),
+        };
         assert!(symlink_kind.directory_id().is_none());
     }
 
@@ -737,7 +768,9 @@ mod tests {
         let file_kind = EntryKind::File;
         assert!(file_kind.symlink_target().is_none());
 
-        let dir_kind = EntryKind::Directory { id: "test-id".to_string() };
+        let dir_kind = EntryKind::Directory {
+            id: "test-id".to_string(),
+        };
         assert!(dir_kind.symlink_target().is_none());
     }
 
@@ -857,7 +890,9 @@ mod tests {
 
     #[test]
     fn test_entry_kind_clone() {
-        let dir_kind = EntryKind::Directory { id: "test-id".to_string() };
+        let dir_kind = EntryKind::Directory {
+            id: "test-id".to_string(),
+        };
         let cloned = dir_kind.clone();
         assert_eq!(cloned, dir_kind);
 
@@ -865,7 +900,9 @@ mod tests {
         let cloned_file = file_kind.clone();
         assert_eq!(cloned_file, file_kind);
 
-        let symlink_kind = EntryKind::Symlink { target: "/target".to_string() };
+        let symlink_kind = EntryKind::Symlink {
+            target: "/target".to_string(),
+        };
         let cloned_symlink = symlink_kind.clone();
         assert_eq!(cloned_symlink, symlink_kind);
     }
@@ -887,7 +924,9 @@ mod tests {
 
     #[test]
     fn test_entry_kind_debug_format() {
-        let dir = EntryKind::Directory { id: "abc".to_string() };
+        let dir = EntryKind::Directory {
+            id: "abc".to_string(),
+        };
         let debug_str = format!("{dir:?}");
         assert!(debug_str.contains("Directory"));
         assert!(debug_str.contains("abc"));
@@ -896,7 +935,9 @@ mod tests {
         let debug_str = format!("{file:?}");
         assert!(debug_str.contains("File"));
 
-        let symlink = EntryKind::Symlink { target: "/path".to_string() };
+        let symlink = EntryKind::Symlink {
+            target: "/path".to_string(),
+        };
         let debug_str = format!("{symlink:?}");
         assert!(debug_str.contains("Symlink"));
         assert!(debug_str.contains("/path"));
@@ -946,7 +987,10 @@ mod tests {
         let subdir_hash_chars: Vec<char> = subdir_hash.chars().collect();
         let sub_first_two: String = subdir_hash_chars[0..2].iter().collect();
         let sub_remaining: String = subdir_hash_chars[2..32].iter().collect();
-        let subdir_storage = vault_path.join("d").join(&sub_first_two).join(&sub_remaining);
+        let subdir_storage = vault_path
+            .join("d")
+            .join(&sub_first_two)
+            .join(&sub_remaining);
         fs::create_dir_all(&subdir_storage).unwrap();
 
         let explorer = VaultExplorer::new(vault_path);
@@ -1078,7 +1122,9 @@ mod tests {
             current = DirectoryEntry {
                 name: format!("level{i}"),
                 path: PathBuf::from(format!("/level{i}")),
-                kind: EntryKind::Directory { id: format!("id-{i}") },
+                kind: EntryKind::Directory {
+                    id: format!("id-{i}"),
+                },
                 children: vec![current],
             };
         }
@@ -1122,15 +1168,27 @@ mod tests {
         let file2 = EntryKind::File;
         assert_eq!(file1, file2);
 
-        let dir1 = EntryKind::Directory { id: "same-id".to_string() };
-        let dir2 = EntryKind::Directory { id: "same-id".to_string() };
-        let dir3 = EntryKind::Directory { id: "different-id".to_string() };
+        let dir1 = EntryKind::Directory {
+            id: "same-id".to_string(),
+        };
+        let dir2 = EntryKind::Directory {
+            id: "same-id".to_string(),
+        };
+        let dir3 = EntryKind::Directory {
+            id: "different-id".to_string(),
+        };
         assert_eq!(dir1, dir2);
         assert_ne!(dir1, dir3);
 
-        let sym1 = EntryKind::Symlink { target: "/path".to_string() };
-        let sym2 = EntryKind::Symlink { target: "/path".to_string() };
-        let sym3 = EntryKind::Symlink { target: "/other".to_string() };
+        let sym1 = EntryKind::Symlink {
+            target: "/path".to_string(),
+        };
+        let sym2 = EntryKind::Symlink {
+            target: "/path".to_string(),
+        };
+        let sym3 = EntryKind::Symlink {
+            target: "/other".to_string(),
+        };
         assert_eq!(sym1, sym2);
         assert_ne!(sym1, sym3);
 
@@ -1154,7 +1212,9 @@ mod tests {
         let dir_entry = DirectoryEntry {
             name: "dir".to_string(),
             path: PathBuf::from("/dir"),
-            kind: EntryKind::Directory { id: "id".to_string() },
+            kind: EntryKind::Directory {
+                id: "id".to_string(),
+            },
             children: vec![],
         };
         assert!(dir_entry.symlink_target().is_none());
@@ -1162,7 +1222,9 @@ mod tests {
         let symlink_entry = DirectoryEntry {
             name: "link".to_string(),
             path: PathBuf::from("/link"),
-            kind: EntryKind::Symlink { target: "/target/path".to_string() },
+            kind: EntryKind::Symlink {
+                target: "/target/path".to_string(),
+            },
             children: vec![],
         };
         assert_eq!(symlink_entry.symlink_target(), Some("/target/path"));
@@ -1198,7 +1260,10 @@ mod tests {
         let dir_hash_chars: Vec<char> = dir_hash.chars().collect();
         let dir_first_two: String = dir_hash_chars[0..2].iter().collect();
         let dir_remaining: String = dir_hash_chars[2..32].iter().collect();
-        let dir_storage = vault_path.join("d").join(&dir_first_two).join(&dir_remaining);
+        let dir_storage = vault_path
+            .join("d")
+            .join(&dir_first_two)
+            .join(&dir_remaining);
         fs::create_dir_all(&dir_storage).unwrap();
 
         let explorer = VaultExplorer::new(vault_path);
@@ -1208,8 +1273,14 @@ mod tests {
         assert_eq!(tree.children.len(), 2);
 
         // Find the file and directory entries (sorted alphabetically)
-        let has_file = tree.children.iter().any(|e| e.name == "document.pdf" && e.is_file());
-        let has_dir = tree.children.iter().any(|e| e.name == "folder" && e.is_directory());
+        let has_file = tree
+            .children
+            .iter()
+            .any(|e| e.name == "document.pdf" && e.is_file());
+        let has_dir = tree
+            .children
+            .iter()
+            .any(|e| e.name == "folder" && e.is_directory());
 
         assert!(has_file, "Should have document.pdf file");
         assert!(has_dir, "Should have folder directory");
@@ -1247,7 +1318,10 @@ mod tests {
         assert_eq!(tree.children.len(), 1);
         assert_eq!(tree.children[0].name, "my_link");
         assert!(tree.children[0].is_symlink());
-        assert_eq!(tree.children[0].symlink_target(), Some("../target_file.txt"));
+        assert_eq!(
+            tree.children[0].symlink_target(),
+            Some("../target_file.txt")
+        );
     }
 
     #[test]
@@ -1329,7 +1403,10 @@ mod tests {
         let dir_hash_chars: Vec<char> = dir_hash.chars().collect();
         let dir_first_two: String = dir_hash_chars[0..2].iter().collect();
         let dir_remaining: String = dir_hash_chars[2..32].iter().collect();
-        let dir_storage = vault_path.join("d").join(&dir_first_two).join(&dir_remaining);
+        let dir_storage = vault_path
+            .join("d")
+            .join(&dir_first_two)
+            .join(&dir_remaining);
         fs::create_dir_all(&dir_storage).unwrap();
 
         let explorer = VaultExplorer::new(vault_path);
@@ -1373,7 +1450,8 @@ mod tests {
         fs::write(c9s_dir.join("name.c9s"), &encrypted_with_ext).unwrap();
 
         // Create symlink.c9r with encrypted target
-        let encrypted_target = encrypt_symlink_target("/absolute/target/path", &master_key).unwrap();
+        let encrypted_target =
+            encrypt_symlink_target("/absolute/target/path", &master_key).unwrap();
         fs::write(c9s_dir.join("symlink.c9r"), &encrypted_target).unwrap();
 
         let explorer = VaultExplorer::new(vault_path);
@@ -1383,7 +1461,10 @@ mod tests {
         assert_eq!(tree.children.len(), 1);
         assert_eq!(tree.children[0].name, long_name);
         assert!(tree.children[0].is_symlink());
-        assert_eq!(tree.children[0].symlink_target(), Some("/absolute/target/path"));
+        assert_eq!(
+            tree.children[0].symlink_target(),
+            Some("/absolute/target/path")
+        );
     }
 
     #[test]
@@ -1419,7 +1500,13 @@ mod tests {
         let dir_hash_chars: Vec<char> = dir_hash.chars().collect();
         let dir_first_two: String = dir_hash_chars[0..2].iter().collect();
         let dir_remaining: String = dir_hash_chars[2..32].iter().collect();
-        fs::create_dir_all(vault_path.join("d").join(&dir_first_two).join(&dir_remaining)).unwrap();
+        fs::create_dir_all(
+            vault_path
+                .join("d")
+                .join(&dir_first_two)
+                .join(&dir_remaining),
+        )
+        .unwrap();
 
         // 3. Create a symlink
         let symlink_name = encrypt_filename("link", "", &master_key).unwrap();
@@ -1455,7 +1542,11 @@ mod tests {
         let file_entry = tree.children.iter().find(|e| e.name == "file.txt").unwrap();
         assert!(file_entry.is_file());
 
-        let dir_entry = tree.children.iter().find(|e| e.name == "directory").unwrap();
+        let dir_entry = tree
+            .children
+            .iter()
+            .find(|e| e.name == "directory")
+            .unwrap();
         assert!(dir_entry.is_directory());
 
         let symlink_entry = tree.children.iter().find(|e| e.name == "link").unwrap();
@@ -1492,7 +1583,9 @@ mod tests {
         let explorer = VaultExplorer::new(vault_path);
         let dir_id = "test-uuid-12345";
 
-        let path = explorer.calculate_directory_path(dir_id, &master_key).unwrap();
+        let path = explorer
+            .calculate_directory_path(dir_id, &master_key)
+            .unwrap();
 
         // Path should be: vault_path/d/XX/YYYYYY... (2 char prefix + 30 char remainder)
         assert!(path.starts_with(vault_path.join("d")));

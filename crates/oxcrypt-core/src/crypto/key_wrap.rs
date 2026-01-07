@@ -25,8 +25,8 @@
       uses Java's `Cipher.WRAP_MODE` with "AES/KW/NoPadding" which implements RFC 3394.
 */
 
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes256;
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use secrecy::{ExposeSecret, SecretBox};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -37,9 +37,9 @@ use zeroize::{Zeroize, Zeroizing};
 // 2. The Concat trait enables compile-time verified U8 + U8 = U16 block concatenation
 // 3. Block sizes are fixed by RFC 3394 spec, so const generic flexibility isn't needed
 use generic_array::{
-    sequence::Concat,
-    typenum::{U16, U8},
     GenericArray,
+    sequence::Concat,
+    typenum::{U8, U16},
 };
 
 type U8x8 = GenericArray<u8, U8>;
@@ -149,7 +149,10 @@ pub enum UnwrapError {
 /// # Reference Standard
 ///
 /// - [RFC 3394 Section 2.2.2](https://datatracker.ietf.org/doc/html/rfc3394#section-2.2.2) - Key Unwrap Algorithm
-pub fn unwrap_key(ciphertext: &[u8], kek: &SecretBox<[u8; 32]>) -> Result<Zeroizing<Vec<u8>>, UnwrapError> {
+pub fn unwrap_key(
+    ciphertext: &[u8],
+    kek: &SecretBox<[u8; 32]>,
+) -> Result<Zeroizing<Vec<u8>>, UnwrapError> {
     // RFC 3394 requires minimum 16 bytes: 8-byte IV + at least one 8-byte block
     if ciphertext.len() < 16 {
         return Err(UnwrapError::CiphertextTooShort);

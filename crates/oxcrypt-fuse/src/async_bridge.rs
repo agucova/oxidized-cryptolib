@@ -5,8 +5,8 @@
 //! to avoid stack overflow issues while maintaining timeout protection and
 //! observability through statistics.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
@@ -136,15 +136,10 @@ mod tests {
     #[test]
     fn test_timeout() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = execute(
-            rt.handle(),
-            Duration::from_millis(10),
-            None,
-            async {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                42
-            },
-        );
+        let result = execute(rt.handle(), Duration::from_millis(10), None, async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            42
+        });
         assert!(matches!(result, Err(BridgeError::Timeout(_))));
     }
 

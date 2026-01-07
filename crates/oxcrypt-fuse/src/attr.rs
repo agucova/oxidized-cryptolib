@@ -6,8 +6,8 @@
 
 use fuser::FileAttr;
 use oxcrypt_core::vault::path::DirId;
-use oxcrypt_mount::moka_cache::{CachedEntry, SyncTtlCache, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
 use oxcrypt_mount::CacheStats;
+use oxcrypt_mount::moka_cache::{CachedEntry, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL, SyncTtlCache};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -290,13 +290,22 @@ mod tests {
         cache.cleanup_expired();
 
         // Short TTL entry should be expired, long TTL should still be valid
-        assert!(cache.get(1).is_none(), "Entry with 10ms TTL should have expired");
-        assert!(cache.get(2).is_some(), "Entry with 200ms TTL should still be valid");
+        assert!(
+            cache.get(1).is_none(),
+            "Entry with 10ms TTL should have expired"
+        );
+        assert!(
+            cache.get(2).is_some(),
+            "Entry with 200ms TTL should still be valid"
+        );
 
         // Wait for the longer TTL to expire too
         std::thread::sleep(Duration::from_millis(200));
         cache.cleanup_expired();
-        assert!(cache.get(2).is_none(), "Entry with 200ms TTL should now be expired");
+        assert!(
+            cache.get(2).is_none(),
+            "Entry with 200ms TTL should now be expired"
+        );
     }
 
     #[test]
@@ -355,7 +364,10 @@ mod tests {
         // Now they should be expired (get() never returns expired entries)
         assert!(cache.get(1).is_none(), "Entry 1 should be expired");
         assert!(cache.get(2).is_none(), "Entry 2 should be expired");
-        assert!(!cache.is_negative(1, "gone"), "Negative entry should be expired");
+        assert!(
+            !cache.is_negative(1, "gone"),
+            "Negative entry should be expired"
+        );
     }
 
     #[test]

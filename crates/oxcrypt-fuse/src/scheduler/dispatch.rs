@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use super::lane::Lane;
+use super::lane::{Lane, LaneReservations};
 use super::queue::{LaneQueues, QueuedRequest};
 
 /// Configuration for the fairness dispatcher.
@@ -45,6 +45,15 @@ impl Default for DispatchConfig {
             // Only dispatch bulk when high-priority lanes have < 8 in-flight
             l4_quiet_threshold: 8,
         }
+    }
+}
+
+impl DispatchConfig {
+    /// Apply lane reservation defaults.
+    pub fn with_reservations(mut self, reservations: &LaneReservations) -> Self {
+        self.l1_reserved_slots = reservations.metadata_min;
+        self.l3_reserved_slots = reservations.write_structural_min;
+        self
     }
 }
 
@@ -298,9 +307,15 @@ mod tests {
         let in_flight = [0u64; 5];
 
         // Add work to multiple lanes
-        queues.try_enqueue(Lane::Control, RequestId::new(1), 1).unwrap();
-        queues.try_enqueue(Lane::Metadata, RequestId::new(2), 2).unwrap();
-        queues.try_enqueue(Lane::ReadForeground, RequestId::new(3), 3).unwrap();
+        queues
+            .try_enqueue(Lane::Control, RequestId::new(1), 1)
+            .unwrap();
+        queues
+            .try_enqueue(Lane::Metadata, RequestId::new(2), 2)
+            .unwrap();
+        queues
+            .try_enqueue(Lane::ReadForeground, RequestId::new(3), 3)
+            .unwrap();
 
         // L0 should be selected first
         let lane = dispatcher.select_lane(&queues, &in_flight, 16);
@@ -314,8 +329,12 @@ mod tests {
         let in_flight = [0u64; 5];
 
         // Add work to L1 and L2
-        queues.try_enqueue(Lane::Metadata, RequestId::new(1), 1).unwrap();
-        queues.try_enqueue(Lane::ReadForeground, RequestId::new(2), 2).unwrap();
+        queues
+            .try_enqueue(Lane::Metadata, RequestId::new(1), 1)
+            .unwrap();
+        queues
+            .try_enqueue(Lane::ReadForeground, RequestId::new(2), 2)
+            .unwrap();
 
         // L1 should be selected first
         let lane = dispatcher.select_lane(&queues, &in_flight, 16);
@@ -335,8 +354,16 @@ mod tests {
 
         // Add work to both L2 and L3
         for i in 0..10 {
-            queues.try_enqueue(Lane::ReadForeground, RequestId::new(i), i as u32).unwrap();
-            queues.try_enqueue(Lane::WriteStructural, RequestId::new(i + 100), (i + 100) as u32).unwrap();
+            queues
+                .try_enqueue(Lane::ReadForeground, RequestId::new(i), i as u32)
+                .unwrap();
+            queues
+                .try_enqueue(
+                    Lane::WriteStructural,
+                    RequestId::new(i + 100),
+                    (i + 100) as u32,
+                )
+                .unwrap();
         }
 
         // Track dispatches
@@ -365,7 +392,9 @@ mod tests {
         let dispatcher = FairnessDispatcher::new();
 
         // Add work to L4 only
-        queues.try_enqueue(Lane::Bulk, RequestId::new(1), 1).unwrap();
+        queues
+            .try_enqueue(Lane::Bulk, RequestId::new(1), 1)
+            .unwrap();
 
         // High in-flight count for L2 - L4 should be deferred
         let in_flight_busy = [0, 0, 10, 0, 0];
@@ -389,7 +418,9 @@ mod tests {
         let in_flight = [0u64; 5];
 
         // Add work to L3 only
-        queues.try_enqueue(Lane::WriteStructural, RequestId::new(1), 1).unwrap();
+        queues
+            .try_enqueue(Lane::WriteStructural, RequestId::new(1), 1)
+            .unwrap();
 
         // With only 2 free slots and 2 reserved for L3, L3 should not dispatch
         // (because we need > reserved, not >= reserved)
@@ -407,8 +438,12 @@ mod tests {
         let dispatcher = FairnessDispatcher::new();
         let in_flight = [0u64; 5];
 
-        queues.try_enqueue(Lane::Metadata, RequestId::new(1), 1).unwrap();
-        queues.try_enqueue(Lane::ReadForeground, RequestId::new(2), 2).unwrap();
+        queues
+            .try_enqueue(Lane::Metadata, RequestId::new(1), 1)
+            .unwrap();
+        queues
+            .try_enqueue(Lane::ReadForeground, RequestId::new(2), 2)
+            .unwrap();
 
         dispatcher.try_dispatch(&queues, &in_flight, 16);
         dispatcher.try_dispatch(&queues, &in_flight, 16);

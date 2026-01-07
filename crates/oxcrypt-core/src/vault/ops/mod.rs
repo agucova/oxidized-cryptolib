@@ -30,12 +30,12 @@ pub mod helpers;
 pub mod info_builders;
 
 // Re-export commonly used types from core
-pub use core::{VaultCore, DEFAULT_SHORTENING_THRESHOLD};
+pub use core::{DEFAULT_SHORTENING_THRESHOLD, VaultCore};
 pub use helpers::{
-    calculate_directory_lookup_paths, calculate_directory_storage_path,
+    C9rEntryType, CONTENTS_FILE, DIR_MARKER, EntryFormat, EntryPaths, NAME_FILE, SYMLINK_MARKER,
+    StoragePathError, calculate_directory_lookup_paths, calculate_directory_storage_path,
     calculate_file_lookup_paths, calculate_symlink_lookup_paths, classify_entry_format,
     extract_encrypted_base_name, is_regular_entry, is_shortened_entry, needs_shortening,
-    parse_path_components, C9rEntryType, EntryFormat, EntryPaths, StoragePathError,
-    CONTENTS_FILE, DIR_MARKER, NAME_FILE, SYMLINK_MARKER,
+    parse_path_components,
 };
 pub use info_builders::{build_directory_info, build_file_info, build_symlink_info};

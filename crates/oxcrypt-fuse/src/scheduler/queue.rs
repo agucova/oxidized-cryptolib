@@ -5,8 +5,9 @@
 //! - Fail-fast when a specific lane is overloaded
 //! - Fair scheduling across different operation types
 
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::scheduler::lane::{Lane, LaneCapacities};
 use crate::scheduler::request::RequestId;
@@ -56,19 +57,30 @@ pub struct LaneStats {
     pub rejected: AtomicU64,
     /// Current queue depth.
     pub depth: AtomicU64,
+    /// Oldest enqueue timestamp (ms since UNIX epoch), 0 when empty.
+    pub oldest_enqueue_ms: AtomicU64,
+    /// Last dequeue timestamp (ms since UNIX epoch), 0 if never dequeued.
+    pub last_dequeue_ms: AtomicU64,
 }
 
 impl LaneStats {
     /// Record an enqueue operation.
     pub fn record_enqueue(&self) {
         self.enqueued.fetch_add(1, Ordering::Relaxed);
-        self.depth.fetch_add(1, Ordering::Relaxed);
+        let prev = self.depth.fetch_add(1, Ordering::Relaxed);
+        if prev == 0 {
+            self.oldest_enqueue_ms.store(now_ms(), Ordering::Relaxed);
+        }
     }
 
     /// Record a dequeue operation.
     pub fn record_dequeue(&self) {
         self.dequeued.fetch_add(1, Ordering::Relaxed);
-        self.depth.fetch_sub(1, Ordering::Relaxed);
+        let prev = self.depth.fetch_sub(1, Ordering::Relaxed);
+        self.last_dequeue_ms.store(now_ms(), Ordering::Relaxed);
+        if prev == 1 {
+            self.oldest_enqueue_ms.store(0, Ordering::Relaxed);
+        }
     }
 
     /// Record a rejection.
@@ -80,6 +92,24 @@ impl LaneStats {
     pub fn current_depth(&self) -> u64 {
         self.depth.load(Ordering::Relaxed)
     }
+
+    /// Get oldest enqueue timestamp (ms since UNIX epoch).
+    pub fn oldest_enqueue_ms(&self) -> u64 {
+        self.oldest_enqueue_ms.load(Ordering::Relaxed)
+    }
+
+    /// Get last dequeue timestamp (ms since UNIX epoch).
+    pub fn last_dequeue_ms(&self) -> u64 {
+        self.last_dequeue_ms.load(Ordering::Relaxed)
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 /// A single lane's queue.

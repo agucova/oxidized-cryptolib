@@ -18,17 +18,20 @@
 //! threads.
 
 use bytes::Bytes;
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, trace, warn};
 
-use oxcrypt_core::vault::VaultOperationsAsync;
+use oxcrypt_core::vault::VaultOperations;
 
-use super::request::{ReadResult, RequestId, StructuralOp, StructuralResult};
+use super::request::{
+    HazardousOp, HazardousOpHandler, HazardousResult, ReadResult, RequestId, StructuralOp,
+    StructuralResult,
+};
 
 /// Default number of I/O worker threads.
 pub const DEFAULT_IO_THREADS: usize = 16;
@@ -66,7 +69,7 @@ pub enum ExecutorOperation {
     /// Read from a VaultFileReader.
     Read {
         /// The reader to use (must be Send).
-        reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+        reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
         /// Byte offset to read from.
         offset: u64,
         /// Number of bytes to read.
@@ -77,7 +80,14 @@ pub enum ExecutorOperation {
         /// The structural operation to execute.
         op: StructuralOp,
         /// Vault operations for executing the operation.
-        ops: Arc<VaultOperationsAsync>,
+        ops: Arc<VaultOperations>,
+    },
+    /// Execute a hazardous filesystem operation.
+    Hazardous {
+        /// The hazardous operation to execute.
+        op: HazardousOp,
+        /// Handler that performs the operation.
+        handler: Arc<dyn HazardousOpHandler>,
     },
 }
 
@@ -94,6 +104,9 @@ impl std::fmt::Debug for ExecutorOperation {
                 .field("op", &op.name())
                 .field("inode", &op.primary_inode())
                 .finish_non_exhaustive(),
+            ExecutorOperation::Hazardous { .. } => {
+                f.debug_struct("Hazardous").finish_non_exhaustive()
+            }
         }
     }
 }
@@ -104,6 +117,8 @@ pub enum ExecutorResult {
     Read(ReadResult),
     /// Structural operation completed.
     Structural(StructuralResult),
+    /// Hazardous operation completed.
+    Hazardous(HazardousResult),
 }
 
 impl ExecutorResult {
@@ -112,6 +127,7 @@ impl ExecutorResult {
         match self {
             ExecutorResult::Read(r) => r.id,
             ExecutorResult::Structural(r) => r.id(),
+            ExecutorResult::Hazardous(r) => r.id(),
         }
     }
 }
@@ -156,7 +172,8 @@ impl ExecutorStats {
         // Truncation is acceptable - if a single operation takes > 584 years, we have other problems
         #[allow(clippy::cast_possible_truncation)]
         let nanos = duration.as_nanos() as u64;
-        self.total_execution_nanos.fetch_add(nanos, Ordering::Relaxed);
+        self.total_execution_nanos
+            .fetch_add(nanos, Ordering::Relaxed);
     }
 
     /// Record a job rejection.
@@ -166,8 +183,8 @@ impl ExecutorStats {
 
     /// Get average execution time.
     pub fn avg_execution_time(&self) -> Duration {
-        let completed = self.jobs_completed.load(Ordering::Relaxed)
-            + self.jobs_failed.load(Ordering::Relaxed);
+        let completed =
+            self.jobs_completed.load(Ordering::Relaxed) + self.jobs_failed.load(Ordering::Relaxed);
         if completed == 0 {
             return Duration::ZERO;
         }
@@ -286,9 +303,9 @@ impl FsSyscallExecutor {
     ///
     /// Returns `Err(SubmitError::QueueFull)` if the queue is at capacity.
     /// The caller should reply with EAGAIN in this case.
-    pub fn try_submit(&self, job: ExecutorJob) -> Result<(), SubmitError> {
+    pub fn try_submit(&self, job: ExecutorJob) -> Result<(), (SubmitError, ExecutorJob)> {
         if self.shutdown.load(Ordering::Acquire) {
-            return Err(SubmitError::Shutdown);
+            return Err((SubmitError::Shutdown, job));
         }
 
         match self.submit_tx.try_send(job) {
@@ -297,20 +314,23 @@ impl FsSyscallExecutor {
                 trace!("Job submitted to executor");
                 Ok(())
             }
-            Err(TrySendError::Full(_)) => {
+            Err(TrySendError::Full(rejected)) => {
                 self.stats.record_reject();
                 warn!(
                     capacity = self.config.queue_capacity,
                     depth = self.stats.queue_depth.load(Ordering::Relaxed),
                     "Executor queue full, rejecting request"
                 );
-                Err(SubmitError::QueueFull {
-                    capacity: self.config.queue_capacity,
-                })
+                Err((
+                    SubmitError::QueueFull {
+                        capacity: self.config.queue_capacity,
+                    },
+                    rejected,
+                ))
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(TrySendError::Disconnected(rejected)) => {
                 error!("Executor channel disconnected");
-                Err(SubmitError::Shutdown)
+                Err((SubmitError::Shutdown, rejected))
             }
         }
     }
@@ -323,6 +343,11 @@ impl FsSyscallExecutor {
     /// Get current queue depth.
     pub fn queue_depth(&self) -> u64 {
         self.stats.queue_depth.load(Ordering::Relaxed)
+    }
+
+    /// Get configured executor worker count.
+    pub fn io_threads(&self) -> usize {
+        self.config.io_threads
     }
 
     /// Check if the executor is healthy (not shut down).
@@ -373,14 +398,6 @@ fn worker_loop(
 ) {
     debug!(worker_id, "Executor worker started");
 
-    // Create a minimal tokio runtime for this worker.
-    // This isolates async operations to dedicated threads, preventing
-    // FUSE callback thread starvation.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to create worker tokio runtime");
-
     loop {
         // Check shutdown flag
         if shutdown.load(Ordering::Acquire) {
@@ -404,17 +421,44 @@ fn worker_loop(
                         "Job already past deadline, skipping execution"
                     );
                     stats.record_complete(false, start.elapsed());
-                    // Don't send result - the timeout handler should have already replied
+
+                    // Return resources (especially the reader) to the scheduler
+                    match job.operation {
+                        ExecutorOperation::Read { reader, offset, .. } => {
+                            let result = ExecutorResult::Read(ReadResult {
+                                id: request_id,
+                                fh: job.fh,
+                                offset,
+                                result: Err(libc::ETIMEDOUT),
+                                reader,
+                            });
+                            let _ = job.result_tx.send(result);
+                        }
+                        // For other ops, dropping is fine as they don't hold loaned resources
+                        _ => {}
+                    }
+
                     continue;
                 }
 
-                // Execute the operation
-                let executor_result = rt.block_on(execute_operation(request_id, job.fh, job.operation));
+                // Execute the operation (synchronously)
+                let executor_result = match job.operation {
+                    ExecutorOperation::Hazardous { op, handler } => {
+                        let result = handler.execute(request_id, op);
+                        ExecutorResult::Hazardous(result)
+                    }
+                    other => execute_operation(request_id, job.fh, other),
+                };
                 let elapsed = start.elapsed();
 
                 let success = match &executor_result {
                     ExecutorResult::Read(r) => r.result.is_ok(),
                     ExecutorResult::Structural(r) => r.error().is_none(),
+                    ExecutorResult::Hazardous(r) => match r {
+                        HazardousResult::Empty { result, .. } => result.is_ok(),
+                        HazardousResult::Directory { result, .. } => result.is_ok(),
+                        HazardousResult::DirectoryPlus { result, .. } => result.is_ok(),
+                    },
                 };
 
                 // Try to send result; if receiver is dropped (timeout occurred), that's fine
@@ -450,7 +494,7 @@ fn worker_loop(
 }
 
 /// Execute an operation and return the result.
-async fn execute_operation(
+fn execute_operation(
     request_id: RequestId,
     fh: u64,
     operation: ExecutorOperation,
@@ -461,7 +505,7 @@ async fn execute_operation(
             offset,
             size,
         } => {
-            let result = match reader.read_range(offset, size).await {
+            let result = match reader.read_range(offset, size) {
                 Ok(data) => Ok(Bytes::from(data)),
                 Err(e) => {
                     warn!(error = %e, "Read operation failed");
@@ -481,65 +525,55 @@ async fn execute_operation(
                 fh,
                 offset,
                 result,
-                reader,
+                reader, // Note: This is now Box<VaultFileReaderSync>
             })
         }
         ExecutorOperation::Structural { op, ops } => {
-            let result = execute_structural_op(&op, &ops).await;
+            let result = execute_structural_op(&op, &ops);
             ExecutorResult::Structural(StructuralResult::Empty {
                 id: request_id,
                 result,
             })
         }
+        ExecutorOperation::Hazardous { .. } => {
+            unreachable!("Hazardous operations must be executed directly in worker loop");
+        }
     }
 }
 
 /// Execute a structural operation against the vault.
-async fn execute_structural_op(
-    op: &StructuralOp,
-    ops: &VaultOperationsAsync,
-) -> Result<(), i32> {
+fn execute_structural_op(op: &StructuralOp, ops: &VaultOperations) -> Result<(), i32> {
     match op {
         StructuralOp::Unlink { dir_id, name, .. } => {
             // Try file first, then symlink
-            match ops.delete_file(dir_id, name).await {
+            match ops.delete_file(dir_id, name) {
                 Ok(()) => Ok(()),
                 Err(_) => {
                     // Try symlink
-                    ops.delete_symlink(dir_id, name)
-                        .await
-                        .map_err(|e| {
-                            warn!(error = %e, name, "Failed to delete file/symlink");
-                            libc::EIO
-                        })
+                    ops.delete_symlink(dir_id, name).map_err(|e| {
+                        warn!(error = %e, name, "Failed to delete file/symlink");
+                        libc::EIO
+                    })
                 }
             }
         }
         StructuralOp::Rmdir { dir_id, name, .. } => {
-            ops.delete_directory(dir_id, name)
-                .await
-                .map_err(|e| {
-                    warn!(error = %e, name, "Failed to delete directory");
-                    libc::EIO
-                })
+            ops.delete_directory(dir_id, name).map_err(|e| {
+                warn!(error = %e, name, "Failed to delete directory");
+                libc::EIO
+            })
         }
         StructuralOp::Mkdir { dir_id, name, .. } => {
-            ops.create_directory(dir_id, name)
-                .await
-                .map(|_| ()) // Discard the DirId for now - we'll handle this in results
-                .map_err(|e| {
-                    warn!(error = %e, name, "Failed to create directory");
-                    libc::EIO
-                })
+            ops.create_directory(dir_id, name).map(|_| ()).map_err(|e| {
+                warn!(error = %e, name, "Failed to create directory");
+                libc::EIO
+            })
         }
         StructuralOp::Create { dir_id, name, .. } => {
-            ops.create_file(dir_id, name)
-                .await
-                .map(|_writer| ()) // Discard the writer - caller will re-open
-                .map_err(|e| {
-                    warn!(error = %e, name, "Failed to create file");
-                    libc::EIO
-                })
+            ops.write_file(dir_id, name, &[]).map(|_| ()).map_err(|e| {
+                warn!(error = %e, name, "Failed to create file");
+                libc::EIO
+            })
         }
         StructuralOp::Rename {
             src_dir_id,
@@ -550,15 +584,12 @@ async fn execute_structural_op(
         } => {
             // Check if same directory rename or cross-directory move
             if src_dir_id == dst_dir_id {
-                ops.rename_file(src_dir_id, name, newname)
-                    .await
-                    .map_err(|e| {
-                        warn!(error = %e, name, newname, "Failed to rename file");
-                        libc::EIO
-                    })
+                ops.rename_file(src_dir_id, name, newname).map_err(|e| {
+                    warn!(error = %e, name, newname, "Failed to rename file");
+                    libc::EIO
+                })
             } else {
                 ops.move_and_rename_file(src_dir_id, name, dst_dir_id, newname)
-                    .await
                     .map_err(|e| {
                         warn!(error = %e, name, newname, "Failed to move file");
                         libc::EIO
@@ -570,17 +601,12 @@ async fn execute_structural_op(
             link_target,
             name,
             ..
-        } => {
-            ops.create_symlink(dir_id, name, link_target)
-                .await
-                .map_err(|e| {
-                    warn!(error = %e, name, "Failed to create symlink");
-                    libc::EIO
-                })
-        }
+        } => ops.create_symlink(dir_id, name, link_target).map_err(|e| {
+            warn!(error = %e, name, "Failed to create symlink");
+            libc::EIO
+        }),
         StructuralOp::Setattr { .. } => {
             // Setattr is handled in-memory (attr cache), no vault operation needed
-            // This is a placeholder - the actual setattr logic is in filesystem.rs
             Ok(())
         }
         StructuralOp::Link { .. } => {
@@ -603,9 +629,7 @@ mod tests {
 
     #[test]
     fn test_executor_config_builder() {
-        let config = ExecutorConfig::default()
-            .with_threads(8)
-            .with_capacity(512);
+        let config = ExecutorConfig::default().with_threads(8).with_capacity(512);
         assert_eq!(config.io_threads, 8);
         assert_eq!(config.queue_capacity, 512);
     }
@@ -629,9 +653,7 @@ mod tests {
     #[test]
     fn test_executor_creation_and_shutdown() {
         let executor = FsSyscallExecutor::with_config(
-            ExecutorConfig::default()
-                .with_threads(2)
-                .with_capacity(10),
+            ExecutorConfig::default().with_threads(2).with_capacity(10),
         );
 
         assert!(executor.is_healthy());

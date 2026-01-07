@@ -74,13 +74,9 @@ mod tests {
         let key1 = Arc::clone(&key);
         let key2 = Arc::clone(&key);
 
-        let handle1 = thread::spawn(move || {
-            key1.with_aes_key(|k| k[0]).expect("access key")
-        });
+        let handle1 = thread::spawn(move || key1.with_aes_key(|k| k[0]).expect("access key"));
 
-        let handle2 = thread::spawn(move || {
-            key2.with_mac_key(|k| k[0]).expect("access key")
-        });
+        let handle2 = thread::spawn(move || key2.with_mac_key(|k| k[0]).expect("access key"));
 
         let _result1 = handle1.join().expect("thread 1");
         let _result2 = handle2.join().expect("thread 2");

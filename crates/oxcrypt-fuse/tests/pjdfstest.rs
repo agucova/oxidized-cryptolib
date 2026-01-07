@@ -171,7 +171,10 @@ fn mount_test_vault_rw(mount_dir: &Path) -> Result<MountGuard, String> {
                 .filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
-            if names.iter().any(|n| n == "test_folder" || n == "aes-wrap.c" || n == "new_folder") {
+            if names
+                .iter()
+                .any(|n| n == "test_folder" || n == "aes-wrap.c" || n == "new_folder")
+            {
                 return Ok(MountGuard::new(session, mount_dir.to_path_buf()));
             }
         }
@@ -182,7 +185,11 @@ fn mount_test_vault_rw(mount_dir: &Path) -> Result<MountGuard, String> {
 }
 
 /// Run a pjdfstest syscall and return (success, stdout, stderr).
-fn run_pjdfstest_raw(workdir: &Path, syscall: &str, args: &[&str]) -> Result<(bool, String, String), String> {
+fn run_pjdfstest_raw(
+    workdir: &Path,
+    syscall: &str,
+    args: &[&str],
+) -> Result<(bool, String, String), String> {
     let bin = pjdfstest_bin().ok_or("pjdfstest binary not found")?;
 
     let output = Command::new(&bin)
@@ -223,7 +230,11 @@ struct TestResult {
 impl TestResult {
     fn success_rate(&self) -> f64 {
         let total = self.passed + self.failed;
-        if total == 0 { 100.0 } else { (self.passed as f64 / total as f64) * 100.0 }
+        if total == 0 {
+            100.0
+        } else {
+            (self.passed as f64 / total as f64) * 100.0
+        }
     }
 
     fn add_pass(&mut self) {
@@ -242,7 +253,11 @@ impl TestResult {
     fn print_summary(&self, category: &str) {
         println!(
             "{} tests: {} passed, {} failed, {} skipped ({:.1}% success)",
-            category, self.passed, self.failed, self.skipped, self.success_rate()
+            category,
+            self.passed,
+            self.failed,
+            self.skipped,
+            self.success_rate()
         );
         for err in &self.errors {
             eprintln!("  - {}", err);
@@ -307,7 +322,10 @@ fn test_pjdfstest_mkdir() {
         match run_pjdfstest(&test_dir, "mkdir", &[&dir_name, mode]) {
             Ok(true) => result.add_pass(),
             Ok(false) => result.add_fail(format!("mkdir {} {}", dir_name, mode)),
-            Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                result.add_skip();
+            }
         }
         // Clean up
         let _ = run_pjdfstest(&test_dir, "rmdir", &[&dir_name]);
@@ -317,7 +335,10 @@ fn test_pjdfstest_mkdir() {
     match run_pjdfstest(&test_dir, "mkdir", &["nested/deep/dir", "0755"]) {
         Ok(false) => result.add_pass(), // Expected to fail with ENOENT
         Ok(true) => result.add_fail("mkdir nested should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     // Test rmdir on non-empty dir (should fail)
@@ -326,7 +347,10 @@ fn test_pjdfstest_mkdir() {
     match run_pjdfstest(&test_dir, "rmdir", &["nonempty"]) {
         Ok(false) => result.add_pass(), // Expected to fail with ENOTEMPTY
         Ok(true) => result.add_fail("rmdir nonempty should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     // Clean up
     let _ = run_pjdfstest(&test_dir, "unlink", &["nonempty/file"]);
@@ -355,7 +379,10 @@ fn test_pjdfstest_open() {
         match run_pjdfstest(&test_dir, "open", &[&filename, "O_CREAT", mode]) {
             Ok(true) => result.add_pass(),
             Ok(false) => result.add_fail(format!("open {} O_CREAT {}", filename, mode)),
-            Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                result.add_skip();
+            }
         }
         let _ = run_pjdfstest(&test_dir, "unlink", &[&filename]);
     }
@@ -365,7 +392,10 @@ fn test_pjdfstest_open() {
     match run_pjdfstest(&test_dir, "open", &["excl_test", "O_CREAT|O_EXCL", "0644"]) {
         Ok(false) => result.add_pass(), // Expected EEXIST
         Ok(true) => result.add_fail("O_EXCL on existing file should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "unlink", &["excl_test"]);
 
@@ -373,7 +403,10 @@ fn test_pjdfstest_open() {
     match run_pjdfstest(&test_dir, "open", &["excl_new", "O_CREAT|O_EXCL", "0644"]) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("O_EXCL on new file should succeed".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "unlink", &["excl_new"]);
 
@@ -401,7 +434,10 @@ fn test_pjdfstest_symlink() {
         match run_pjdfstest(&test_dir, "symlink", &[target, &link_name]) {
             Ok(true) => result.add_pass(),
             Ok(false) => result.add_fail(format!("symlink {} -> {}", link_name, target)),
-            Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                result.add_skip();
+            }
         }
         let _ = run_pjdfstest(&test_dir, "unlink", &[&link_name]);
     }
@@ -411,7 +447,10 @@ fn test_pjdfstest_symlink() {
     match run_pjdfstest(&test_dir, "symlink", &["target", "existing"]) {
         Ok(false) => result.add_pass(), // Expected EEXIST
         Ok(true) => result.add_fail("symlink over file should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "unlink", &["existing"]);
 
@@ -442,7 +481,10 @@ fn test_pjdfstest_rename() {
     match run_pjdfstest(&test_dir, "rename", &["src_file", "dst_file"]) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("rename src_file -> dst_file".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "unlink", &["dst_file"]);
 
@@ -451,7 +493,10 @@ fn test_pjdfstest_rename() {
     match run_pjdfstest(&test_dir, "rename", &["src_dir", "dst_dir"]) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("rename src_dir -> dst_dir".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "rmdir", &["dst_dir"]);
 
@@ -461,7 +506,10 @@ fn test_pjdfstest_rename() {
     match run_pjdfstest(&test_dir, "rename", &["src2", "dst2"]) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("rename over existing should succeed".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "unlink", &["dst2"]);
 
@@ -492,7 +540,10 @@ fn test_pjdfstest_unlink() {
         match run_pjdfstest(&test_dir, "unlink", &[&filename]) {
             Ok(true) => result.add_pass(),
             Ok(false) => result.add_fail(format!("unlink {}", filename)),
-            Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                result.add_skip();
+            }
         }
     }
 
@@ -500,7 +551,10 @@ fn test_pjdfstest_unlink() {
     match run_pjdfstest(&test_dir, "unlink", &["nonexistent"]) {
         Ok(false) => result.add_pass(), // Expected ENOENT
         Ok(true) => result.add_fail("unlink nonexistent should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     // Unlink directory should fail (use rmdir instead)
@@ -508,7 +562,10 @@ fn test_pjdfstest_unlink() {
     match run_pjdfstest(&test_dir, "unlink", &["adir"]) {
         Ok(false) => result.add_pass(), // Expected EISDIR or EPERM
         Ok(true) => result.add_fail("unlink directory should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "rmdir", &["adir"]);
 
@@ -538,7 +595,10 @@ fn test_pjdfstest_truncate() {
         match run_pjdfstest(&test_dir, "truncate", &["trunc_file", size]) {
             Ok(true) => result.add_pass(),
             Ok(false) => result.add_fail(format!("truncate to {}", size)),
-            Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                result.add_skip();
+            }
         }
     }
 
@@ -548,7 +608,10 @@ fn test_pjdfstest_truncate() {
     match run_pjdfstest(&test_dir, "truncate", &["nonexistent", "0"]) {
         Ok(false) => result.add_pass(), // Expected ENOENT
         Ok(true) => result.add_fail("truncate nonexistent should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     result.print_summary("truncate");
@@ -573,13 +636,20 @@ fn test_pjdfstest_ftruncate() {
     // pjdfstest open returns the fd, so we need a different approach
 
     // Try basic ftruncate - this likely won't work without special handling
-    let _ = run_pjdfstest(&test_dir, "open", &["ftrunc_file", "O_CREAT|O_RDWR", "0644"]);
+    let _ = run_pjdfstest(
+        &test_dir,
+        "open",
+        &["ftrunc_file", "O_CREAT|O_RDWR", "0644"],
+    );
 
     // Note: pjdfstest's ftruncate tests may need special handling
     match run_pjdfstest(&test_dir, "truncate", &["ftrunc_file", "1024"]) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("ftruncate via truncate".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     let _ = run_pjdfstest(&test_dir, "unlink", &["ftrunc_file"]);
@@ -610,7 +680,10 @@ fn test_pjdfstest_chmod() {
         match run_pjdfstest(&test_dir, "chmod", &["chmod_file", mode]) {
             Ok(false) => result.add_pass(), // Expected: ENOTSUP
             Ok(true) => result.add_fail(format!("chmod {} should fail with ENOTSUP", mode)),
-            Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                result.add_skip();
+            }
         }
     }
 
@@ -640,10 +713,17 @@ fn test_pjdfstest_chown() {
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
 
-    match run_pjdfstest(&test_dir, "chown", &["chown_file", &uid.to_string(), &gid.to_string()]) {
+    match run_pjdfstest(
+        &test_dir,
+        "chown",
+        &["chown_file", &uid.to_string(), &gid.to_string()],
+    ) {
         Ok(false) => result.add_pass(), // Expected: ENOTSUP
         Ok(true) => result.add_fail("chown should fail with ENOTSUP".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     let _ = run_pjdfstest(&test_dir, "unlink", &["chown_file"]);
@@ -671,7 +751,10 @@ fn test_pjdfstest_link() {
     match run_pjdfstest(&test_dir, "link", &["link_src", "link_dst"]) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("link src -> dst".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     let _ = run_pjdfstest(&test_dir, "unlink", &["link_src"]);
@@ -703,17 +786,31 @@ fn test_pjdfstest_utimensat() {
     let _ = run_pjdfstest(&test_dir, "open", &["utime_file", "O_CREAT", "0644"]);
 
     // Set specific timestamps (atime_sec, atime_nsec, mtime_sec, mtime_nsec)
-    match run_pjdfstest(&test_dir, "utimensat", &["utime_file", "1000000000", "0", "1000000000", "0"]) {
+    match run_pjdfstest(
+        &test_dir,
+        "utimensat",
+        &["utime_file", "1000000000", "0", "1000000000", "0"],
+    ) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("utimensat specific time".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     // UTIME_NOW
-    match run_pjdfstest(&test_dir, "utimensat", &["utime_file", "AT_FDCWD", "0", "AT_FDCWD", "0"]) {
+    match run_pjdfstest(
+        &test_dir,
+        "utimensat",
+        &["utime_file", "AT_FDCWD", "0", "AT_FDCWD", "0"],
+    ) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("utimensat UTIME_NOW".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     let _ = run_pjdfstest(&test_dir, "unlink", &["utime_file"]);
@@ -737,18 +834,32 @@ fn test_pjdfstest_mknod() {
     let mut result = TestResult::default();
 
     // Regular file via mknod
-    match run_pjdfstest(&test_dir, "mknod", &["mknod_file", "S_IFREG", "0644", "0", "0"]) {
+    match run_pjdfstest(
+        &test_dir,
+        "mknod",
+        &["mknod_file", "S_IFREG", "0644", "0", "0"],
+    ) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("mknod S_IFREG".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
     let _ = run_pjdfstest(&test_dir, "unlink", &["mknod_file"]);
 
     // Character device (likely to fail - needs root and we don't support it)
-    match run_pjdfstest(&test_dir, "mknod", &["char_dev", "S_IFCHR", "0644", "1", "3"]) {
+    match run_pjdfstest(
+        &test_dir,
+        "mknod",
+        &["char_dev", "S_IFCHR", "0644", "1", "3"],
+    ) {
         Ok(false) => result.add_pass(), // Expected to fail
         Ok(true) => result.add_fail("mknod S_IFCHR should fail".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     result.print_summary("mknod");
@@ -774,7 +885,10 @@ fn test_pjdfstest_mkfifo() {
     match run_pjdfstest(&test_dir, "mkfifo", &["test_fifo", "0644"]) {
         Ok(false) => result.add_pass(), // Expected to fail - not supported
         Ok(true) => result.add_fail("mkfifo should fail (not supported)".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     result.print_summary("mkfifo");
@@ -794,19 +908,34 @@ fn test_pjdfstest_posix_fallocate() {
 
     let mut result = TestResult::default();
 
-    let _ = run_pjdfstest(&test_dir, "open", &["falloc_file", "O_CREAT|O_RDWR", "0644"]);
+    let _ = run_pjdfstest(
+        &test_dir,
+        "open",
+        &["falloc_file", "O_CREAT|O_RDWR", "0644"],
+    );
 
     // Allocate 1MB
-    match run_pjdfstest(&test_dir, "posix_fallocate", &["falloc_file", "0", "1048576"]) {
+    match run_pjdfstest(
+        &test_dir,
+        "posix_fallocate",
+        &["falloc_file", "0", "1048576"],
+    ) {
         Ok(true) => result.add_pass(),
         Ok(false) => result.add_fail("posix_fallocate 1MB".into()),
-        Err(e) => { eprintln!("Error: {}", e); result.add_skip(); }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            result.add_skip();
+        }
     }
 
     let _ = run_pjdfstest(&test_dir, "unlink", &["falloc_file"]);
 
     result.print_summary("posix_fallocate");
-    assert!(result.failed == 0, "posix_fallocate tests failed: {:?}", result);
+    assert!(
+        result.failed == 0,
+        "posix_fallocate tests failed: {:?}",
+        result
+    );
 }
 
 // ============================================================================
@@ -830,37 +959,67 @@ fn test_pjdfstest_all_operations() {
     println!("{}\n", "=".repeat(60));
 
     let categories: Vec<(&str, &str, Vec<(&str, Vec<&str>)>)> = vec![
-        ("mkdir", "IMPLEMENTED", vec![
-            ("mkdir", vec!["testdir", "0755"]),
-            ("rmdir", vec!["testdir"]),
-        ]),
-        ("open", "IMPLEMENTED", vec![
-            ("open", vec!["testfile", "O_CREAT", "0644"]),
-            ("unlink", vec!["testfile"]),
-        ]),
-        ("symlink", "IMPLEMENTED", vec![
-            ("symlink", vec!["target", "testlink"]),
-            ("unlink", vec!["testlink"]),
-        ]),
-        ("rename", "BUG:CACHE", vec![
-            ("open", vec!["rename_src", "O_CREAT", "0644"]),
-            ("rename", vec!["rename_src", "rename_dst"]),
-        ]),
-        ("chmod", "NOT IMPL", vec![
-            ("open", vec!["chmod_file", "O_CREAT", "0644"]),
-            ("chmod", vec!["chmod_file", "0755"]),
-        ]),
-        ("truncate", "NOT IMPL", vec![
-            ("open", vec!["trunc_file", "O_CREAT", "0644"]),
-            ("truncate", vec!["trunc_file", "1024"]),
-        ]),
-        ("link", "NOT SUPPORTED", vec![
-            ("open", vec!["link_src", "O_CREAT", "0644"]),
-            ("link", vec!["link_src", "link_dst"]),
-        ]),
-        ("mkfifo", "NOT SUPPORTED", vec![
-            ("mkfifo", vec!["test_fifo", "0644"]),
-        ]),
+        (
+            "mkdir",
+            "IMPLEMENTED",
+            vec![
+                ("mkdir", vec!["testdir", "0755"]),
+                ("rmdir", vec!["testdir"]),
+            ],
+        ),
+        (
+            "open",
+            "IMPLEMENTED",
+            vec![
+                ("open", vec!["testfile", "O_CREAT", "0644"]),
+                ("unlink", vec!["testfile"]),
+            ],
+        ),
+        (
+            "symlink",
+            "IMPLEMENTED",
+            vec![
+                ("symlink", vec!["target", "testlink"]),
+                ("unlink", vec!["testlink"]),
+            ],
+        ),
+        (
+            "rename",
+            "BUG:CACHE",
+            vec![
+                ("open", vec!["rename_src", "O_CREAT", "0644"]),
+                ("rename", vec!["rename_src", "rename_dst"]),
+            ],
+        ),
+        (
+            "chmod",
+            "NOT IMPL",
+            vec![
+                ("open", vec!["chmod_file", "O_CREAT", "0644"]),
+                ("chmod", vec!["chmod_file", "0755"]),
+            ],
+        ),
+        (
+            "truncate",
+            "NOT IMPL",
+            vec![
+                ("open", vec!["trunc_file", "O_CREAT", "0644"]),
+                ("truncate", vec!["trunc_file", "1024"]),
+            ],
+        ),
+        (
+            "link",
+            "NOT SUPPORTED",
+            vec![
+                ("open", vec!["link_src", "O_CREAT", "0644"]),
+                ("link", vec!["link_src", "link_dst"]),
+            ],
+        ),
+        (
+            "mkfifo",
+            "NOT SUPPORTED",
+            vec![("mkfifo", vec!["test_fifo", "0644"])],
+        ),
     ];
 
     let mut summary: Vec<(&str, &str, usize, usize)> = vec![];
@@ -894,7 +1053,10 @@ fn test_pjdfstest_all_operations() {
     println!("\n{}", "=".repeat(60));
     println!("SUMMARY");
     println!("{}", "=".repeat(60));
-    println!("{:<15} {:<15} {:>6} {:>6}", "Category", "Status", "Pass", "Fail");
+    println!(
+        "{:<15} {:<15} {:>6} {:>6}",
+        "Category", "Status", "Pass", "Fail"
+    );
     println!("{:-<15} {:-<15} {:->6} {:->6}", "", "", "", "");
 
     let mut total_pass = 0;
@@ -905,7 +1067,10 @@ fn test_pjdfstest_all_operations() {
         total_fail += fail;
     }
     println!("{:-<15} {:-<15} {:->6} {:->6}", "", "", "", "");
-    println!("{:<15} {:<15} {:>6} {:>6}", "TOTAL", "", total_pass, total_fail);
+    println!(
+        "{:<15} {:<15} {:>6} {:>6}",
+        "TOTAL", "", total_pass, total_fail
+    );
 
     println!("\nLegend:");
     println!("  IMPLEMENTED  - Should work");

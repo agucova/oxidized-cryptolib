@@ -26,7 +26,11 @@ pub struct ReadCacheKey {
 impl ReadCacheKey {
     /// Create a new cache key.
     pub fn new(inode: u64, offset: u64, size: usize) -> Self {
-        Self { inode, offset, size }
+        Self {
+            inode,
+            offset,
+            size,
+        }
     }
 }
 
@@ -166,7 +170,9 @@ impl ReadCache {
     pub fn invalidate_inode(&self, inode: u64) {
         // Note: invalidate_entries_if returns a PredicateId that can be used for debugging,
         // but we don't need it here
-        let _ = self.cache.invalidate_entries_if(move |key, _| key.inode == inode);
+        let _ = self
+            .cache
+            .invalidate_entries_if(move |key, _| key.inode == inode);
     }
 
     /// Invalidate a specific entry.

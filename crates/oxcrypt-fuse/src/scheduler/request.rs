@@ -5,9 +5,13 @@
 //! so they can be safely moved to worker threads for delayed replies.
 
 use bytes::Bytes;
-use fuser::{FileAttr, ReplyAttr, ReplyCreate, ReplyData, ReplyEmpty, ReplyEntry, ReplyWrite};
+use fuser::{
+    FileAttr, FileType, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
+    ReplyEmpty, ReplyEntry, ReplyWrite,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
+use tokio::sync::oneshot;
 
 use oxcrypt_core::vault::DirId;
 
@@ -147,7 +151,118 @@ pub struct ReadResult {
     /// The read data, or error code.
     pub result: Result<Bytes, i32>,
     /// The reader to restore to the handle table.
-    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
+}
+
+// ============================================================================
+// Hazardous operations (release/flush/fsync/readdir/readdirplus)
+// ============================================================================
+
+/// Hazardous filesystem operation to be executed off the FUSE callback thread.
+#[derive(Debug, Clone)]
+pub enum HazardousOp {
+    /// release(ino, fh, flags, lock_owner, flush)
+    Release {
+        ino: u64,
+        fh: u64,
+        flags: i32,
+        lock_owner: Option<u64>,
+        flush: bool,
+    },
+    /// flush(ino, fh, lock_owner)
+    Flush { ino: u64, fh: u64, lock_owner: u64 },
+    /// fsync(ino, fh, datasync)
+    Fsync { ino: u64, fh: u64, datasync: bool },
+    /// readdir(ino, fh, offset)
+    Readdir { ino: u64, fh: u64, offset: i64 },
+    /// readdirplus(ino, fh, offset)
+    ReaddirPlus { ino: u64, fh: u64, offset: i64 },
+}
+
+/// Reply handle for hazardous operations.
+pub enum HazardousReply {
+    /// Reply for release/flush/fsync.
+    Empty(ReplyEmpty),
+    /// Reply for readdir.
+    Directory(ReplyDirectory),
+    /// Reply for readdirplus.
+    DirectoryPlus(ReplyDirectoryPlus),
+}
+
+impl HazardousReply {
+    /// Send an error reply.
+    pub fn error(self, errno: i32) {
+        match self {
+            HazardousReply::Empty(r) => r.error(errno),
+            HazardousReply::Directory(r) => r.error(errno),
+            HazardousReply::DirectoryPlus(r) => r.error(errno),
+        }
+    }
+}
+
+impl std::fmt::Debug for HazardousReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HazardousReply::Empty(_) => write!(f, "HazardousReply::Empty"),
+            HazardousReply::Directory(_) => write!(f, "HazardousReply::Directory"),
+            HazardousReply::DirectoryPlus(_) => write!(f, "HazardousReply::DirectoryPlus"),
+        }
+    }
+}
+
+/// Directory entry for readdir replies.
+#[derive(Debug, Clone)]
+pub struct DirectoryEntry {
+    pub inode: u64,
+    pub offset: i64,
+    pub file_type: FileType,
+    pub name: String,
+}
+
+/// Directory entry for readdirplus replies.
+#[derive(Debug, Clone)]
+pub struct DirectoryEntryPlus {
+    pub inode: u64,
+    pub offset: i64,
+    pub name: String,
+    pub ttl: std::time::Duration,
+    pub attr: FileAttr,
+    pub generation: u64,
+}
+
+/// Result of a hazardous operation.
+#[derive(Debug)]
+pub enum HazardousResult {
+    /// release/flush/fsync completed.
+    Empty {
+        id: RequestId,
+        result: Result<(), i32>,
+    },
+    /// readdir completed.
+    Directory {
+        id: RequestId,
+        result: Result<Vec<DirectoryEntry>, i32>,
+    },
+    /// readdirplus completed.
+    DirectoryPlus {
+        id: RequestId,
+        result: Result<Vec<DirectoryEntryPlus>, i32>,
+    },
+}
+
+impl HazardousResult {
+    pub fn id(&self) -> RequestId {
+        match self {
+            HazardousResult::Empty { id, .. }
+            | HazardousResult::Directory { id, .. }
+            | HazardousResult::DirectoryPlus { id, .. } => *id,
+        }
+    }
+}
+
+/// Handler for executing hazardous operations off the FUSE callback thread.
+pub trait HazardousOpHandler: Send + Sync {
+    fn execute(&self, request_id: RequestId, op: HazardousOp) -> HazardousResult;
 }
 
 impl std::fmt::Debug for ReadResult {
@@ -426,6 +541,27 @@ pub struct StructuralRequest {
     pub reply: StructuralReply,
 }
 
+/// A hazardous request waiting for async completion.
+pub struct HazardousRequest {
+    /// Unique request identifier.
+    pub id: RequestId,
+    /// The operation to perform.
+    pub op: HazardousOp,
+    /// Deadline for this request.
+    pub deadline: Instant,
+    /// Reply handle.
+    pub reply: HazardousReply,
+}
+
+impl std::fmt::Debug for HazardousRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HazardousRequest")
+            .field("id", &self.id)
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for StructuralRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StructuralRequest")
@@ -496,9 +632,29 @@ pub struct QueuedStructuralJob {
     /// The operation to perform.
     pub op: StructuralOp,
     /// Vault operations for executing the operation.
-    pub ops: std::sync::Arc<oxcrypt_core::vault::VaultOperationsAsync>,
+    pub ops: std::sync::Arc<oxcrypt_core::vault::VaultOperations>,
     /// Deadline for this request.
     pub deadline: Instant,
+    /// Waiters for per-file ordering (must complete before execution).
+    pub waiters: Vec<oneshot::Receiver<()>>,
+}
+
+/// A hazardous job waiting in a lane queue.
+pub struct QueuedHazardousJob {
+    /// The operation to perform.
+    pub op: HazardousOp,
+    /// Handler that executes the operation.
+    pub handler: std::sync::Arc<dyn HazardousOpHandler>,
+    /// Deadline for this request.
+    pub deadline: Instant,
+}
+
+impl std::fmt::Debug for QueuedHazardousJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedHazardousJob")
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for QueuedStructuralJob {
@@ -519,7 +675,7 @@ pub struct QueuedReadJob {
     /// File handle ID.
     pub fh: u64,
     /// The reader to use.
-    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
     /// Byte offset to read from.
     pub offset: u64,
     /// Number of bytes to read.
@@ -546,7 +702,7 @@ pub struct QueuedCopyRangeJob {
     /// Source file handle.
     pub fh_in: u64,
     /// Source reader.
-    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReaderSync>,
     /// Source offset.
     pub offset_in: u64,
     /// Destination file handle.
@@ -582,6 +738,8 @@ pub enum QueuedJob {
     CopyRange(QueuedCopyRangeJob),
     /// A structural operation (unlink, mkdir, rename, etc.).
     Structural(QueuedStructuralJob),
+    /// A hazardous operation (release/flush/fsync/readdir*).
+    Hazardous(QueuedHazardousJob),
 }
 
 impl QueuedJob {
@@ -591,6 +749,7 @@ impl QueuedJob {
             QueuedJob::Read(job) => job.deadline,
             QueuedJob::CopyRange(job) => job.deadline,
             QueuedJob::Structural(job) => job.deadline,
+            QueuedJob::Hazardous(job) => job.deadline,
         }
     }
 }
@@ -601,6 +760,7 @@ impl std::fmt::Debug for QueuedJob {
             QueuedJob::Read(r) => write!(f, "QueuedJob::Read({r:?})"),
             QueuedJob::CopyRange(r) => write!(f, "QueuedJob::CopyRange({r:?})"),
             QueuedJob::Structural(s) => write!(f, "QueuedJob::Structural({s:?})"),
+            QueuedJob::Hazardous(h) => write!(f, "QueuedJob::Hazardous({h:?})"),
         }
     }
 }
@@ -616,6 +776,8 @@ pub enum FuseRequest {
     CopyRange(CopyRangeRequest),
     /// A structural request.
     Structural(StructuralRequest),
+    /// A hazardous request.
+    Hazardous(HazardousRequest),
 }
 
 impl FuseRequest {
@@ -625,6 +787,7 @@ impl FuseRequest {
             FuseRequest::Read(r) => r.id,
             FuseRequest::CopyRange(r) => r.id,
             FuseRequest::Structural(r) => r.id,
+            FuseRequest::Hazardous(r) => r.id,
         }
     }
 
@@ -634,6 +797,7 @@ impl FuseRequest {
             FuseRequest::Read(r) => r.deadline,
             FuseRequest::CopyRange(r) => r.deadline,
             FuseRequest::Structural(r) => r.deadline,
+            FuseRequest::Hazardous(r) => r.deadline,
         }
     }
 }
@@ -644,6 +808,7 @@ impl std::fmt::Debug for FuseRequest {
             FuseRequest::Read(r) => write!(f, "FuseRequest::Read({r:?})"),
             FuseRequest::CopyRange(r) => write!(f, "FuseRequest::CopyRange({r:?})"),
             FuseRequest::Structural(r) => write!(f, "FuseRequest::Structural({r:?})"),
+            FuseRequest::Hazardous(r) => write!(f, "FuseRequest::Hazardous({r:?})"),
         }
     }
 }
@@ -656,6 +821,8 @@ pub enum FuseResult {
     CopyRange(CopyRangeResult),
     /// Result of a structural request.
     Structural(StructuralResult),
+    /// Result of a hazardous request.
+    Hazardous(HazardousResult),
 }
 
 impl FuseResult {
@@ -665,6 +832,7 @@ impl FuseResult {
             FuseResult::Read(r) => r.id,
             FuseResult::CopyRange(r) => r.id,
             FuseResult::Structural(r) => r.id(),
+            FuseResult::Hazardous(r) => r.id(),
         }
     }
 }

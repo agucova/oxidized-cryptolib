@@ -99,7 +99,8 @@ fn test_aes_256_gcm_wycheproof_vectors() {
                     }
                 }
                 wycheproof::TestResult::Invalid => {
-                    assert!(result.is_err(), 
+                    assert!(
+                        result.is_err(),
                         "Test {} (invalid): Expected decryption to fail due to integrity violation, but it succeeded",
                         test.tc_id
                     );
@@ -114,10 +115,7 @@ fn test_aes_256_gcm_wycheproof_vectors() {
     );
 
     // Sanity check: we should have tested a reasonable number of vectors
-    assert!(
-        valid_count > 0,
-        "Expected at least some valid test vectors"
-    );
+    assert!(valid_count > 0, "Expected at least some valid test vectors");
     assert!(
         invalid_count > 0,
         "Expected at least some invalid test vectors"
@@ -306,9 +304,8 @@ fn test_rfc3394_nist_vectors() {
         "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
     )));
     let key_data = hex!("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
-    let expected_ciphertext = hex!(
-        "28C9F404C4B810F4CBCCB35CFB87F8263F5786E2D80ED326CBC7F0E71A99F43BFB988B9B7A02DD21"
-    );
+    let expected_ciphertext =
+        hex!("28C9F404C4B810F4CBCCB35CFB87F8263F5786E2D80ED326CBC7F0E71A99F43BFB988B9B7A02DD21");
 
     // Test wrap
     let wrapped = wrap_key(&key_data, &kek).unwrap();

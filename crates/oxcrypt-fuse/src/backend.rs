@@ -6,12 +6,12 @@ use crate::scheduler::SchedulerStatsCollector;
 use crate::{CryptomatorFS, MountConfig};
 use fuser::{BackgroundSession, MountOption};
 use oxcrypt_mount::{
-    find_available_mountpoint, BackendType, MountBackend, MountError, MountHandle, MountOptions,
-    SchedulerStatsSnapshot, VaultStats,
+    BackendType, MountBackend, MountError, MountHandle, MountOptions, SchedulerStatsSnapshot,
+    VaultStats, find_available_mountpoint,
 };
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Handle to a FUSE-mounted filesystem.
@@ -89,7 +89,9 @@ impl MountHandle for FuseMountHandle {
     }
 
     fn scheduler_stats(&self) -> Option<SchedulerStatsSnapshot> {
-        self.scheduler_collector.as_ref().map(|c| c.to_mount_snapshot())
+        self.scheduler_collector
+            .as_ref()
+            .map(|c| c.to_mount_snapshot())
     }
 
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
@@ -128,7 +130,10 @@ impl Drop for FuseMountHandle {
     fn drop(&mut self) {
         // Ensure session is dropped even if unmount() wasn't called
         if let Some(session) = self.session.take() {
-            tracing::debug!("Unmounting FUSE filesystem at {}", self.mountpoint.display());
+            tracing::debug!(
+                "Unmounting FUSE filesystem at {}",
+                self.mountpoint.display()
+            );
 
             // Spawn thread for potentially blocking join() so we can timeout
             let (tx, rx) = mpsc::channel();
@@ -213,15 +218,16 @@ impl FuseBackend {
             {
                 if let (Ok(path_meta), Ok(parent_meta)) =
                     (fs.metadata(mount_point), fs.metadata(parent))
-                    && path_meta.dev() != parent_meta.dev() {
-                        tracing::debug!(
-                            "FUSE mount confirmed active at {} (dev {} != parent dev {})",
-                            mount_point.display(),
-                            path_meta.dev(),
-                            parent_meta.dev()
-                        );
-                        return Ok(());
-                    }
+                    && path_meta.dev() != parent_meta.dev()
+                {
+                    tracing::debug!(
+                        "FUSE mount confirmed active at {} (dev {} != parent dev {})",
+                        mount_point.display(),
+                        path_meta.dev(),
+                        parent_meta.dev()
+                    );
+                    return Ok(());
+                }
             }
 
             // Non-unix fallback: just check if directory exists
@@ -272,7 +278,7 @@ impl FuseBackend {
             ))),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(MountError::Mount(
                 std::io::Error::other("Mount thread terminated unexpectedly"),
-            ))
+            )),
         }
     }
 }
@@ -310,7 +316,9 @@ impl MountBackend for FuseBackend {
 
         #[cfg(target_os = "macos")]
         {
-            Some("macFUSE is not installed. Download it from https://osxfuse.github.io/".to_string())
+            Some(
+                "macFUSE is not installed. Download it from https://osxfuse.github.io/".to_string(),
+            )
         }
         #[cfg(target_os = "linux")]
         {
@@ -487,7 +495,11 @@ impl MountBackend for FuseBackend {
         tracing::info!(
             "Mounting vault {} with {} mode (cache TTL: {:?})",
             vault_id,
-            if options.local_mode { "local" } else { "network" },
+            if options.local_mode {
+                "local"
+            } else {
+                "network"
+            },
             config.attr_ttl
         );
 
@@ -576,7 +588,8 @@ mod tests {
 
     #[test]
     fn fuse_backend_custom_timeouts() {
-        let backend = FuseBackend::with_timeouts(Duration::from_secs(5), Duration::from_millis(100));
+        let backend =
+            FuseBackend::with_timeouts(Duration::from_secs(5), Duration::from_millis(100));
         assert_eq!(backend.mount_timeout, Duration::from_secs(5));
         assert_eq!(backend.poll_interval, Duration::from_millis(100));
     }

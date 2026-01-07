@@ -2,8 +2,8 @@ use std::{ffi::OsStr, fmt, fs, io, path::Path};
 
 use aead::Payload;
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, KeyInit},
 };
 use rand::RngCore;
 use thiserror::Error;
@@ -124,18 +124,18 @@ pub enum FileDecryptionError {
     /// File header decryption failed - authentication tag verification failed.
     ///
     /// **[INTEGRITY VIOLATION]** The header ciphertext is invalid or has been tampered with.
-    #[error("Failed to decrypt header for {context}: invalid authentication tag - possible tampering or wrong key")]
-    HeaderDecryption {
-        context: FileContext,
-    },
+    #[error(
+        "Failed to decrypt header for {context}: invalid authentication tag - possible tampering or wrong key"
+    )]
+    HeaderDecryption { context: FileContext },
 
     /// File content chunk decryption failed - authentication tag verification failed.
     ///
     /// **[INTEGRITY VIOLATION]** A content chunk's ciphertext is invalid or has been tampered with.
-    #[error("Failed to decrypt content for {context}: invalid authentication tag - possible tampering or wrong key")]
-    ContentDecryption {
-        context: FileContext,
-    },
+    #[error(
+        "Failed to decrypt content for {context}: invalid authentication tag - possible tampering or wrong key"
+    )]
+    ContentDecryption { context: FileContext },
 
     /// File header has invalid structure (wrong length, missing magic bytes, etc.)
     #[error("Invalid file header for {context}: {reason}")]
@@ -194,11 +194,12 @@ impl FileDecryptionError {
                 FileDecryptionError::InvalidHeader { reason, context }
             }
             FileDecryptionError::IncompleteChunk { actual_size, .. } => {
-                FileDecryptionError::IncompleteChunk { context, actual_size }
+                FileDecryptionError::IncompleteChunk {
+                    context,
+                    actual_size,
+                }
             }
-            FileDecryptionError::Io { source, .. } => {
-                FileDecryptionError::Io { source, context }
-            }
+            FileDecryptionError::Io { source, .. } => FileDecryptionError::Io { source, context },
             FileDecryptionError::KeyAccess(e) => FileDecryptionError::KeyAccess(e),
         }
     }
@@ -304,10 +305,7 @@ pub fn decrypt_file_header_with_context(
     if encrypted_header.len() != 68 {
         warn!(actual_size = encrypted_header.len(), "Invalid header size");
         return Err(FileDecryptionError::InvalidHeader {
-            reason: format!(
-                "expected 68 bytes, got {} bytes",
-                encrypted_header.len()
-            ),
+            reason: format!("expected 68 bytes, got {} bytes", encrypted_header.len()),
             context: context.clone(),
         });
     }
@@ -369,7 +367,12 @@ pub fn decrypt_file_content(
     content_key: &[u8; 32],
     header_nonce: &[u8],
 ) -> Result<Vec<u8>, FileDecryptionError> {
-    decrypt_file_content_with_context(encrypted_content, content_key, header_nonce, &FileContext::new())
+    decrypt_file_content_with_context(
+        encrypted_content,
+        content_key,
+        header_nonce,
+        &FileContext::new(),
+    )
 }
 
 /// Decrypt file content with contextual error information.
@@ -396,10 +399,18 @@ pub fn decrypt_file_content_with_context(
             ..base_context.clone()
         };
 
-        trace!(chunk = chunk_number, chunk_size = chunk.len(), "Decrypting chunk");
+        trace!(
+            chunk = chunk_number,
+            chunk_size = chunk.len(),
+            "Decrypting chunk"
+        );
 
         if chunk.len() < 28 {
-            warn!(chunk = chunk_number, actual_size = chunk.len(), "Incomplete chunk");
+            warn!(
+                chunk = chunk_number,
+                actual_size = chunk.len(),
+                "Incomplete chunk"
+            );
             return Err(FileDecryptionError::IncompleteChunk {
                 context: chunk_context,
                 actual_size: chunk.len(),
@@ -420,20 +431,28 @@ pub fn decrypt_file_content_with_context(
             aad: &aad,
         };
 
-        let decrypted_chunk = cipher
-            .decrypt(chunk_nonce, payload)
-            .map_err(|_| {
-                warn!(chunk = chunk_number, "Chunk decryption failed - authentication tag mismatch");
-                FileDecryptionError::ContentDecryption {
-                    context: chunk_context.clone(),
-                }
-            })?;
+        let decrypted_chunk = cipher.decrypt(chunk_nonce, payload).map_err(|_| {
+            warn!(
+                chunk = chunk_number,
+                "Chunk decryption failed - authentication tag mismatch"
+            );
+            FileDecryptionError::ContentDecryption {
+                context: chunk_context.clone(),
+            }
+        })?;
 
-        trace!(chunk = chunk_number, decrypted_size = decrypted_chunk.len(), "Chunk decrypted successfully");
+        trace!(
+            chunk = chunk_number,
+            decrypted_size = decrypted_chunk.len(),
+            "Chunk decrypted successfully"
+        );
         decrypted_content.extend_from_slice(&decrypted_chunk);
     }
 
-    debug!(decrypted_size = decrypted_content.len(), "File content decrypted successfully");
+    debug!(
+        decrypted_size = decrypted_content.len(),
+        "File content decrypted successfully"
+    );
     Ok(decrypted_content)
 }
 
@@ -588,9 +607,15 @@ pub fn decrypt_file(path: &Path, master_key: &MasterKey) -> Result<DecryptedFile
     trace!(encrypted_size = encrypted.len(), "Read encrypted file");
 
     if encrypted.len() < 68 {
-        warn!(actual_size = encrypted.len(), "File too small for valid encrypted file");
+        warn!(
+            actual_size = encrypted.len(),
+            "File too small for valid encrypted file"
+        );
         return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
-            reason: format!("file too small: expected at least 68 bytes, got {}", encrypted.len()),
+            reason: format!(
+                "file too small: expected at least 68 bytes, got {}",
+                encrypted.len()
+            ),
             context,
         }));
     }
@@ -635,7 +660,10 @@ pub fn decrypt_file_with_context(
 
     if encrypted.len() < 68 {
         return Err(FileError::Decryption(FileDecryptionError::InvalidHeader {
-            reason: format!("file too small: expected at least 68 bytes, got {}", encrypted.len()),
+            reason: format!(
+                "file too small: expected at least 68 bytes, got {}",
+                encrypted.len()
+            ),
             context,
         }));
     }
