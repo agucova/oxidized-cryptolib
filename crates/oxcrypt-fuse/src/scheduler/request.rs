@@ -151,7 +151,7 @@ impl std::fmt::Debug for ReadResult {
         f.debug_struct("ReadResult")
             .field("id", &self.id)
             .field("fh", &self.fh)
-            .field("result", &self.result.as_ref().map(|b| b.len()).map_err(|e| *e))
+            .field("result", &self.result.as_ref().map(Bytes::len))
             .finish_non_exhaustive()
     }
 }
@@ -231,8 +231,8 @@ impl FuseRequest {
 impl std::fmt::Debug for FuseRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FuseRequest::Read(r) => write!(f, "FuseRequest::Read({:?})", r),
-            FuseRequest::CopyRange(r) => write!(f, "FuseRequest::CopyRange({:?})", r),
+            FuseRequest::Read(r) => write!(f, "FuseRequest::Read({r:?})"),
+            FuseRequest::CopyRange(r) => write!(f, "FuseRequest::CopyRange({r:?})"),
         }
     }
 }

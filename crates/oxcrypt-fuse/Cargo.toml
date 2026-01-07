@@ -38,6 +38,7 @@ once_cell = "1.21.3"
 filetime = "0.2.26"
 crossbeam-channel = "0.5"
 bytes = "1.11.0"
+moka = { version = "0.12.12", features = ["sync"] }
 
 # fuser: pure-rust on Linux, libfuse on macOS
 # Using abi-7-23 for FUSE_WRITEBACK_CACHE support (mmap compatibility)

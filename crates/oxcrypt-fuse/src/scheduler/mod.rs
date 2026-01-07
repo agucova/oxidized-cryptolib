@@ -39,7 +39,9 @@ pub mod deadline;
 pub mod executor;
 pub mod lane;
 pub mod queue;
+pub mod read_cache;
 pub mod request;
+pub mod single_flight;
 
 pub use deadline::DeadlineHeap;
 pub use executor::{
@@ -51,10 +53,12 @@ pub use lane::{
     LaneReservations, BULK_READ_THRESHOLD,
 };
 pub use queue::{AdmissionError, AggregatedLaneStats, LaneQueues, LaneStats, QueuedRequest};
+pub use read_cache::{ReadCache, ReadCacheConfig, ReadCacheKey, ReadCacheStats};
 pub use request::{
     CopyRangeRequest, CopyRangeResult, FuseRequest, FuseResult, ReadRequest, ReadResult,
     RequestId, RequestIdGenerator, RequestState,
 };
+pub use single_flight::{AttachResult, InFlightReads, ReadKey, SingleFlightStats};
 
 use crate::handles::{FuseHandle, FuseHandleTable};
 use dashmap::DashMap;
@@ -80,6 +84,10 @@ pub struct SchedulerConfig {
     pub lane_deadlines: LaneDeadlines,
     /// Reserved executor slots per lane.
     pub lane_reservations: LaneReservations,
+    /// Read cache configuration.
+    pub read_cache: ReadCacheConfig,
+    /// Whether single-flight deduplication is enabled.
+    pub enable_single_flight: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -89,24 +97,29 @@ impl Default for SchedulerConfig {
             lane_capacities: LaneCapacities::default(),
             lane_deadlines: LaneDeadlines::default(),
             lane_reservations: LaneReservations::default(),
+            read_cache: ReadCacheConfig::default(),
+            enable_single_flight: true,
         }
     }
 }
 
 impl SchedulerConfig {
     /// Create config with custom executor settings.
+    #[must_use]
     pub fn with_executor(mut self, config: ExecutorConfig) -> Self {
         self.executor = config;
         self
     }
 
     /// Set lane capacities.
+    #[must_use]
     pub fn with_lane_capacities(mut self, capacities: LaneCapacities) -> Self {
         self.lane_capacities = capacities;
         self
     }
 
     /// Set lane deadlines.
+    #[must_use]
     pub fn with_lane_deadlines(mut self, deadlines: LaneDeadlines) -> Self {
         self.lane_deadlines = deadlines;
         self
@@ -126,6 +139,7 @@ impl SchedulerConfig {
     /// - L2 ReadFg: base
     /// - L3 WriteFg: base
     /// - L4 Bulk: base * 3 (allow longer for large operations)
+    #[must_use]
     pub fn with_base_timeout(mut self, base: Duration) -> Self {
         self.lane_deadlines = LaneDeadlines {
             control: Duration::from_secs(5),
@@ -134,6 +148,20 @@ impl SchedulerConfig {
             write_structural: base,
             bulk: Duration::from_secs_f64(base.as_secs_f64() * 3.0),
         };
+        self
+    }
+
+    /// Set read cache configuration.
+    #[must_use]
+    pub fn with_read_cache(mut self, config: ReadCacheConfig) -> Self {
+        self.read_cache = config;
+        self
+    }
+
+    /// Enable or disable single-flight deduplication.
+    #[must_use]
+    pub fn with_single_flight(mut self, enable: bool) -> Self {
+        self.enable_single_flight = enable;
         self
     }
 }
@@ -390,6 +418,7 @@ impl Drop for FuseScheduler {
 /// Receives result receivers and issues FUSE replies when results arrive.
 /// Also restores readers to the handle table after completion.
 /// Uses deadline heap for efficient timeout detection.
+#[allow(clippy::needless_pass_by_value)] // Arc parameters are idiomatic for thread entry points
 fn dispatcher_loop(
     rx: std::sync::mpsc::Receiver<(RequestId, oneshot::Receiver<ExecutorResult>)>,
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
@@ -412,18 +441,21 @@ fn dispatcher_loop(
         // Process expired deadlines from heap (efficient O(log n) per expiration)
         for (request_id, generation) in deadline_heap.pop_expired() {
             // Verify generation matches to detect stale entries
-            if let Some(pending) = pending_reads.get(&request_id) {
-                if pending.generation == generation {
-                    // Valid timeout - claim reply and respond
-                    if pending.state.claim_reply() {
-                        warn!(?request_id, "Request timed out via deadline heap");
-                        drop(pending);
-                        if let Some((_, pending)) = pending_reads.remove(&request_id) {
-                            pending.reply.error(libc::ETIMEDOUT);
-                        }
-                    }
+            // (DashMap Ref doesn't support filter, so we check separately)
+            let Some(pending) = pending_reads.get(&request_id) else {
+                continue;
+            };
+            if pending.generation != generation {
+                // Stale entry - request completed or cancelled
+                continue;
+            }
+            // Valid timeout - claim reply and respond
+            if pending.state.claim_reply() {
+                warn!(?request_id, "Request timed out via deadline heap");
+                drop(pending);
+                if let Some((_, pending)) = pending_reads.remove(&request_id) {
+                    pending.reply.error(libc::ETIMEDOUT);
                 }
-                // If generation doesn't match, entry is stale (request completed or cancelled)
             }
         }
 

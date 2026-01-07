@@ -5763,6 +5763,7 @@ dependencies = [
  "git2",
  "libc",
  "mimalloc",
+ "moka",
  "nix 0.30.1",
  "num_cpus",
  "once_cell",

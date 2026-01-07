@@ -136,8 +136,10 @@ impl ExecutorStats {
         } else {
             self.jobs_failed.fetch_add(1, Ordering::Relaxed);
         }
-        self.total_execution_nanos
-            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+        // Truncation is acceptable - if a single operation takes > 584 years, we have other problems
+        #[allow(clippy::cast_possible_truncation)]
+        let nanos = duration.as_nanos() as u64;
+        self.total_execution_nanos.fetch_add(nanos, Ordering::Relaxed);
     }
 
     /// Record a job rejection.
@@ -177,12 +179,14 @@ impl Default for ExecutorConfig {
 
 impl ExecutorConfig {
     /// Create a new config with the given number of threads.
+    #[must_use]
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.io_threads = threads;
         self
     }
 
     /// Create a new config with the given queue capacity.
+    #[must_use]
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.queue_capacity = capacity;
         self
@@ -343,6 +347,7 @@ impl Drop for FsSyscallExecutor {
 }
 
 /// Worker thread main loop.
+#[allow(clippy::needless_pass_by_value)] // Arc parameters are idiomatic for thread entry points
 fn worker_loop(
     worker_id: usize,
     rx: Receiver<ExecutorJob>,
@@ -421,7 +426,6 @@ fn worker_loop(
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 // Normal timeout, check shutdown and loop
-                continue;
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 debug!(worker_id, "Channel disconnected, worker exiting");
@@ -453,16 +457,10 @@ async fn execute_operation(operation: ExecutorOperation) -> ExecutionOutcome {
                     warn!(error = %e, "Read operation failed");
                     // Map streaming errors to errno
                     let errno = match e {
-                        oxcrypt_core::fs::streaming::StreamingError::Io { .. } => libc::EIO,
                         oxcrypt_core::fs::streaming::StreamingError::FileTooSmall { .. } => {
                             libc::EINVAL
                         }
-                        oxcrypt_core::fs::streaming::StreamingError::IncompleteChunk { .. } => {
-                            libc::EIO
-                        }
-                        oxcrypt_core::fs::streaming::StreamingError::ChunkDecryptionFailed {
-                            ..
-                        } => libc::EIO,
+                        // All other errors map to EIO
                         _ => libc::EIO,
                     };
                     Err(errno)
