@@ -61,21 +61,25 @@ impl SymlinkContext {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
+    #[must_use]
     pub fn with_encrypted_name(mut self, name: impl Into<String>) -> Self {
         self.encrypted_name = Some(name.into());
         self
     }
 
+    #[must_use]
     pub fn with_dir_id(mut self, dir_id: impl Into<String>) -> Self {
         self.dir_id = Some(dir_id.into());
         self
     }
 
+    #[must_use]
     pub fn with_target(mut self, target: impl Into<String>) -> Self {
         self.target = Some(target.into());
         self
@@ -187,6 +191,7 @@ impl From<FileEncryptionError> for SymlinkError {
 
 impl SymlinkError {
     /// Add or update context on an existing error
+    #[must_use]
     pub fn with_context(self, new_context: SymlinkContext) -> Self {
         match self {
             SymlinkError::DecryptionFailed { reason, .. } => {
@@ -336,7 +341,9 @@ mod tests {
         let mut mac_key = [0u8; 32];
 
         for i in 0..32 {
+            // Safe cast: loop variable i is always 0-31, fits safely in u8
             aes_key[i] = i as u8;
+            // Safe cast: (32 + i) is always 32-63, fits safely in u8
             mac_key[i] = (32 + i) as u8;
         }
 
@@ -348,7 +355,9 @@ mod tests {
         let mut mac_key = [0u8; 32];
 
         for i in 0..32 {
+            // Safe cast: (i + 100) wraps around u8 (100-131 mod 256), intentionally checking wraparound
             aes_key[i] = (i + 100) as u8;
+            // Safe cast: (i + 200) wraps around u8 (200-231 mod 256), intentionally checking wraparound
             mac_key[i] = (i + 200) as u8;
         }
 

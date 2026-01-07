@@ -4,6 +4,7 @@
 
 use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
+use crate::backend::mount_manager;
 use crate::state::{ManagedVault, VaultState};
 
 /// Menu item IDs for identification
@@ -14,19 +15,19 @@ pub mod ids {
 
     /// Generate vault-specific menu item ID
     pub fn vault_unlock(vault_id: &str) -> String {
-        format!("vault_unlock_{}", vault_id)
+        format!("vault_unlock_{vault_id}")
     }
 
     pub fn vault_lock(vault_id: &str) -> String {
-        format!("vault_lock_{}", vault_id)
+        format!("vault_lock_{vault_id}")
     }
 
     pub fn vault_force_lock(vault_id: &str) -> String {
-        format!("vault_force_lock_{}", vault_id)
+        format!("vault_force_lock_{vault_id}")
     }
 
     pub fn vault_reveal(vault_id: &str) -> String {
-        format!("vault_reveal_{}", vault_id)
+        format!("vault_reveal_{vault_id}")
     }
 
     /// Parse a vault action from menu item ID
@@ -37,11 +38,7 @@ pub mod ids {
             Some(super::VaultAction::Lock(vault_id.to_string()))
         } else if let Some(vault_id) = id.strip_prefix("vault_force_lock_") {
             Some(super::VaultAction::ForceLock(vault_id.to_string()))
-        } else if let Some(vault_id) = id.strip_prefix("vault_reveal_") {
-            Some(super::VaultAction::Reveal(vault_id.to_string()))
-        } else {
-            None
-        }
+        } else { id.strip_prefix("vault_reveal_").map(|vault_id| super::VaultAction::Reveal(vault_id.to_string())) }
     }
 }
 
@@ -117,7 +114,7 @@ pub fn build_menu(vaults: &[ManagedVault], window_visible: bool) -> Menu {
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     // Quit
-    let quit = MenuItem::with_id(ids::QUIT, "Quit Oxidized Vault", true, None);
+    let quit = MenuItem::with_id(ids::QUIT, "Quit Oxcrypt", true, None);
     let _ = menu.append(&quit);
 
     menu
@@ -130,7 +127,7 @@ fn build_vault_submenu(vault: &ManagedVault) -> Submenu {
         VaultState::Mounted { .. } => "📂",
     };
 
-    let label = format!("{} {}", status_icon, vault.config.name);
+    let label = format!("{status_icon} {}", vault.config.name);
     let submenu = Submenu::new(&label, true);
 
     match &vault.state {
@@ -164,11 +161,10 @@ fn build_vault_submenu(vault: &ManagedVault) -> Submenu {
             let _ = submenu.append(&reveal);
 
             // Status text (disabled)
-            let status = MenuItem::new(
-                format!("Mounted at {}", mountpoint.display()),
-                false,
-                None,
-            );
+            let display_location = mount_manager()
+                .get_display_location(&vault.config.id)
+                .unwrap_or_else(|| mountpoint.display().to_string());
+            let status = MenuItem::new(format!("Mounted at {display_location}"), false, None);
             let _ = submenu.append(&status);
 
             // Separator

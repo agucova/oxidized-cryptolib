@@ -107,7 +107,7 @@ impl CryptomatorWebDav {
         if normalized.is_empty() {
             String::new()
         } else {
-            format!("/{}", normalized)
+            format!("/{normalized}")
         }
     }
 
@@ -163,8 +163,9 @@ impl CryptomatorWebDav {
 
     /// Find metadata for a path (file, directory, or symlink).
     ///
-    /// Uses `list_all` for efficient single-call fetching of all directory entries
-    /// instead of 3 separate calls for files, directories, and symlinks.
+    /// Uses O(1) direct lookups (`find_directory`, `find_file`, `find_symlink`)
+    /// instead of listing the entire parent directory. This is critical for
+    /// performance when directories contain many files.
     async fn find_entry(&self, path: &str) -> Result<CryptomatorMetaData, FsError> {
         if path.is_empty() || path == "/" {
             return Ok(CryptomatorMetaData::root());
@@ -179,32 +180,68 @@ impl CryptomatorWebDav {
 
         let (parent_dir_id, name) = self.resolve_path(path).await?;
 
-        // Use list_all for efficient single-call lookup (instead of 3 sequential calls)
-        let (files, dirs, symlinks) = self
-            .ops
-            .list_all(&parent_dir_id)
-            .await
-            .map_err(vault_error_to_fs_error)?;
-
-        // Search in directories first (most common for path resolution)
-        if let Some(dir_info) = dirs.into_iter().find(|d| d.name == name) {
-            let meta = CryptomatorMetaData::from_directory(&dir_info);
-            self.metadata_cache.insert(path.to_string(), meta.clone());
-            return Ok(meta);
+        // Try O(1) lookup for directories first (most common for path resolution)
+        // Note: find_directory may return ENOTDIR if the encrypted file is a regular file
+        // In that case, we treat it as "not a directory" and continue to file lookup
+        match self.ops.find_directory(&parent_dir_id, &name).await {
+            Ok(Some(dir_info)) => {
+                let meta = CryptomatorMetaData::from_directory(&dir_info);
+                self.metadata_cache.insert(path.to_string(), meta.clone());
+                trace!(path = %path, "found directory via O(1) lookup");
+                return Ok(meta);
+            }
+            Ok(None) => {}  // Not a directory, continue to file lookup
+            Err(e) => {
+                // ENOTDIR (error code 20) means we tried to open a file as a directory
+                // This is expected when the path is a file, so we treat it as "not found"
+                // and continue to the next lookup
+                use oxcrypt_core::vault::operations::VaultOperationError;
+                if matches!(e, VaultOperationError::Io { ref source, .. } if source.raw_os_error() == Some(20)) {
+                    // Not a directory - continue to file lookup
+                } else {
+                    // Other errors should be propagated
+                    return Err(vault_error_to_fs_error(e));
+                }
+            }
         }
 
-        // Search in files
-        if let Some(file_info) = files.into_iter().find(|f| f.name == name) {
-            let meta = CryptomatorMetaData::from_file(&file_info);
-            self.metadata_cache.insert(path.to_string(), meta.clone());
-            return Ok(meta);
+        // Try O(1) lookup for files
+        match self.ops.find_file(&parent_dir_id, &name).await {
+            Ok(Some(file_info)) => {
+                let meta = CryptomatorMetaData::from_file(&file_info);
+                self.metadata_cache.insert(path.to_string(), meta.clone());
+                trace!(path = %path, "found file via O(1) lookup");
+                return Ok(meta);
+            }
+            Ok(None) => {}  // Not a file, continue to symlink lookup
+            Err(e) => {
+                // Similar to directories, ENOTDIR means we tried to read a directory as a file
+                use oxcrypt_core::vault::operations::VaultOperationError;
+                if matches!(e, VaultOperationError::Io { ref source, .. } if source.raw_os_error() == Some(20)) {
+                    // Not a file - continue to symlink lookup
+                } else {
+                    return Err(vault_error_to_fs_error(e));
+                }
+            }
         }
 
-        // Search in symlinks
-        if let Some(symlink_info) = symlinks.into_iter().find(|s| s.name == name) {
-            let meta = CryptomatorMetaData::from_symlink(&symlink_info);
-            self.metadata_cache.insert(path.to_string(), meta.clone());
-            return Ok(meta);
+        // Try O(1) lookup for symlinks
+        match self.ops.find_symlink(&parent_dir_id, &name).await {
+            Ok(Some(symlink_info)) => {
+                let meta = CryptomatorMetaData::from_symlink(&symlink_info);
+                self.metadata_cache.insert(path.to_string(), meta.clone());
+                trace!(path = %path, "found symlink via O(1) lookup");
+                return Ok(meta);
+            }
+            Ok(None) => {}  // Not a symlink
+            Err(e) => {
+                use oxcrypt_core::vault::operations::VaultOperationError;
+                if matches!(e, VaultOperationError::Io { ref source, .. } if source.raw_os_error() == Some(20)) {
+                    // Not a symlink
+                } else {
+                    return Err(vault_error_to_fs_error(e));
+                }
+            }
         }
 
         Err(FsError::NotFound)
@@ -231,15 +268,232 @@ impl CryptomatorWebDav {
             }
         Ok(())
     }
+
+    fn join_path(parent: &str, name: &str) -> String {
+        if parent.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("{}/{}", parent.trim_end_matches('/'), name)
+        }
+    }
+
+    async fn delete_directory_contents_recursive(
+        &self,
+        dir_id: &DirId,
+        dir_path: &str,
+    ) -> Result<(), FsError> {
+        let mut stack: Vec<(DirId, String, DirId, String, bool)> = Vec::new();
+
+        let (files, dirs, symlinks) = self
+            .ops
+            .list_all(dir_id)
+            .await
+            .map_err(vault_error_to_fs_error)?;
+
+        for file in files {
+            let file_path = Self::join_path(dir_path, &file.name);
+            self.flush_write_buffer(&file_path).await.ok();
+            self.ops
+                .delete_file(dir_id, &file.name)
+                .await
+                .map_err(write_error_to_fs_error)?;
+            self.metadata_cache.invalidate(&file_path);
+        }
+
+        for symlink in symlinks {
+            let symlink_path = Self::join_path(dir_path, &symlink.name);
+            self.ops
+                .delete_symlink(dir_id, &symlink.name)
+                .await
+                .map_err(write_error_to_fs_error)?;
+            self.metadata_cache.invalidate(&symlink_path);
+        }
+
+        for dir in dirs {
+            let child_path = Self::join_path(dir_path, &dir.name);
+            stack.push((
+                dir_id.clone(),
+                dir.name,
+                dir.directory_id,
+                child_path,
+                false,
+            ));
+        }
+
+        while let Some((parent_dir_id, dir_name, current_dir_id, current_path, visited)) =
+            stack.pop()
+        {
+            if visited {
+                self.ops
+                    .delete_directory(&parent_dir_id, &dir_name)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                self.metadata_cache.invalidate_prefix(&current_path);
+                self.path_cache.invalidate_prefix(&current_path);
+                continue;
+            }
+
+            stack.push((
+                parent_dir_id.clone(),
+                dir_name.clone(),
+                current_dir_id.clone(),
+                current_path.clone(),
+                true,
+            ));
+
+            let (files, dirs, symlinks) = self
+                .ops
+                .list_all(&current_dir_id)
+                .await
+                .map_err(vault_error_to_fs_error)?;
+
+            for file in files {
+                let file_path = Self::join_path(&current_path, &file.name);
+                self.flush_write_buffer(&file_path).await.ok();
+                self.ops
+                    .delete_file(&current_dir_id, &file.name)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                self.metadata_cache.invalidate(&file_path);
+            }
+
+            for symlink in symlinks {
+                let symlink_path = Self::join_path(&current_path, &symlink.name);
+                self.ops
+                    .delete_symlink(&current_dir_id, &symlink.name)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                self.metadata_cache.invalidate(&symlink_path);
+            }
+
+            for dir in dirs {
+                let child_path = Self::join_path(&current_path, &dir.name);
+                stack.push((
+                    current_dir_id.clone(),
+                    dir.name,
+                    dir.directory_id,
+                    child_path,
+                    false,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn delete_directory_recursive(
+        &self,
+        parent_dir_id: &DirId,
+        dir_name: &str,
+        dir_path: &str,
+    ) -> Result<(), FsError> {
+        let dirs = self
+            .ops
+            .list_directories(parent_dir_id)
+            .await
+            .map_err(vault_error_to_fs_error)?;
+        let dir_info = dirs
+            .into_iter()
+            .find(|dir| dir.name == dir_name)
+            .ok_or(FsError::NotFound)?;
+
+        self.delete_directory_contents_recursive(&dir_info.directory_id, dir_path)
+            .await?;
+        self.ops
+            .delete_directory(parent_dir_id, dir_name)
+            .await
+            .map_err(write_error_to_fs_error)?;
+        Ok(())
+    }
+
+    async fn copy_directory_recursive(
+        &self,
+        from_dir_id: &DirId,
+        to_dir_id: &DirId,
+        from_path: &str,
+        to_path: &str,
+    ) -> Result<(), FsError> {
+        let mut stack: Vec<(DirId, DirId, String, String)> = Vec::new();
+        stack.push((
+            from_dir_id.clone(),
+            to_dir_id.clone(),
+            from_path.to_string(),
+            to_path.to_string(),
+        ));
+
+        while let Some((current_from_id, current_to_id, current_from_path, current_to_path)) =
+            stack.pop()
+        {
+            let (files, dirs, symlinks) = self
+                .ops
+                .list_all(&current_from_id)
+                .await
+                .map_err(vault_error_to_fs_error)?;
+
+            for file in files {
+                let source_path = Self::join_path(&current_from_path, &file.name);
+                self.flush_write_buffer(&source_path).await.ok();
+                let content = self
+                    .ops
+                    .read_file(&current_from_id, &file.name)
+                    .await
+                    .map_err(vault_error_to_fs_error)?;
+                self.ops
+                    .write_file(&current_to_id, &file.name, &content.content)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                let dest_path = Self::join_path(&current_to_path, &file.name);
+                self.metadata_cache.invalidate(&dest_path);
+            }
+
+            for symlink in symlinks {
+                let target = self
+                    .ops
+                    .read_symlink(&current_from_id, &symlink.name)
+                    .await
+                    .map_err(vault_error_to_fs_error)?;
+                self.ops
+                    .create_symlink(&current_to_id, &symlink.name, &target)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                let dest_path = Self::join_path(&current_to_path, &symlink.name);
+                self.metadata_cache.invalidate(&dest_path);
+            }
+
+            for dir in dirs {
+                let new_dir_id = self
+                    .ops
+                    .create_directory(&current_to_id, &dir.name)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                let child_from_path = Self::join_path(&current_from_path, &dir.name);
+                let child_to_path = Self::join_path(&current_to_path, &dir.name);
+                stack.push((
+                    dir.directory_id,
+                    new_dir_id,
+                    child_from_path,
+                    child_to_path.clone(),
+                ));
+                self.metadata_cache.invalidate_prefix(&child_to_path);
+                self.path_cache.invalidate_prefix(&child_to_path);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
     fn open<'a>(&'a self, path: &'a DavPath, options: OpenOptions) -> FsFuture<'a, Box<dyn DavFile>> {
         Box::pin(async move {
-            let open_start = std::time::Instant::now();
+            let open_start = Instant::now();
             let vault_path = Self::parse_path(path);
             debug!(vault_path = %vault_path, options = ?options, "Opening file");
+
+            if options.create_new && self.write_buffers.get_mut(&vault_path).is_some() {
+                return Err(FsError::Exists);
+            }
 
             // Check if we have an existing write buffer for this path
             if let Some(buf_ref) = self.write_buffers.get_mut(&vault_path) {
@@ -247,7 +501,10 @@ impl DavFileSystem for CryptomatorWebDav {
                 drop(buf_ref);
                 // Return a file handle that references the existing buffer
                 // For simplicity, we create a new buffer with the same content
-                let buffer = self.write_buffers.remove(&vault_path).unwrap();
+                let buffer = self.write_buffers.remove(&vault_path).ok_or_else(|| {
+                    tracing::error!(path = %vault_path, "Write buffer disappeared between check and remove");
+                    FsError::GeneralFailure
+                })?;
                 let file = CryptomatorFile::writer(
                     buffer,
                     filename,
@@ -261,11 +518,19 @@ impl DavFileSystem for CryptomatorWebDav {
 
             if options.write || options.create || options.create_new {
                 // Write mode: create a write buffer
-                let resolve_start = std::time::Instant::now();
+                let resolve_start = Instant::now();
                 let (dir_id, filename) = self.resolve_path(&vault_path).await?;
                 let resolve_elapsed = resolve_start.elapsed();
                 if resolve_elapsed.as_millis() > 10 {
-                    tracing::warn!(path = %vault_path, elapsed_ms = resolve_elapsed.as_millis(), "Slow resolve_path")
+                    tracing::warn!(path = %vault_path, elapsed_ms = resolve_elapsed.as_millis(), "Slow resolve_path");
+                }
+
+                if options.create_new {
+                    match self.find_entry(&vault_path).await {
+                        Ok(_) => return Err(FsError::Exists),
+                        Err(FsError::NotFound) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
 
                 let buffer = if options.create_new {
@@ -288,7 +553,10 @@ impl DavFileSystem for CryptomatorWebDav {
                 };
 
                 self.write_buffers.insert(vault_path.clone(), buffer);
-                let buffer = self.write_buffers.remove(&vault_path).unwrap();
+                let buffer = self.write_buffers.remove(&vault_path).ok_or_else(|| {
+                    tracing::error!(path = %vault_path, "Write buffer disappeared immediately after insert");
+                    FsError::GeneralFailure
+                })?;
                 let file = CryptomatorFile::writer(
                     buffer,
                     filename,
@@ -303,19 +571,24 @@ impl DavFileSystem for CryptomatorWebDav {
                 }
                 Ok(Box::new(file) as Box<dyn DavFile>)
             } else {
-                // Read mode: open streaming reader
-                let resolve_start = std::time::Instant::now();
+                // Read mode: load file content into memory buffer
+                // NOTE: We use read_file instead of open_file because open_file returns
+                // a VaultFileReader that holds directory read locks for its lifetime.
+                // This could block write operations (like delete) on the same directory.
+                // By reading the entire file into memory at open time, we release locks
+                // immediately and avoid contention.
+                let resolve_start = Instant::now();
                 let (dir_id, filename) = self.resolve_path(&vault_path).await?;
                 let resolve_elapsed = resolve_start.elapsed();
                 if resolve_elapsed.as_millis() > 10 {
                     tracing::warn!(path = %vault_path, elapsed_ms = resolve_elapsed.as_millis(), "Slow resolve_path (read)");
                 }
-                let reader = self
+                let decrypted = self
                     .ops
-                    .open_file(&dir_id, &filename)
+                    .read_file(&dir_id, &filename)
                     .await
                     .map_err(vault_error_to_fs_error)?;
-                let file = CryptomatorFile::reader(reader, filename, self.stats.clone());
+                let file = CryptomatorFile::reader(decrypted.content, filename, self.stats.clone());
                 let open_elapsed = open_start.elapsed();
                 if open_elapsed.as_millis() > 50 {
                     tracing::warn!(path = %vault_path, elapsed_ms = open_elapsed.as_millis(), "Slow read open");
@@ -329,7 +602,7 @@ impl DavFileSystem for CryptomatorWebDav {
     fn read_dir<'a>(
         &'a self,
         path: &'a DavPath,
-        _meta: ReadDirMeta,
+        _: ReadDirMeta,
     ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
         Box::pin(async move {
             let start = Instant::now();
@@ -383,7 +656,7 @@ impl DavFileSystem for CryptomatorWebDav {
     #[instrument(level = "debug", skip(self), fields(path = %path.as_url_string()))]
     fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
-            let _meta_start = std::time::Instant::now();
+            let _meta_start = Instant::now();
             let vault_path = Self::parse_path(path);
             trace!(vault_path = %vault_path, "Getting metadata");
 
@@ -448,10 +721,13 @@ impl DavFileSystem for CryptomatorWebDav {
                 }
             };
 
-            if let Err(e) = self.ops.delete_directory(&parent_dir_id, &name).await {
+            if let Err(e) = self
+                .delete_directory_recursive(&parent_dir_id, &name, &vault_path)
+                .await
+            {
                 self.stats.record_error();
                 self.stats.record_metadata_latency(start.elapsed());
-                return Err(write_error_to_fs_error(e));
+                return Err(e);
             }
 
             // Invalidate caches for the directory and all children
@@ -498,7 +774,11 @@ impl DavFileSystem for CryptomatorWebDav {
             }
 
             // Try as directory (WebDAV DELETE can target directories too)
-            if self.ops.delete_directory(&parent_dir_id, &name).await.is_ok() {
+            if self
+                .delete_directory_recursive(&parent_dir_id, &name, &vault_path)
+                .await
+                .is_ok()
+            {
                 self.metadata_cache.invalidate_prefix(&vault_path);
                 self.path_cache.invalidate_prefix(&vault_path);
                 self.stats.record_metadata_latency(start.elapsed());
@@ -553,29 +833,66 @@ impl DavFileSystem for CryptomatorWebDav {
             if source_meta.is_dir() {
                 // Directory operations
                 if from_dir_id != to_dir_id {
-                    // Cross-directory move not supported for directories
-                    debug!("Cross-directory move not supported for directories");
-                    self.stats.record_error();
-                    self.stats.record_metadata_latency(start.elapsed());
-                    return Err(FsError::NotImplemented);
-                }
-                // Same directory rename
-                if let Err(e) = self
-                    .ops
-                    .rename_directory(&from_dir_id, &from_name, &to_name)
-                    .await
-                {
-                    self.stats.record_error();
-                    self.stats.record_metadata_latency(start.elapsed());
-                    return Err(write_error_to_fs_error(e));
+                    let dirs = match self.ops.list_directories(&from_dir_id).await {
+                        Ok(dirs) => dirs,
+                        Err(e) => {
+                            self.stats.record_error();
+                            self.stats.record_metadata_latency(start.elapsed());
+                            return Err(vault_error_to_fs_error(e));
+                        }
+                    };
+                    let source_dir = dirs
+                        .into_iter()
+                        .find(|dir| dir.name == from_name)
+                        .ok_or(FsError::NotFound)?;
+                    let new_dir_id = match self.ops.create_directory(&to_dir_id, &to_name).await {
+                        Ok(new_dir_id) => new_dir_id,
+                        Err(e) => {
+                            self.stats.record_error();
+                            self.stats.record_metadata_latency(start.elapsed());
+                            return Err(write_error_to_fs_error(e));
+                        }
+                    };
+                    if let Err(e) = self
+                        .copy_directory_recursive(
+                            &source_dir.directory_id,
+                            &new_dir_id,
+                            &from_path,
+                            &to_path,
+                        )
+                        .await
+                    {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(e);
+                    }
+                    if let Err(e) = self
+                        .delete_directory_recursive(&from_dir_id, &from_name, &from_path)
+                        .await
+                    {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(e);
+                    }
+                } else {
+                    // Same directory rename
+                    if let Err(e) = self
+                        .ops
+                        .rename_directory(&from_dir_id, &from_name, &to_name)
+                        .await
+                    {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(write_error_to_fs_error(e));
+                    }
                 }
             } else {
                 // File operations
                 // dav-server doesn't delete destination files for us when Overwrite: T is set,
                 // so we need to delete the destination if it exists.
                 // (dav-server only deletes destination directories, not files)
-                if let Ok(dest_meta) = self.find_entry(&to_path).await {
-                    if dest_meta.is_file() {
+                if let Ok(dest_meta) = self.find_entry(&to_path).await
+                    && dest_meta.is_file() {
                         debug!(dest = %to_path, "Deleting existing destination file for overwrite");
                         if let Err(e) = self.ops.delete_file(&to_dir_id, &to_name).await {
                             self.stats.record_error();
@@ -583,7 +900,6 @@ impl DavFileSystem for CryptomatorWebDav {
                             return Err(write_error_to_fs_error(e));
                         }
                     }
-                }
 
                 if from_dir_id == to_dir_id && from_name != to_name {
                     // Same directory, just rename
@@ -644,6 +960,15 @@ impl DavFileSystem for CryptomatorWebDav {
             let to_path = Self::parse_path(to);
             debug!(from = %from_path, to = %to_path, "Copying");
 
+            let source_meta = match self.find_entry(&from_path).await {
+                Ok(meta) => meta,
+                Err(e) => {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(e);
+                }
+            };
+
             let (from_dir_id, from_name) = match self.resolve_path(&from_path).await {
                 Ok(result) => result,
                 Err(e) => {
@@ -661,29 +986,79 @@ impl DavFileSystem for CryptomatorWebDav {
                 }
             };
 
-            // Read source file
-            let content = match self.ops.read_file(&from_dir_id, &from_name).await {
-                Ok(content) => content,
-                Err(e) => {
+            if source_meta.is_dir() {
+                let dirs = match self.ops.list_directories(&from_dir_id).await {
+                    Ok(dirs) => dirs,
+                    Err(e) => {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(vault_error_to_fs_error(e));
+                    }
+                };
+                let source_dir = dirs
+                    .into_iter()
+                    .find(|dir| dir.name == from_name)
+                    .ok_or(FsError::NotFound)?;
+                let new_dir_id = match self.ops.create_directory(&to_dir_id, &to_name).await {
+                    Ok(new_dir_id) => new_dir_id,
+                    Err(e) => {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(write_error_to_fs_error(e));
+                    }
+                };
+                if let Err(e) = self
+                    .copy_directory_recursive(
+                        &source_dir.directory_id,
+                        &new_dir_id,
+                        &from_path,
+                        &to_path,
+                    )
+                    .await
+                {
                     self.stats.record_error();
                     self.stats.record_metadata_latency(start.elapsed());
-                    return Err(vault_error_to_fs_error(e));
+                    return Err(e);
                 }
-            };
+                self.metadata_cache.invalidate_prefix(&to_path);
+                self.path_cache.invalidate_prefix(&to_path);
+            } else if source_meta.is_symlink() {
+                let target = self
+                    .ops
+                    .read_symlink(&from_dir_id, &from_name)
+                    .await
+                    .map_err(vault_error_to_fs_error)?;
+                self.ops
+                    .create_symlink(&to_dir_id, &to_name, &target)
+                    .await
+                    .map_err(write_error_to_fs_error)?;
+                self.metadata_cache.invalidate(&to_path);
+            } else {
+                self.flush_write_buffer(&from_path).await.ok();
+                // Read source file
+                let content = match self.ops.read_file(&from_dir_id, &from_name).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        self.stats.record_error();
+                        self.stats.record_metadata_latency(start.elapsed());
+                        return Err(vault_error_to_fs_error(e));
+                    }
+                };
 
-            // Write to destination
-            if let Err(e) = self
-                .ops
-                .write_file(&to_dir_id, &to_name, &content.content)
-                .await
-            {
-                self.stats.record_error();
-                self.stats.record_metadata_latency(start.elapsed());
-                return Err(write_error_to_fs_error(e));
+                // Write to destination
+                if let Err(e) = self
+                    .ops
+                    .write_file(&to_dir_id, &to_name, &content.content)
+                    .await
+                {
+                    self.stats.record_error();
+                    self.stats.record_metadata_latency(start.elapsed());
+                    return Err(write_error_to_fs_error(e));
+                }
+
+                // Invalidate cache for the destination
+                self.metadata_cache.invalidate(&to_path);
             }
-
-            // Invalidate cache for the destination
-            self.metadata_cache.invalidate(&to_path);
 
             self.stats.record_metadata_latency(start.elapsed());
             Ok(())
@@ -693,7 +1068,7 @@ impl DavFileSystem for CryptomatorWebDav {
     fn have_props<'a>(
         &'a self,
         _path: &'a DavPath,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         // We don't support WebDAV properties beyond the basics
         Box::pin(async { false })
     }

@@ -7,7 +7,7 @@
 //! These benchmarks mirror `file_operations.rs` (which benchmarks AES-GCM)
 //! for easy comparison between the two cipher combos.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::file::FileContext;
 use oxcrypt_core::fs::file_ctrmac::{
@@ -15,6 +15,7 @@ use oxcrypt_core::fs::file_ctrmac::{
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use std::hint::black_box;
 
 fn setup_master_key() -> MasterKey {
     MasterKey::random().unwrap()
@@ -79,13 +80,13 @@ fn bench_ctrmac_file_decryption(c: &mut Criterion) {
 
             b.iter(|| {
                 // Realistic workflow: decrypt header first, then content
-                let header = decrypt_header(&encrypted_header, &master_key, FileContext::new()).unwrap();
+                let header = decrypt_header(&encrypted_header, &master_key, &FileContext::new()).unwrap();
                 let decrypted_content = decrypt_content(
                     &ciphertext,
                     &header.content_key,
                     &header_nonce,
                     &mac_key,
-                    FileContext::new(),
+                    &FileContext::new(),
                 )
                 .unwrap();
                 black_box(decrypted_content);
@@ -156,7 +157,7 @@ fn bench_ctrmac_chunked_operations(c: &mut Criterion) {
                     &content_key,
                     &header_nonce,
                     &mac_key,
-                    FileContext::new(),
+                    &FileContext::new(),
                 )
                 .unwrap();
                 black_box(decrypted);
@@ -183,7 +184,7 @@ fn bench_ctrmac_header_operations(c: &mut Criterion) {
         b.iter(|| {
             // Simulate opening multiple files (e.g., for directory stats)
             for encrypted_header in &encrypted_headers {
-                let header = decrypt_header(encrypted_header, &master_key, FileContext::new()).unwrap();
+                let header = decrypt_header(encrypted_header, &master_key, &FileContext::new()).unwrap();
                 black_box(header);
             }
         });

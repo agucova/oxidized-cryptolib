@@ -11,8 +11,16 @@
 //!
 //! Then run `tokio-console` in another terminal to connect (default: 127.0.0.1:6669).
 
-use anyhow::Result;
+// Use mimalloc for reduced allocation latency (enabled by default).
+// Disable with `--no-default-features` if debugging allocator issues.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+use anyhow::{Context, Result};
 use clap::Parser;
+use oxcrypt_mount::MountBackend;
+use oxcrypt_nfs::NfsBackend;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "tokio-console")]
@@ -90,15 +98,72 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Get password
-    let _password = match args.password {
+    let password = match args.password {
         Some(p) => p,
         None => rpassword::prompt_password("Vault password: ")?,
     };
 
-    tracing::info!(vault = ?args.vault, mountpoint = ?args.mountpoint, "Starting NFS mount");
+    if !args.vault.exists() {
+        anyhow::bail!("Vault path does not exist: {}", args.vault.display());
+    }
+    if !args.vault.is_dir() {
+        anyhow::bail!("Vault path is not a directory: {}", args.vault.display());
+    }
 
-    // TODO: Implement mount logic using NfsBackend
-    tracing::warn!("NFS backend not yet fully implemented");
+    if !args.mountpoint.exists() {
+        std::fs::create_dir_all(&args.mountpoint).with_context(|| {
+            format!(
+                "Failed to create mountpoint: {}",
+                args.mountpoint.display()
+            )
+        })?;
+    }
+    if !args.mountpoint.is_dir() {
+        anyhow::bail!(
+            "Mountpoint is not a directory: {}",
+            args.mountpoint.display()
+        );
+    }
 
+    let backend = match args.port {
+        Some(port) => NfsBackend::with_port(port),
+        None => NfsBackend::new(),
+    };
+
+    if !backend.is_available() {
+        let reason = backend
+            .unavailable_reason()
+            .unwrap_or_else(|| "NFS backend is unavailable".to_string());
+        anyhow::bail!(reason);
+    }
+
+    let vault_id = args
+        .vault
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("vault");
+
+    tracing::info!(
+        vault = ?args.vault,
+        mountpoint = ?args.mountpoint,
+        port = ?args.port,
+        "Starting NFS mount"
+    );
+
+    let handle = backend
+        .mount(vault_id, &args.vault, &password, &args.mountpoint)
+        .context("Failed to mount vault")?;
+
+    tracing::info!(mountpoint = ?handle.mountpoint(), "Vault mounted");
+    tracing::info!("Press Ctrl+C to unmount and exit");
+
+    tokio::signal::ctrl_c()
+        .await
+        .context("Failed to wait for Ctrl+C")?;
+
+    tracing::info!("Received interrupt signal, unmounting...");
+    handle.unmount().context("Failed to unmount")?;
+
+    tracing::info!("Unmounted successfully");
     Ok(())
 }

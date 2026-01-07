@@ -40,7 +40,14 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
         // Backdrop
         div {
             class: "dialog-backdrop",
+            tabindex: "-1",
+            autofocus: true,
             onclick: move |_| props.on_cancel.call(()),
+            onkeydown: move |e| {
+                if e.key() == Key::Escape {
+                    props.on_cancel.call(());
+                }
+            },
 
             // Dialog
             div {

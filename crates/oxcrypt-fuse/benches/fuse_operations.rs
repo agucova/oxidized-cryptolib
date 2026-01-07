@@ -6,11 +6,12 @@
 //! - Attribute cache operations
 //! - Directory cache operations
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use fuser::FileType;
 use oxcrypt_core::vault::path::{DirId, VaultPath};
 use oxcrypt_fuse::attr::{AttrCache, DirCache, DirListingEntry};
 use oxcrypt_fuse::inode::{InodeKind, InodeTable, ROOT_INODE};
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -44,12 +45,12 @@ fn inode_table_benchmarks(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             counter += 1;
-            let path = VaultPath::new(format!("file_{}", counter));
+            let path = VaultPath::new(format!("file_{counter}"));
             let kind = InodeKind::File {
                 dir_id: DirId::root(),
-                name: format!("file_{}", counter),
+                name: format!("file_{counter}"),
             };
-            black_box(table.get_or_insert(path, kind))
+            black_box(table.get_or_insert(&path, &kind))
         });
     });
 
@@ -61,9 +62,9 @@ fn inode_table_benchmarks(c: &mut Criterion) {
             dir_id: DirId::root(),
             name: "existing_file".to_string(),
         };
-        table.get_or_insert(path.clone(), kind.clone());
+        table.get_or_insert(&path.clone(), &kind.clone());
 
-        b.iter(|| black_box(table.get_or_insert(path.clone(), kind.clone())));
+        b.iter(|| black_box(table.get_or_insert(&path.clone(), &kind.clone())));
     });
 
     // Benchmark: get by inode number
@@ -74,7 +75,7 @@ fn inode_table_benchmarks(c: &mut Criterion) {
             dir_id: DirId::root(),
             name: "test_file".to_string(),
         };
-        let inode = table.get_or_insert(path, kind);
+        let inode = table.get_or_insert(&path, &kind);
 
         b.iter(|| black_box(table.get(inode)));
     });
@@ -93,7 +94,7 @@ fn inode_table_benchmarks(c: &mut Criterion) {
             dir_id: DirId::root(),
             name: "test_file".to_string(),
         };
-        table.get_or_insert(path.clone(), kind);
+        table.get_or_insert(&path.clone(), &kind);
 
         b.iter(|| black_box(table.get_inode(&path)));
     });
@@ -108,9 +109,9 @@ fn inode_table_benchmarks(c: &mut Criterion) {
                     dir_id: DirId::root(),
                     name: "temp_file".to_string(),
                 };
-                let inode = table.get_or_insert(path.clone(), kind.clone());
+                let inode = table.get_or_insert(&path.clone(), &kind.clone());
                 // Increment nlookup so forget won't evict
-                table.get_or_insert(path, kind);
+                table.get_or_insert(&path, &kind);
                 (table, inode)
             },
             |(table, inode)| black_box(table.forget(inode, 1)),
@@ -123,12 +124,12 @@ fn inode_table_benchmarks(c: &mut Criterion) {
         let table = Arc::new(InodeTable::new());
         // Pre-populate with some entries
         for i in 0..100 {
-            let path = VaultPath::new(format!("file_{}", i));
+            let path = VaultPath::new(format!("file_{i}"));
             let kind = InodeKind::File {
                 dir_id: DirId::root(),
-                name: format!("file_{}", i),
+                name: format!("file_{i}"),
             };
-            table.get_or_insert(path, kind);
+            table.get_or_insert(&path, &kind);
         }
 
         b.iter(|| {
@@ -139,7 +140,7 @@ fn inode_table_benchmarks(c: &mut Criterion) {
                     dir_id: DirId::root(),
                     name: format!("file_{}", i * 10),
                 };
-                black_box(table.get_or_insert(path, kind));
+                black_box(table.get_or_insert(&path, &kind));
             }
         });
     });
@@ -157,7 +158,8 @@ fn attr_cache_benchmarks(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             counter += 1;
-            black_box(cache.insert(counter, make_test_attr(counter)));
+            cache.insert(counter, make_test_attr(counter));
+            black_box(());
         });
     });
 
@@ -183,7 +185,10 @@ fn attr_cache_benchmarks(c: &mut Criterion) {
                 cache.insert(42, make_test_attr(42));
                 cache
             },
-            |cache| black_box(cache.invalidate(42)),
+            |cache| {
+                let _: () = cache.invalidate(42);
+                black_box(());
+            },
             BatchSize::SmallInput,
         );
     });
@@ -194,7 +199,8 @@ fn attr_cache_benchmarks(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             counter += 1;
-            black_box(cache.insert_negative(1, format!("missing_{}", counter)));
+            cache.insert_negative(1, format!("missing_{counter}"));
+            black_box(());
         });
     });
 
@@ -243,7 +249,12 @@ fn dir_cache_benchmarks(c: &mut Criterion) {
                 } else {
                     FileType::RegularFile
                 },
-                name: format!("entry_{}", i),
+                dir_id: if i % 5 == 0 {
+                    Some(DirId::from_raw(format!("dir-{i}")))
+                } else {
+                    None
+                },
+                name: format!("entry_{i}"),
             })
             .collect()
     }
@@ -255,7 +266,8 @@ fn dir_cache_benchmarks(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             counter += 1;
-            black_box(cache.insert(counter, make_entries(10)));
+            let _: () = cache.insert(counter, make_entries(10));
+            black_box(());
         });
     });
 
@@ -266,7 +278,8 @@ fn dir_cache_benchmarks(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             counter += 1;
-            black_box(cache.insert(counter, make_entries(100)));
+            let _: () = cache.insert(counter, make_entries(100));
+            black_box(());
         });
     });
 
@@ -295,7 +308,10 @@ fn dir_cache_benchmarks(c: &mut Criterion) {
                 cache.insert(1, make_entries(50));
                 cache
             },
-            |cache| black_box(cache.invalidate(1)),
+            |cache| {
+                let _: () = cache.invalidate(1);
+                black_box(());
+            },
             BatchSize::SmallInput,
         );
     });
@@ -316,17 +332,18 @@ fn realistic_patterns(c: &mut Criterion) {
         // Prepare a directory with entries
         let entries: Vec<DirListingEntry> = (0..20)
             .map(|i| {
-                let name = format!("file_{}", i);
+                let name = format!("file_{i}");
                 let path = VaultPath::new(&name);
                 let kind = InodeKind::File {
                     dir_id: DirId::root(),
                     name: name.clone(),
                 };
-                let inode = inode_table.get_or_insert(path, kind);
+                let inode = inode_table.get_or_insert(&path, &kind);
                 attr_cache.insert(inode, make_test_attr(inode));
                 DirListingEntry {
                     inode,
                     file_type: FileType::RegularFile,
+                    dir_id: None,
                     name,
                 }
             })
@@ -337,7 +354,7 @@ fn realistic_patterns(c: &mut Criterion) {
             // Get directory listing
             if let Some(entries) = dir_cache.get(ROOT_INODE) {
                 // Lookup each entry (simulating stat)
-                for entry in entries.iter() {
+                for entry in &entries {
                     black_box(attr_cache.get(entry.inode));
                     black_box(inode_table.get(entry.inode));
                 }
@@ -358,7 +375,7 @@ fn realistic_patterns(c: &mut Criterion) {
             let path = VaultPath::new(components[..=i].join("/"));
             let kind = if i < 3 {
                 InodeKind::Directory {
-                    dir_id: DirId::from_raw(format!("dir-{}", i)),
+                    dir_id: DirId::from_raw(format!("dir-{i}")),
                 }
             } else {
                 InodeKind::File {
@@ -366,7 +383,7 @@ fn realistic_patterns(c: &mut Criterion) {
                     name: name.to_string(),
                 }
             };
-            let inode = inode_table.get_or_insert(path, kind);
+            let inode = inode_table.get_or_insert(&path, &kind);
             attr_cache.insert(inode, make_test_attr(inode));
             inodes.push(inode);
         }
@@ -388,12 +405,12 @@ fn realistic_patterns(c: &mut Criterion) {
         // Pre-create 100 files
         let inodes: Vec<u64> = (0..100)
             .map(|i| {
-                let path = VaultPath::new(format!("file_{}.txt", i));
+                let path = VaultPath::new(format!("file_{i}.txt"));
                 let kind = InodeKind::File {
                     dir_id: DirId::root(),
-                    name: format!("file_{}.txt", i),
+                    name: format!("file_{i}.txt"),
                 };
-                let inode = inode_table.get_or_insert(path, kind);
+                let inode = inode_table.get_or_insert(&path, &kind);
                 attr_cache.insert(inode, make_test_attr(inode));
                 inode
             })
@@ -449,7 +466,7 @@ fn end_to_end_disk_io(c: &mut Criterion) {
     let master_key = match extract_master_key(&vault_path, password) {
         Ok(key) => key,
         Err(e) => {
-            eprintln!("Failed to extract master key: {:?}", e);
+            eprintln!("Failed to extract master key: {e:?}");
             group.finish();
             return;
         }
@@ -521,7 +538,7 @@ fn end_to_end_disk_io(c: &mut Criterion) {
                 dir_id: root_dir.clone(),
                 name: file_info.name.clone(),
             };
-            let inode = inode_table.get_or_insert(path, kind);
+            let inode = inode_table.get_or_insert(&path, &kind);
 
             // 2. Getattr: check cache, or fetch from list (in real FUSE, would be stat)
             let _attr = if let Some(cached) = attr_cache.get(inode) {

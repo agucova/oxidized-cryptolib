@@ -1,0 +1,131 @@
+name: OxCryptFileProvider
+options:
+  bundleIdPrefix: com.agucova.oxcrypt
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    # DEVELOPMENT_TEAM comes from build script (auto-detected or CI env var)
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Build only for arm64 (Rust library is not universal)
+    ARCHS: arm64
+
+schemes:
+  OxCryptFileProvider:
+    build:
+      targets:
+        OxCryptFileProvider: all
+        OxCryptFileProviderExtension: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
+targets:
+  # Host App - Required to contain the File Provider extension
+  OxCryptFileProvider:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp
+        includes:
+          - "*.swift"
+      - path: Shared
+        includes:
+          - "*.swift"
+        excludes:
+          - "generated/**"
+      - path: Shared/generated
+        includes:
+          - "SwiftBridgeCore.swift"
+          - "SwiftBridgeCore.h"
+          - "generated/*.swift"
+          - "generated/*.h"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxcrypt.fileprovider
+        INFOPLIST_FILE: Info.plist
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+        LIBRARY_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/../../../target/release"
+          - "$(PROJECT_DIR)/../../../target/debug"
+        OTHER_LDFLAGS:
+          - "-loxcrypt_fileprovider"
+        SWIFT_OBJC_BRIDGING_HEADER: "HostApp/Bridging-Header.h"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_ENTITLEMENTS: OxCryptFileProvider.entitlements
+          ENABLE_HARDENED_RUNTIME: NO
+        Release:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_ENTITLEMENTS: OxCryptFileProvider-Release.entitlements
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: "--timestamp --options=runtime"
+    dependencies:
+      - target: OxCryptFileProviderExtension
+        embed: true
+        codeSign: true
+
+  # File Provider Extension
+  OxCryptFileProviderExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Sources
+        includes:
+          - "*.swift"
+      - path: Shared
+        includes:
+          - "*.swift"
+        excludes:
+          - "generated/**"
+      - path: Shared/generated
+        includes:
+          - "SwiftBridgeCore.swift"
+          - "SwiftBridgeCore.h"
+          - "generated/*.swift"
+          - "generated/*.h"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxcrypt.fileprovider.extension
+        INFOPLIST_FILE: Extension-Info.plist
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "@executable_path/../../../../Frameworks"
+        LIBRARY_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/../../../target/release"
+          - "$(PROJECT_DIR)/../../../target/debug"
+        OTHER_LDFLAGS:
+          - "-loxcrypt_fileprovider"
+        SWIFT_OBJC_BRIDGING_HEADER: "Sources/Bridging-Header.h"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_ENTITLEMENTS: OxCryptFileProviderExtension.entitlements
+          ENABLE_HARDENED_RUNTIME: NO
+        Release:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_ENTITLEMENTS: OxCryptFileProviderExtension-Release.entitlements
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: "--timestamp --options=runtime"
+    entitlements:
+      path: OxCryptFileProviderExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.files.bookmarks.app-scope: true
+        com.apple.security.files.bookmarks.document-scope: true
+        com.apple.security.application-groups:
+          - 2LR4AGRZW3.group.com.agucova.oxcrypt.fileprovider
+        com.apple.security.keychain-access-groups:
+          - 2LR4AGRZW3.com.agucova.oxcrypt.fileprovider
+        keychain-access-groups:
+          - 2LR4AGRZW3.com.agucova.oxcrypt.fileprovider

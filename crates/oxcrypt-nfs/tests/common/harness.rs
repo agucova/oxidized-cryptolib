@@ -13,9 +13,10 @@ use oxcrypt_mount::{cleanup_test_mounts, force_unmount};
 use oxcrypt_nfs::CryptomatorNFS;
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
+use std::io::IsTerminal;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -30,28 +31,24 @@ static CLEANUP_ONCE: Once = Once::new();
 ///
 /// This function is called automatically before creating new mounts,
 /// and runs at most once per test process. It cleans up mounts with
-/// `cryptomator-test` in their fsname that are unresponsive.
+/// `cryptomator-test` or `cryptomator:test` in their fsname.
 fn cleanup_stale_test_mounts() {
     CLEANUP_ONCE.call_once(|| {
-        // Use a short timeout - if mount is unresponsive for 500ms, it's stale
-        let timeout = Duration::from_millis(500);
-        match cleanup_test_mounts(timeout) {
+        match cleanup_test_mounts() {
             Ok(results) => {
                 for result in results {
-                    if result.success {
-                        if let oxcrypt_mount::CleanupAction::Unmounted = result.action {
+                    if result.success
+                        && let oxcrypt_mount::CleanupAction::Unmounted = result.action {
                             eprintln!(
                                 "[nfs-test-harness] Cleaned stale test mount: {}",
                                 result.mountpoint.display()
                             );
                         }
-                    }
                 }
             }
             Err(e) => {
                 eprintln!(
-                    "[nfs-test-harness] Warning: Failed to clean stale mounts: {}",
-                    e
+                    "[nfs-test-harness] Warning: Failed to clean stale mounts: {e}"
                 );
             }
         }
@@ -93,7 +90,7 @@ impl TestMount {
         // Create the vault
         let _vault_ops = VaultCreator::new(&vault_path, TEST_PASSWORD)
             .create()
-            .map_err(|e| io::Error::other(format!("Failed to create vault: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("Failed to create vault: {e}")))?;
 
         Self::mount_vault(&vault_path, TEST_PASSWORD, Some(temp_vault))
     }
@@ -112,7 +109,7 @@ impl TestMount {
         if !test_vault_path.exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("test_vault not found at {:?}", test_vault_path),
+                format!("test_vault not found at {test_vault_path:?}"),
             ));
         }
 
@@ -131,7 +128,7 @@ impl TestMount {
         // Open vault for NFS
         let ops = Arc::new(
             oxcrypt_core::vault::operations_async::VaultOperationsAsync::open(vault_path, password)
-                .map_err(|e| io::Error::other(format!("Failed to open vault: {}", e)))?,
+                .map_err(|e| io::Error::other(format!("Failed to open vault: {e}")))?,
         );
 
         // Create NFS filesystem
@@ -148,7 +145,7 @@ impl TestMount {
         let mount_point = temp_mount.path().to_path_buf();
 
         // Start NFS server
-        let bind_addr = format!("127.0.0.1:{}", port);
+        let bind_addr = format!("127.0.0.1:{port}");
         let server_handle = {
             let _guard = runtime.enter();
             runtime.spawn(async move {
@@ -157,7 +154,7 @@ impl TestMount {
                         let _ = listener.handle_forever().await;
                     }
                     Err(e) => {
-                        eprintln!("NFS server error: {}", e);
+                        eprintln!("NFS server error: {e}");
                     }
                 }
             })
@@ -167,7 +164,13 @@ impl TestMount {
         std::thread::sleep(Duration::from_millis(200));
 
         // Try to mount
-        let mounted = Self::run_mount_command(port, &mount_point).is_ok();
+        let mounted = match Self::run_mount_command(port, &mount_point) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[nfs-test-harness] Warning: mount failed: {e}");
+                false
+            }
+        };
 
         if mounted {
             // Wait for mount to be ready
@@ -190,8 +193,7 @@ impl TestMount {
     fn run_mount_command(port: u16, mountpoint: &Path) -> io::Result<()> {
         let port_str = port.to_string();
         let options = format!(
-            "nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={},mountport={}",
-            port_str, port_str
+            "nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={port_str},mountport={port_str}"
         );
 
         let output = Command::new("mount_nfs")
@@ -200,13 +202,55 @@ impl TestMount {
             .output()?;
 
         if output.status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "mount_nfs failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )))
+            return Ok(());
         }
+
+        let direct_err = String::from_utf8_lossy(&output.stderr).to_string();
+        let wants_sudo = std::env::var_os("OXCRYPT_NFS_SUDO").is_some();
+        if wants_sudo {
+            let sudo_output = Command::new("sudo")
+                .args(["-n", "mount_nfs", "-o", &options, "localhost:/"])
+                .arg(mountpoint)
+                .output()?;
+            if sudo_output.status.success() {
+                return Ok(());
+            }
+
+            if io::stdin().is_terminal() && io::stdout().is_terminal() {
+                let status = Command::new("sudo")
+                    .args(["mount_nfs", "-o", &options, "localhost:/"])
+                    .arg(mountpoint)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .status()?;
+                if status.success() {
+                    return Ok(());
+                }
+                return Err(io::Error::other(format!(
+                    "mount_nfs failed (direct: {direct_err}; sudo: exit {status})"
+                )));
+            }
+
+            return Err(io::Error::other(format!(
+                "mount_nfs failed (direct: {direct_err}; sudo: non-interactive denied; run `sudo -v` before tests)"
+            )));
+        }
+
+        let sudo_output = Command::new("sudo")
+            .args(["-n", "mount_nfs", "-o", &options, "localhost:/"])
+            .arg(mountpoint)
+            .output()?;
+
+        if sudo_output.status.success() {
+            return Ok(());
+        }
+
+        Err(io::Error::other(format!(
+            "mount_nfs failed (direct: {}; sudo: {})",
+            direct_err,
+            String::from_utf8_lossy(&sudo_output.stderr)
+        )))
     }
 
     #[cfg(target_os = "linux")]
@@ -223,13 +267,57 @@ impl TestMount {
             .output()?;
 
         if output.status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "mount.nfs failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )))
+            return Ok(());
         }
+
+        let direct_err = String::from_utf8_lossy(&output.stderr).to_string();
+        let wants_sudo = std::env::var_os("OXCRYPT_NFS_SUDO").is_some();
+        if wants_sudo {
+            let sudo_output = Command::new("sudo")
+                .args(["-n", "mount.nfs", "-o", &options, "localhost:/"])
+                .arg(mountpoint)
+                .output()?;
+            if sudo_output.status.success() {
+                return Ok(());
+            }
+
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                let status = Command::new("sudo")
+                    .args(["mount.nfs", "-o", &options, "localhost:/"])
+                    .arg(mountpoint)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .status()?;
+                if status.success() {
+                    return Ok(());
+                }
+                return Err(io::Error::other(format!(
+                    "mount.nfs failed (direct: {}; sudo: exit {})",
+                    direct_err, status
+                )));
+            }
+
+            return Err(io::Error::other(format!(
+                "mount.nfs failed (direct: {}; sudo: non-interactive denied; run `sudo -v` before tests)",
+                direct_err
+            )));
+        }
+
+        let sudo_output = Command::new("sudo")
+            .args(["-n", "mount.nfs", "-o", &options, "localhost:/"])
+            .arg(mountpoint)
+            .output()?;
+
+        if sudo_output.status.success() {
+            return Ok(());
+        }
+
+        Err(io::Error::other(format!(
+            "mount.nfs failed (direct: {}; sudo: {})",
+            direct_err,
+            String::from_utf8_lossy(&sudo_output.stderr)
+        )))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -370,7 +458,7 @@ impl TestMount {
     /// List directory contents.
     pub fn list_dir(&self, path: &str) -> io::Result<Vec<String>> {
         let entries = fs::read_dir(self.full_path(path))?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         Ok(entries)
@@ -411,7 +499,7 @@ impl Drop for TestMount {
         // Unmount if mounted, using force_unmount from mount-common
         if self.mounted {
             // Try graceful unmount first
-            if let Err(_) = self.run_unmount() {
+            if self.run_unmount().is_err() {
                 // Fall back to force_unmount from mount-common
                 if let Err(e) = force_unmount(&self.mount_point) {
                     eprintln!(
@@ -424,4 +512,3 @@ impl Drop for TestMount {
         }
     }
 }
-

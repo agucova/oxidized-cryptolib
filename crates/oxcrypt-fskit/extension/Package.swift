@@ -7,7 +7,7 @@ let package = Package(
         .macOS("26.0")  // FSPathURLResource requires macOS 26.0
     ],
     products: [
-        .library(
+        .executable(
             name: "OxVaultFSExtension",
             targets: ["OxVaultFSExtension"]
         ),
@@ -17,12 +17,19 @@ let package = Package(
         .package(name: "OxVaultFFI", path: "../swift"),
     ],
     targets: [
-        .target(
+        .executableTarget(
             name: "OxVaultFSExtension",
             dependencies: [
                 .product(name: "OxVaultFFI", package: "OxVaultFFI")
             ],
-            path: "Sources"
+            path: "Sources",
+            linkerSettings: [
+                // Link against the Rust static library
+                .unsafeFlags([
+                    "-L", "../../../target/release",
+                    "-loxcrypt_fskit"
+                ])
+            ]
         ),
         .testTarget(
             name: "OxVaultFSExtensionTests",

@@ -44,8 +44,7 @@ async fn test_lock_returns_lock_token() {
     // Lock response should contain locktoken
     assert!(
         body.contains("locktoken") || body.contains("Lock-Token") || body.contains("href"),
-        "Lock response should contain lock token information: {}",
-        body
+        "Lock response should contain lock token information: {body}"
     );
 }
 
@@ -63,8 +62,7 @@ async fn test_lock_response_contains_lockdiscovery() {
     // Lock response should contain lockdiscovery element
     assert!(
         body.contains("lockdiscovery") || body.contains("activelock"),
-        "Lock response should contain lockdiscovery: {}",
-        body
+        "Lock response should contain lockdiscovery: {body}"
     );
 }
 
@@ -163,8 +161,7 @@ async fn test_propfind_shows_lock_support() {
     // Just verify PROPFIND works after the file exists
     assert!(
         body.contains("response") || body.contains("multistatus"),
-        "PROPFIND should return valid response: {}",
-        body
+        "PROPFIND should return valid response: {body}"
     );
 }
 
@@ -182,8 +179,7 @@ async fn test_propfind_after_lock() {
     let (status, body) = server.propfind_body("/locked_file.txt", "0").await;
     assert!(
         status == StatusCode::MULTI_STATUS || status.is_success(),
-        "PROPFIND should work on locked file, got {}",
-        status
+        "PROPFIND should work on locked file, got {status}"
     );
 
     // May show lockdiscovery if server tracks locks

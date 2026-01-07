@@ -113,7 +113,6 @@ impl ThroughputHistory {
 /// Chart color scheme for light/dark themes
 struct ChartColors {
     background: &'static str,
-    grid: &'static str,
     text: &'static str,
     read_line: &'static str,
     read_fill: &'static str,
@@ -125,7 +124,6 @@ impl ChartColors {
     fn light() -> Self {
         Self {
             background: "#f3f4f6",  // gray-100
-            grid: "#e5e7eb",        // gray-200
             text: "#6b7280",        // gray-500
             read_line: "#3b82f6",   // blue-500
             read_fill: "#3b82f620", // blue-500 with alpha
@@ -137,7 +135,6 @@ impl ChartColors {
     fn dark() -> Self {
         Self {
             background: "#1f2937",  // gray-800
-            grid: "#374151",        // gray-700
             text: "#d1d5db",        // gray-300 (lighter for better contrast)
             read_line: "#60a5fa",   // blue-400
             read_fill: "#60a5fa30", // blue-400 with alpha
@@ -163,7 +160,7 @@ fn parse_hex_color_alpha(hex: &str) -> (u8, u8, u8, f64) {
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
     let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
     let a = if hex.len() >= 8 {
-        u8::from_str_radix(&hex[6..8], 16).unwrap_or(255) as f64 / 255.0
+        f64::from(u8::from_str_radix(&hex[6..8], 16).unwrap_or(255)) / 255.0
     } else {
         1.0
     };
@@ -195,7 +192,6 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
         let y_range = 0.0..max_rate;
 
         let text_color = parse_hex_color(colors.text);
-        let grid_color = parse_hex_color(colors.grid);
 
         let mut chart = ChartBuilder::on(&root)
             .margin(8)
@@ -214,11 +210,13 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
             .label_style(("sans-serif", 12, &RGBColor(text_color.0, text_color.1, text_color.2)))
             .x_label_formatter(&|x| {
                 // x=0 is 60s ago, x=60 is now
+                // x is always in [0, 60] range, safe to cast to i32
+                #[allow(clippy::cast_possible_truncation)]
                 let secs_ago = (60.0 - x).round() as i32;
                 if secs_ago == 0 {
                     "now".to_string()
                 } else {
-                    format!("{}s", secs_ago)
+                    format!("{secs_ago}s")
                 }
             })
             .y_label_formatter(&|y| format_rate_short(*y))
@@ -245,7 +243,7 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
             // Draw filled area for reads
             chart
                 .draw_series(AreaSeries::new(
-                    read_data.iter().cloned(),
+                    read_data.iter().copied(),
                     0.0,
                     RGBAColor(read_fill.0, read_fill.1, read_fill.2, read_fill.3),
                 ))
@@ -254,7 +252,7 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
             // Draw line for reads
             chart
                 .draw_series(LineSeries::new(
-                    read_data.iter().cloned(),
+                    read_data.iter().copied(),
                     ShapeStyle::from(&RGBColor(read_line_color.0, read_line_color.1, read_line_color.2))
                         .stroke_width(2),
                 ))
@@ -275,7 +273,7 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
             // Draw filled area for writes
             chart
                 .draw_series(AreaSeries::new(
-                    write_data.iter().cloned(),
+                    write_data.iter().copied(),
                     0.0,
                     RGBAColor(write_fill.0, write_fill.1, write_fill.2, write_fill.3),
                 ))
@@ -284,7 +282,7 @@ fn render_throughput_chart(history: &ThroughputHistory, is_dark: bool, width: u3
             // Draw line for writes
             chart
                 .draw_series(LineSeries::new(
-                    write_data.iter().cloned(),
+                    write_data.iter().copied(),
                     ShapeStyle::from(&RGBColor(write_line_color.0, write_line_color.1, write_line_color.2))
                         .stroke_width(2),
                 ))
@@ -302,7 +300,7 @@ fn format_rate_short(bytes_per_sec: f64) -> String {
     if bytes_per_sec < 1.0 {
         "0".to_string()
     } else if bytes_per_sec < 1024.0 {
-        format!("{:.0}B", bytes_per_sec)
+        format!("{bytes_per_sec:.0}B")
     } else if bytes_per_sec < 1024.0 * 1024.0 {
         format!("{:.0}K", bytes_per_sec / 1024.0)
     } else if bytes_per_sec < 1024.0 * 1024.0 * 1024.0 {
@@ -398,7 +396,7 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
 #[allow(non_snake_case)]
 fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>, is_dark: bool) -> Element {
     // Extract current values
-    let activity = stats.activity_status(Duration::from_millis(500));
+    let activity = stats.activity_status(Duration::from_secs(3));
     let session_duration = stats.session_duration();
     let bytes_read = stats.bytes_read();
     let bytes_written = stats.bytes_written();
@@ -561,7 +559,7 @@ fn format_rate(bytes_per_sec: f64) -> String {
     if bytes_per_sec < 1.0 {
         "0 B/s".to_string()
     } else if bytes_per_sec < 1024.0 {
-        format!("{:.0} B/s", bytes_per_sec)
+        format!("{bytes_per_sec:.0} B/s")
     } else if bytes_per_sec < 1024.0 * 1024.0 {
         format!("{:.1} KB/s", bytes_per_sec / 1024.0)
     } else if bytes_per_sec < 1024.0 * 1024.0 * 1024.0 {
@@ -578,7 +576,7 @@ fn format_latency(latency_ms: f64) -> String {
     } else if latency_ms < 1.0 {
         format!("{:.0}µs", latency_ms * 1000.0)
     } else if latency_ms < 1000.0 {
-        format!("{:.1}ms", latency_ms)
+        format!("{latency_ms:.1}ms")
     } else {
         format!("{:.1}s", latency_ms / 1000.0)
     }
@@ -652,6 +650,8 @@ fn CacheHitRateView(hit_rate: f64, hits: u64, misses: u64) -> Element {
     let total = hits + misses;
 
     // Calculate percentage for the progress bar
+    // hit_rate is in [0.0, 1.0], so hit_rate * 100.0 is in [0.0, 100.0]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let percentage = (hit_rate * 100.0) as u32;
 
     // Color based on hit rate
@@ -717,7 +717,7 @@ fn format_duration(duration: Duration) -> String {
     } else if mins > 0 {
         format!("{}m {}s", mins, secs % 60)
     } else {
-        format!("{}s", secs)
+        format!("{secs}s")
     }
 }
 

@@ -132,8 +132,14 @@ pub fn ChangePasswordDialog(props: ChangePasswordDialogProps) -> Element {
         // Backdrop
         div {
             class: "dialog-backdrop",
+            tabindex: "-1",
             onclick: move |_| {
                 if !is_changing {
+                    props.on_cancel.call(());
+                }
+            },
+            onkeydown: move |e| {
+                if e.key() == Key::Escape && !is_changing {
                     props.on_cancel.call(());
                 }
             },

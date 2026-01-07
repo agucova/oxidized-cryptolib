@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Host app cannot be sandboxed as it needs to register Mach services -->
+	<!-- The File Provider extension remains sandboxed via OxCryptFileProviderExtension.entitlements -->
+
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>2LR4AGRZW3.group.com.agucova.oxcrypt.fileprovider</string>
+	</array>
+
+	<key>com.apple.security.keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.agucova.oxcrypt.fileprovider</string>
+	</array>
+
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.agucova.oxcrypt.fileprovider</string>
+	</array>
+</dict>
+</plist>

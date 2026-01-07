@@ -92,22 +92,23 @@ impl VaultErrorCategory {
 impl From<&VaultOperationError> for VaultErrorCategory {
     fn from(e: &VaultOperationError) -> Self {
         match e {
-            VaultOperationError::PathNotFound { .. } => Self::NotFound,
-            VaultOperationError::FileNotFound { .. } => Self::NotFound,
-            VaultOperationError::DirectoryNotFound { .. } => Self::NotFound,
-            VaultOperationError::SymlinkNotFound { .. } => Self::NotFound,
+            VaultOperationError::PathNotFound { .. }
+            | VaultOperationError::FileNotFound { .. }
+            | VaultOperationError::DirectoryNotFound { .. }
+            | VaultOperationError::SymlinkNotFound { .. } => Self::NotFound,
             VaultOperationError::NotADirectory { .. } => Self::NotDirectory,
             VaultOperationError::NotAFile { .. } => Self::IsDirectory,
-            VaultOperationError::NotASymlink { .. } => Self::InvalidArgument,
-            VaultOperationError::EmptyPath => Self::InvalidArgument,
-            VaultOperationError::Filename(_) => Self::InvalidArgument,
+            VaultOperationError::NotASymlink { .. }
+            | VaultOperationError::EmptyPath
+            | VaultOperationError::Filename(_) => Self::InvalidArgument,
             VaultOperationError::Io { source, .. } => io_error_category(source),
             // Crypto/decryption errors are I/O errors from the caller's perspective
-            VaultOperationError::FileDecryption(_) => Self::IoError,
-            VaultOperationError::FileContentDecryption(_) => Self::IoError,
-            VaultOperationError::InvalidVaultStructure { .. } => Self::IoError,
-            VaultOperationError::Symlink(_) => Self::IoError,
-            VaultOperationError::Streaming { .. } => Self::IoError,
+            VaultOperationError::FileDecryption(_)
+            | VaultOperationError::FileContentDecryption(_)
+            | VaultOperationError::InvalidVaultStructure { .. }
+            | VaultOperationError::Symlink(_)
+            | VaultOperationError::KeyAccess { .. }
+            | VaultOperationError::Streaming { .. } => Self::IoError,
         }
     }
 }
@@ -121,27 +122,25 @@ impl From<VaultOperationError> for VaultErrorCategory {
 impl From<&VaultWriteError> for VaultErrorCategory {
     fn from(e: &VaultWriteError) -> Self {
         match e {
-            VaultWriteError::DirectoryNotFound { .. } => Self::NotFound,
-            VaultWriteError::FileNotFound { .. } => Self::NotFound,
-            VaultWriteError::FileAlreadyExists { .. } => Self::AlreadyExists,
-            VaultWriteError::DirectoryAlreadyExists { .. } => Self::AlreadyExists,
-            VaultWriteError::SymlinkAlreadyExists { .. } => Self::AlreadyExists,
-            VaultWriteError::PathExists { .. } => Self::AlreadyExists,
+            VaultWriteError::DirectoryNotFound { .. } | VaultWriteError::FileNotFound { .. } => {
+                Self::NotFound
+            }
+            VaultWriteError::FileAlreadyExists { .. }
+            | VaultWriteError::DirectoryAlreadyExists { .. }
+            | VaultWriteError::SymlinkAlreadyExists { .. }
+            | VaultWriteError::PathExists { .. } => Self::AlreadyExists,
             VaultWriteError::DirectoryNotEmpty { .. } => Self::NotEmpty,
-            VaultWriteError::SameSourceAndDestination { .. } => Self::InvalidArgument,
-            VaultWriteError::Filename(_) => Self::InvalidArgument,
+            VaultWriteError::SameSourceAndDestination { .. }
+            | VaultWriteError::Filename(_)
+            | VaultWriteError::TypeMismatch { .. }
+            | VaultWriteError::CrossDirectoryDirSwap { .. } => Self::InvalidArgument,
             VaultWriteError::Io { source, .. } => io_error_category(source),
             // Crypto/encryption errors are I/O errors from the caller's perspective
-            VaultWriteError::Encryption(_) => Self::IoError,
-            VaultWriteError::AtomicWriteFailed { .. } => Self::IoError,
-            VaultWriteError::Symlink(_) => Self::IoError,
-            VaultWriteError::Streaming { .. } => Self::IoError,
-            // Type mismatch (e.g., trying to write a file as a directory)
-            VaultWriteError::TypeMismatch { .. } => Self::InvalidArgument,
-            // Cross-directory dir swap (rename) errors
-            VaultWriteError::CrossDirectoryDirSwap { .. } => Self::InvalidArgument,
-            // Rollback failure after swap - treat as I/O error
-            VaultWriteError::SwapRollbackFailed { .. } => Self::IoError,
+            VaultWriteError::Encryption(_)
+            | VaultWriteError::AtomicWriteFailed { .. }
+            | VaultWriteError::Symlink(_)
+            | VaultWriteError::Streaming { .. }
+            | VaultWriteError::SwapRollbackFailed { .. } => Self::IoError,
         }
     }
 }
@@ -256,7 +255,7 @@ mod tests {
     fn test_vault_write_error_already_exists() {
         let err = VaultWriteError::FileAlreadyExists {
             filename: "test.txt".to_string(),
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(
             VaultErrorCategory::from(&err),
@@ -268,7 +267,7 @@ mod tests {
     #[test]
     fn test_vault_write_error_directory_not_empty() {
         let err = VaultWriteError::DirectoryNotEmpty {
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(VaultErrorCategory::from(&err), VaultErrorCategory::NotEmpty);
         assert_eq!(VaultErrorCategory::from(&err).to_errno(), libc::ENOTEMPTY);
@@ -278,7 +277,7 @@ mod tests {
     fn test_vault_write_error_directory_already_exists() {
         let err = VaultWriteError::DirectoryAlreadyExists {
             name: "test".to_string(),
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(
             VaultErrorCategory::from(&err),
@@ -289,7 +288,7 @@ mod tests {
     #[test]
     fn test_vault_write_error_same_source_and_destination() {
         let err = VaultWriteError::SameSourceAndDestination {
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(
             VaultErrorCategory::from(&err),
@@ -324,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_io_error_other() {
-        let err = io::Error::new(io::ErrorKind::Other, "other");
+        let err = io::Error::other("other");
         assert_eq!(VaultErrorCategory::from(&err), VaultErrorCategory::IoError);
         assert_eq!(VaultErrorCategory::from(&err).to_errno(), libc::EIO);
     }
@@ -338,7 +337,7 @@ mod tests {
         assert_eq!(io_error_to_errno(&err), libc::EACCES);
 
         // Error without raw OS error returns EIO
-        let err = io::Error::new(io::ErrorKind::Other, "custom error");
+        let err = io::Error::other("custom error");
         assert_eq!(io_error_to_errno(&err), libc::EIO);
     }
 
@@ -381,7 +380,7 @@ mod tests {
         assert_eq!(category, VaultErrorCategory::NotFound);
 
         let err = VaultWriteError::DirectoryNotEmpty {
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         let category: VaultErrorCategory = err.into();
         assert_eq!(category, VaultErrorCategory::NotEmpty);
@@ -465,7 +464,7 @@ mod tests {
 
         let errnos: Vec<i32> = categories.iter().map(|c| c.to_errno()).collect();
         let mut sorted = errnos.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
 
         assert_eq!(

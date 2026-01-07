@@ -53,6 +53,7 @@ impl WebDavBackend {
     /// Set the port for the WebDAV server.
     ///
     /// Use 0 for auto-assignment (recommended).
+    #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.config.port = port;
         self
@@ -61,6 +62,7 @@ impl WebDavBackend {
     /// Set the bind address for the WebDAV server.
     ///
     /// Default is localhost (127.0.0.1) for security.
+    #[must_use]
     pub fn with_bind_address(mut self, addr: std::net::IpAddr) -> Self {
         self.config.bind_address = addr;
         self
@@ -111,8 +113,7 @@ impl MountBackend for WebDavBackend {
         // Create a new Tokio runtime for the server
         let runtime = Runtime::new().map_err(|e| {
             MountError::Mount(std::io::Error::other(format!(
-                "Failed to create tokio runtime: {}",
-                e
+                "Failed to create tokio runtime: {e}"
             )))
         })?;
 
@@ -129,8 +130,7 @@ impl MountBackend for WebDavBackend {
             WebDavServer::start(fs, config).await
         }).map_err(|e| {
             MountError::Mount(std::io::Error::other(format!(
-                "Failed to start WebDAV server: {}",
-                e
+                "Failed to start WebDAV server: {e}"
             )))
         })?;
 
@@ -138,7 +138,7 @@ impl MountBackend for WebDavBackend {
         info!(url = %url, "WebDAV server started");
 
         // Attempt auto-mount on macOS
-        let auto_mounted = if mountpoint.exists() || mountpoint.parent().map(|p| p.exists()).unwrap_or(false) {
+        let auto_mounted = if mountpoint.exists() || mountpoint.parent().is_some_and(Path::exists) {
             runtime.block_on(async {
                 match auto_mount_macos(&url, mountpoint).await {
                     Ok(()) => {
@@ -195,6 +195,17 @@ impl MountHandle for WebDavMountHandle {
         &self.mountpoint
     }
 
+    fn display_location(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            return Some(self.url.clone());
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
     fn stats(&self) -> Option<Arc<VaultStats>> {
         Some(Arc::clone(&self.stats))
     }
@@ -222,11 +233,10 @@ impl MountHandle for WebDavMountHandle {
         info!(url = %self.url, "Force unmounting WebDAV");
 
         // Force unmount using OS tools if we auto-mounted
-        if self.auto_mounted {
-            if let Err(e) = force_unmount_macos(&self.mountpoint) {
+        if self.auto_mounted
+            && let Err(e) = force_unmount_macos(&self.mountpoint) {
                 warn!(error = %e, "Force unmount failed");
             }
-        }
 
         // Stop the server
         if let (Some(server), Some(runtime)) = (self.server.take(), self.runtime.take()) {
@@ -268,12 +278,12 @@ mod tests {
     fn test_backend_config() {
         let backend = WebDavBackend::new()
             .with_port(8080)
-            .with_bind_address(std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)));
+            .with_bind_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
 
         assert_eq!(backend.config.port, 8080);
         assert_eq!(
             backend.config.bind_address,
-            std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
         );
     }
 }

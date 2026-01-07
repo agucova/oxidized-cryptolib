@@ -123,7 +123,7 @@ pub fn filename_over_threshold() -> String {
 /// Returns something like "dir0/dir1/dir2/..." with `depth` levels.
 pub fn deep_path(depth: usize) -> String {
     (0..depth)
-        .map(|i| format!("dir{}", i))
+        .map(|i| format!("dir{i}"))
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -135,6 +135,8 @@ pub fn deep_path(depth: usize) -> String {
 pub fn patterned_chunks(num_chunks: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(num_chunks * CHUNK_SIZE);
     for chunk_num in 0..num_chunks {
+        // Safe cast: modulo 256 always produces values 0-255 that fit in u8
+        #[allow(clippy::cast_possible_truncation)]
         let fill_byte = (chunk_num % 256) as u8;
         data.extend(std::iter::repeat_n(fill_byte, CHUNK_SIZE));
     }
@@ -173,7 +175,7 @@ mod tests {
         let bytes = all_byte_values();
         assert_eq!(bytes.len(), 256);
         for i in 0u8..=255 {
-            assert!(bytes.contains(&i), "Missing byte value: {}", i);
+            assert!(bytes.contains(&i), "Missing byte value: {i}");
         }
     }
 

@@ -41,7 +41,7 @@ pub mod ids {
 }
 
 /// Events from the application menu
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum MenuBarEvent {
     // File menu
     AddVault,
@@ -162,13 +162,13 @@ pub fn build_menu_bar() -> Menu {
 /// Build the macOS App menu
 #[cfg(target_os = "macos")]
 fn build_app_menu() -> Submenu {
-    let app_menu = Submenu::new("Oxidized Vault", true);
+    let app_menu = Submenu::new("Oxcrypt", true);
 
     // About
     let about_metadata = AboutMetadata {
-        name: Some("Oxidized Vault".to_string()),
+        name: Some("Oxcrypt".to_string()),
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        copyright: Some("MIT License".to_string()),
+        copyright: Some("MPL-2.0 License".to_string()),
         ..Default::default()
     };
     let _ = app_menu.append(&PredefinedMenuItem::about(None, Some(about_metadata)));
@@ -365,7 +365,7 @@ fn build_help_menu() -> Submenu {
     // Documentation
     let docs = MenuItem::with_id(
         ids::HELP_DOCUMENTATION,
-        "Oxidized Vault Documentation",
+        "Oxcrypt Documentation",
         true,
         None,
     );

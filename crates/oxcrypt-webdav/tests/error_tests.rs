@@ -52,6 +52,54 @@ async fn test_delete_nonexistent_file() {
     );
 }
 
+// ============================================================================
+// 412 Precondition Failed (Exclusive Create)
+// ============================================================================
+
+#[tokio::test]
+async fn test_put_if_none_match_exclusive_create() {
+    let server = TestServer::with_temp_vault().await;
+
+    let first = server
+        .client()
+        .put(server.url("/exclusive.txt"))
+        .header("If-None-Match", "*")
+        .body("first")
+        .send()
+        .await
+        .expect("PUT If-None-Match request failed");
+
+    assert!(
+        first.status().is_success()
+            || first.status() == StatusCode::CREATED
+            || first.status() == StatusCode::NO_CONTENT,
+        "Exclusive create should succeed, got {}",
+        first.status()
+    );
+
+    let second = server
+        .client()
+        .put(server.url("/exclusive.txt"))
+        .header("If-None-Match", "*")
+        .body("second")
+        .send()
+        .await
+        .expect("PUT If-None-Match request failed");
+
+    assert!(
+        second.status() == StatusCode::PRECONDITION_FAILED
+            || second.status() == StatusCode::METHOD_NOT_ALLOWED,
+        "Exclusive create on existing resource should fail, got {}",
+        second.status()
+    );
+
+    let content = server
+        .get_bytes("/exclusive.txt")
+        .await
+        .expect("Failed to read exclusive.txt after If-None-Match test");
+    assert_eq!(content.as_ref(), b"first");
+}
+
 #[tokio::test]
 async fn test_propfind_nonexistent() {
     let server = TestServer::with_temp_vault().await;
@@ -248,19 +296,20 @@ async fn test_delete_nonempty_dir_behavior() {
     server.mkcol_ok("/nonempty").await;
     server.put_ok("/nonempty/file.txt", b"content".to_vec()).await;
 
-    let resp = server.delete("/nonempty").await;
+    server.delete_ok("/nonempty").await;
 
-    // WebDAV allows either:
-    // - 403/409/conflict if recursive delete not supported
-    // - 204 if recursive delete succeeds
-    let status = resp.status();
-    assert!(
-        status == StatusCode::FORBIDDEN
-            || status == StatusCode::CONFLICT
-            || status == StatusCode::NO_CONTENT
-            || status.is_success(),
-        "DELETE on non-empty dir should return 403/409 or succeed recursively, got {}",
-        status
+    let resp = server.propfind("/nonempty", "0").await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "Deleted directory should return 404"
+    );
+
+    let resp = server.get("/nonempty/file.txt").await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "Deleted directory contents should return 404"
     );
 }
 

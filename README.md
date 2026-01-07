@@ -21,23 +21,31 @@ The result is roughly **10x faster** for typical operations, in a ~5MB binary in
 
 ## Performance
 
-<!-- TODO: Replace with actual oxbench numbers -->
+Real-world workload benchmarks (Apple M4 Max, 15 iterations each):
 
-Benchmarked on Apple M1 Pro, 10GB vault with 5,000 files:
+| Workload | OxCrypt FUSE | Official Cryptomator (FUSE) | Speedup |
+|----------|--------------|------------------------------|---------|
+| **Folder Browse** | 10.5 ± 2.1 ms | 30.0 ± 8.2 ms | **2.87×** |
+| **Backup/Sync** | 811 ± 17 ms | 2.15 ± 0.54 s | **2.65×** |
+| **Code Editor** | 34.4 ± 3.4 ms | 57.6 ± 24.7 ms | **1.68×** |
+| **Git Workflow** | 739 ± 227 ms | ❌ _fails (readdir bug)_ | ∞× |
+| **Photo Library** | 547 ± 5 ms | 576 ± 42 ms | **1.05×** |
+| **Video Playback** | 849 ± 6 ms | 869 ± 7 ms | **1.02×** |
+| **SQLite Database** | 139.5 ± 4.8 ms | 139.2 ± 8.4 ms | ~1.0× |
+| **Multi-Process** | 5.10 ± 0.01 s | 5.13 ± 0.02 s | ~1.0× |
 
-| Operation | OxCrypt (FUSE) | Official Cryptomator | Speedup |
-|-----------|----------------|----------------------|---------|
-| Sequential read (1MB) | **312 MB/s** | 45 MB/s | 6.9x |
-| Sequential write (1MB) | **287 MB/s** | 38 MB/s | 7.6x |
-| Directory listing (1000 files) | **8 ms** | 340 ms | 42x |
-| Random read (4KB blocks) | **18,500 IOPS** | 2,100 IOPS | 8.8x |
-| Memory usage (idle) | **12 MB** | 180 MB | 15x less |
+**Key findings:**
+- ✅ **2-3× faster** on metadata-heavy operations (directory traversal, backups)
+- ✅ **Much more consistent** - typically <10% variance vs 25-40% on Cryptomator
+- ✅ **More robust** - fixes critical readdir offset bug that causes official Cryptomator to fail on git operations
 
 Run your own comparison:
 
 ```bash
-cargo install oxbench
-oxbench ~/vault fuse --cryptomator /Volumes/CryptomatorMount
+cargo build --release -p oxcrypt-bench
+./target/release/oxbench ~/vault fuse external \
+  --external-vault /Volumes/YourCryptomatorMount \
+  --suite workload --iterations 15
 ```
 
 ## Quick Start

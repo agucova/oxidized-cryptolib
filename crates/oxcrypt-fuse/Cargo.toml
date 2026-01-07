@@ -10,12 +10,19 @@ readme = "README.md"
 keywords = ["cryptomator", "fuse", "encryption", "filesystem"]
 categories = ["filesystem", "cryptography"]
 
+[lib]
+test = false
+
 [[bin]]
 name = "oxmount"
 path = "src/main.rs"
+test = false
 
 [dependencies]
 oxcrypt-core = { workspace = true, features = ["async"] }
+
+# High-performance allocator (optional, enabled by default)
+mimalloc = { version = "0.1", default-features = false, features = ["v3"], optional = true }
 clap = { workspace = true }
 rpassword = { workspace = true }
 anyhow = { workspace = true }
@@ -27,14 +34,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 oxcrypt-mount = { version = "0.1.0", path = "../oxcrypt-mount" }
 num_cpus = "1.17.0"
+once_cell = "1.21.3"
+filetime = "0.2.26"
+crossbeam-channel = "0.5"
+bytes = "1.11.0"
 
 # fuser: pure-rust on Linux, libfuse on macOS
-# Note: Using 0.15 globally due to macOS rename bug in 0.16 (see root Cargo.toml patch)
+# Using abi-7-23 for FUSE_WRITEBACK_CACHE support (mmap compatibility)
+# macfuse-4-compat required on macOS for correct fuse_rename_in struct size (16 bytes with flags/padding)
 [target.'cfg(target_os = "linux")'.dependencies]
-fuser = { version = "0.15", features = ["abi-7-16"] }
+fuser = { version = "0.16", features = ["abi-7-23"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.15", features = ["libfuse", "abi-7-16"] }
+fuser = { version = "0.16", features = ["libfuse", "abi-7-23", "macfuse-4-compat"] }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros", "time"] }
@@ -56,6 +68,9 @@ nix = { version = "0.30", features = ["signal", "fs"] }
 console-subscriber = { workspace = true, optional = true }
 
 [features]
+default = ["mimalloc"]
+# High-performance allocator for reduced allocation latency
+mimalloc = ["dep:mimalloc"]
 # Enable FUSE integration tests (requires FUSE installed + external test tools)
 fuse-tests = []
 # Enable tokio-console for async debugging (run `tokio-console` in another terminal)
@@ -68,7 +83,13 @@ criterion = { version = "0.8", features = ["html_reports"] }
 oxcrypt-mount = { path = "../oxcrypt-mount" }
 # Tokio with time feature for executor tests
 tokio = { version = "1", features = ["time"] }
+git2 = { version = "0.20.3", features = ["vendored-libgit2"], default-features = false }
+reqwest = { version = "0.13.1", features = ["blocking"] }
+zip = "7.0.0"
 
 [[bench]]
 name = "fuse_operations"
 harness = false
+
+[lints]
+workspace = true

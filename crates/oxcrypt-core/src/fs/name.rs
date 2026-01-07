@@ -1,12 +1,14 @@
 #![allow(dead_code)]
 
+use std::borrow::Cow;
+use std::fmt;
+
 use aes_siv::{siv::Aes256Siv, KeyInit};
 use base64::{engine::general_purpose, Engine as _};
 use data_encoding::BASE32;
 use ring::digest;
-use std::fmt;
 use thiserror::Error;
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 
 use crate::crypto::keys::{KeyAccessError, MasterKey};
 
@@ -22,20 +24,24 @@ pub struct NameContext {
 }
 
 impl NameContext {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_encrypted_name(mut self, name: impl Into<String>) -> Self {
         self.encrypted_name = Some(name.into());
         self
     }
 
+    #[must_use]
     pub fn with_cleartext_name(mut self, name: impl Into<String>) -> Self {
         self.cleartext_name = Some(name.into());
         self
     }
 
+    #[must_use]
     pub fn with_dir_id(mut self, dir_id: impl Into<String>) -> Self {
         self.dir_id = Some(dir_id.into());
         self
@@ -140,6 +146,7 @@ pub enum NameError {
 
 impl NameError {
     /// Add or update context on an existing error
+    #[must_use]
     pub fn with_context(self, new_context: NameContext) -> Self {
         match self {
             NameError::DecryptionFailed { .. } => {
@@ -203,6 +210,20 @@ pub fn hash_dir_id(dir_id: &str, master_key: &MasterKey) -> Result<String, NameE
     })?
 }
 
+/// Normalize a filename to NFC form, avoiding allocation when already normalized.
+///
+/// Most filenames on Linux/Windows are already in NFC form, so this fast-path
+/// avoids an allocation in the common case. macOS uses NFD, which will trigger
+/// normalization.
+#[inline]
+fn normalize_filename(name: &str) -> Cow<'_, str> {
+    match is_nfc_quick(name.chars()) {
+        IsNormalized::Yes => Cow::Borrowed(name),
+        // IsNormalized::Maybe or IsNormalized::No - need to normalize
+        _ => Cow::Owned(name.nfc().collect()),
+    }
+}
+
 /// Encrypt a filename using AES-SIV with the parent directory ID as context.
 ///
 /// The filename is normalized to Unicode NFC form before encryption to ensure
@@ -229,8 +250,9 @@ pub fn encrypt_filename(
         .with_cleartext_name(name)
         .with_dir_id(parent_dir_id);
 
-    // Normalize filename to NFC for cross-platform compatibility
-    let normalized_name: String = name.nfc().collect();
+    // Normalize filename to NFC for cross-platform compatibility.
+    // Fast-path: avoid allocation if already NFC (common on Linux/Windows).
+    let normalized_name = normalize_filename(name);
 
     master_key.with_siv_key(|key| {
         let mut cipher = Aes256Siv::new(key);
@@ -293,7 +315,7 @@ pub fn decrypt_filename(
             .decrypt(associated_data, &decoded)
             .map_err(|_| NameError::DecryptionFailed { context: context.clone() })?;
 
-        let result = String::from_utf8(decrypted.to_vec())
+        let result = String::from_utf8(decrypted.clone())
             .map_err(|e| NameError::Utf8Decode {
                 reason: e.to_string(),
                 context: context.clone(),
@@ -395,7 +417,7 @@ pub fn decrypt_parent_dir_id(
             .decrypt(associated_data, encrypted_parent_id)
             .map_err(|_| NameError::DecryptionFailed { context: context.clone() })?;
 
-        String::from_utf8(decrypted.to_vec())
+        String::from_utf8(decrypted.clone())
             .map_err(|e| NameError::Utf8Decode {
                 reason: e.to_string(),
                 context: context.clone(),
@@ -415,7 +437,9 @@ mod tests {
 
         // Fill with test data
         for i in 0..32 {
+            // Safe cast: loop variable i is always 0-31, fits safely in u8
             aes_key[i] = i as u8;
+            // Safe cast: (32 + i) is always 32-63, fits safely in u8
             mac_key[i] = (32 + i) as u8;
         }
 
@@ -429,7 +453,9 @@ mod tests {
 
         // Fill with different test data
         for i in 0..32 {
+            // Safe cast: (i + 100) wraps around u8 (100-131 mod 256), intentionally checking wraparound
             aes_key[i] = (i + 100) as u8;
+            // Safe cast: (i + 200) wraps around u8 (200-231 mod 256), intentionally checking wraparound
             mac_key[i] = (i + 200) as u8;
         }
 
@@ -691,7 +717,7 @@ mod tests {
 
         // encrypt_filename should NOT add .c9r extension - the caller adds it
         assert!(
-            !encrypted.ends_with(".c9r"),
+            !std::path::Path::new(&encrypted).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")),
             "encrypt_filename should NOT add .c9r extension (caller adds it)"
         );
 
@@ -725,11 +751,11 @@ mod tests {
 
         // Should have exactly one .c9r extension, not two
         assert!(
-            full_path.ends_with(".c9r"),
+            std::path::Path::new(&full_path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")),
             "Full path should end with .c9r"
         );
         assert!(
-            !full_path.ends_with(".c9r.c9r"),
+            !full_path.to_lowercase().ends_with(".c9r.c9r"),
             "Should NOT have double .c9r extension, got: {full_path}"
         );
         assert_eq!(
@@ -1030,7 +1056,7 @@ mod tests {
         );
         for ch in root_hash.chars() {
             assert!(
-                ('A'..='Z').contains(&ch) || ('2'..='7').contains(&ch),
+                ch.is_ascii_uppercase() || ('2'..='7').contains(&ch),
                 "Base32 should only contain A-Z and 2-7, found: {ch}"
             );
         }

@@ -83,7 +83,10 @@
 #![warn(clippy::all)]
 
 mod backend;
+pub mod bounded_pool;
 mod cleanup;
+pub mod daemon;
+pub mod signal;
 mod error_category;
 mod force_unmount;
 mod handle_table;
@@ -108,8 +111,13 @@ pub use backend::{
     BackendType, MountBackend, MountError, MountHandle, MountOptions,
 };
 pub use mount_utils::{
-    check_mountpoint_status, find_available_mountpoint, is_directory_readable, is_on_fuse_mount,
-    is_path_accessible, MountPointError, MountPointStatus, DEFAULT_ACCESS_TIMEOUT,
+    find_available_mountpoint, is_on_fuse_mount, is_path_mounted, is_under_fuse_mount,
+    normalize_mount_path, MountPointError, MountPointStatus,
+};
+// Deprecated probing functions (kept for backward compatibility)
+#[allow(deprecated)]
+pub use mount_utils::{
+    check_mountpoint_status, is_directory_readable, is_path_accessible, DEFAULT_ACCESS_TIMEOUT,
 };
 pub use process_detection::{find_processes_using_mount, ProcessInfo};
 pub use timeout_fs::{TimeoutFs, DEFAULT_FS_TIMEOUT};
@@ -117,7 +125,7 @@ pub use timeout_fs::{TimeoutFs, DEFAULT_FS_TIMEOUT};
 // Stale mount cleanup exports
 pub use cleanup::{
     cleanup_stale_mounts, cleanup_test_mounts, CleanupAction, CleanupOptions, CleanupResult,
-    TrackedMountInfo, DEFAULT_CHECK_TIMEOUT,
+    TrackedMountInfo,
 };
 pub use force_unmount::{force_unmount, lazy_unmount};
 pub use mount_markers::{
@@ -128,6 +136,9 @@ pub use stale_detection::{
     check_mount_status, find_orphaned_mounts, is_process_alive, MountStatus, StaleReason,
     TrackedMount,
 };
+// Deprecated function (kept for backward compatibility)
+#[allow(deprecated)]
+pub use stale_detection::canonicalize_with_timeout;
 
 // Implementation utility exports
 pub use error_category::{io_error_to_errno, VaultErrorCategory};
@@ -138,6 +149,12 @@ pub use moka_cache::{
     DEFAULT_NEGATIVE_TTL, DEFAULT_TTL, LOCAL_NEGATIVE_TTL, LOCAL_TTL,
 };
 pub use write_buffer::WriteBuffer;
+
+// Bounded thread pool for timeout-wrapped operations
+pub use bounded_pool::{
+    get_blocked_thread_diagnostics, reset_blocked_count, BlockedThreadDiagnostics, BoundedFsPool,
+    MAX_LEAKED_THREADS,
+};
 
 /// Testing utilities for mount backend integration tests.
 ///

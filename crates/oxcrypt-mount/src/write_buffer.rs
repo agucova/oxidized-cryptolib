@@ -67,6 +67,25 @@ impl WriteBuffer {
         Self::new(dir_id, filename, Vec::new())
     }
 
+    /// Create a new write buffer with pre-allocated capacity.
+    ///
+    /// Use this when the expected file size is known to avoid reallocations
+    /// during writes. The buffer starts empty but has space pre-allocated.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir_id` - Directory containing the file
+    /// * `filename` - Name of the file
+    /// * `capacity` - Expected maximum size of the file
+    pub fn with_capacity(dir_id: DirId, filename: String, capacity: usize) -> Self {
+        Self {
+            content: Vec::with_capacity(capacity),
+            dirty: true, // New file needs to be written
+            dir_id,
+            filename,
+        }
+    }
+
     /// Create a new write buffer for a newly created file.
     ///
     /// Unlike `new_empty`, this marks the buffer as dirty so the file
@@ -85,15 +104,26 @@ impl WriteBuffer {
     /// The buffer is automatically expanded if the write extends past the current end.
     /// Gaps between the current end and the write offset are filled with zeros.
     ///
+    /// Uses 1.5x geometric growth when expanding to reduce reallocations during
+    /// sequential writes. This trades ~50% extra memory for O(n) total allocation
+    /// cost instead of O(n²) with exact-fit resizing.
+    ///
     /// # Returns
     ///
     /// The number of bytes written (always equals `data.len()`).
     pub fn write(&mut self, offset: u64, data: &[u8]) -> usize {
+        // Safe cast: offset comes from file operations and is always within file size limits
+        #[allow(clippy::cast_possible_truncation)]
         let offset = offset as usize;
         let end = offset + data.len();
 
-        // Expand buffer if needed
+        // Expand buffer if needed, using geometric growth to reduce reallocations
         if end > self.content.len() {
+            // Use 1.5x growth factor, but at least fit the required end position
+            let new_capacity = std::cmp::max(end, (self.content.capacity() * 3) / 2);
+            if new_capacity > self.content.capacity() {
+                self.content.reserve(new_capacity - self.content.capacity());
+            }
             self.content.resize(end, 0);
         }
 
@@ -110,6 +140,8 @@ impl WriteBuffer {
     ///
     /// A slice of the buffer contents. Returns an empty slice if offset is past end.
     pub fn read(&self, offset: u64, size: usize) -> &[u8] {
+        // Safe cast: offset comes from file operations and is always checked
+        #[allow(clippy::cast_possible_truncation)]
         let offset = offset as usize;
         if offset >= self.content.len() {
             return &[];
@@ -122,6 +154,8 @@ impl WriteBuffer {
     ///
     /// If the new size is larger than current, the buffer is extended with zeros.
     pub fn truncate(&mut self, size: u64) {
+        // Safe cast: size is validated by the caller
+        #[allow(clippy::cast_possible_truncation)]
         let size = size as usize;
         if size != self.content.len() {
             self.content.resize(size, 0);
@@ -614,6 +648,8 @@ mod proptest_tests {
             let buf = WriteBuffer::new(test_dir_id(), "f".into(), content.clone());
             let result = buf.read(offset, size);
 
+            // Test range is small (0..150), safe to cast
+            #[allow(clippy::cast_possible_truncation)]
             let offset_usize = offset as usize;
             if offset_usize >= content.len() {
                 prop_assert_eq!(result, &[] as &[u8]);

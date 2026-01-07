@@ -5,8 +5,8 @@
 use crate::{CryptomatorFS, MountConfig};
 use fuser::{BackgroundSession, MountOption};
 use oxcrypt_mount::{
-    find_available_mountpoint, is_directory_readable, BackendType, MountBackend, MountError,
-    MountHandle, MountOptions, MountPointError, VaultStats, DEFAULT_ACCESS_TIMEOUT,
+    find_available_mountpoint, BackendType, MountBackend, MountError, MountHandle, MountOptions,
+    VaultStats,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -21,9 +21,18 @@ pub struct FuseMountHandle {
     mountpoint: PathBuf,
     /// Statistics for monitoring vault activity
     stats: Arc<VaultStats>,
+    /// Lock contention metrics for profiling
+    lock_metrics: Arc<oxcrypt_core::vault::lock_metrics::LockMetrics>,
 }
 
 impl FuseMountHandle {
+    /// Get lock contention metrics for profiling fast path performance.
+    ///
+    /// Returns metrics about sync fast path hit rate and async lock acquisitions.
+    pub fn lock_metrics(&self) -> &Arc<oxcrypt_core::vault::lock_metrics::LockMetrics> {
+        &self.lock_metrics
+    }
+
     /// Force unmount the filesystem using system tools.
     /// This is a fallback when the normal unmount is blocked.
     fn force_unmount_impl(&self) {
@@ -72,16 +81,23 @@ impl MountHandle for FuseMountHandle {
         Some(Arc::clone(&self.stats))
     }
 
+    fn lock_metrics(&self) -> Option<Arc<oxcrypt_core::vault::lock_metrics::LockMetrics>> {
+        Some(Arc::clone(&self.lock_metrics))
+    }
+
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
+        tracing::info!(mountpoint = %self.mountpoint.display(), "Unmounting FUSE filesystem");
         if let Some(session) = self.session.take() {
             // Join the session for clean unmount
             // This may block if files are open
             session.join();
         }
+        tracing::info!(mountpoint = %self.mountpoint.display(), "FUSE unmount successful");
         Ok(())
     }
 
     fn force_unmount(mut self: Box<Self>) -> Result<(), MountError> {
+        tracing::info!(mountpoint = %self.mountpoint.display(), "Force unmounting FUSE filesystem");
         if let Some(session) = self.session.take() {
             // First, force unmount using OS tools to release any busy handles
             self.force_unmount_impl();
@@ -92,6 +108,7 @@ impl MountHandle for FuseMountHandle {
             // Now join the session (should complete quickly after force unmount)
             session.join();
         }
+        tracing::info!(mountpoint = %self.mountpoint.display(), "FUSE force unmount successful");
         Ok(())
     }
 }
@@ -107,7 +124,7 @@ impl Drop for FuseMountHandle {
             tracing::debug!("Unmounting FUSE filesystem at {}", self.mountpoint.display());
 
             // Spawn thread for potentially blocking join() so we can timeout
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = mpsc::channel();
             let mountpoint_for_log = self.mountpoint.clone();
             std::thread::spawn(move || {
                 session.join();
@@ -167,20 +184,47 @@ impl FuseBackend {
         }
     }
 
-    /// Wait for the mount to become ready by polling until we can read the directory.
+    /// Wait for the mount to become ready by polling until the mount is active.
     ///
-    /// Uses timeout-wrapped filesystem operations to avoid blocking indefinitely
-    /// on stale mounts.
+    /// Uses device ID comparison (stat-based) rather than mount table parsing,
+    /// since the mount command can block on ghost mounts. A mount is detected
+    /// when the path's device ID differs from its parent's.
     fn wait_for_mount(&self, mount_point: &Path) -> Result<(), MountError> {
+        use oxcrypt_mount::TimeoutFs;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
         let deadline = Instant::now() + self.mount_timeout;
-        // Timeout for each individual read_dir attempt (prevents blocking on stale mounts)
-        let single_check_timeout = Duration::from_millis(500);
+        let fs = TimeoutFs::new(Duration::from_millis(500));
+
+        // Get parent path for device comparison
+        let parent = mount_point.parent().unwrap_or(Path::new("/"));
 
         while Instant::now() < deadline {
-            // Use timeout-wrapped directory read to avoid blocking on stale mounts
-            if is_directory_readable(mount_point, single_check_timeout) {
-                return Ok(());
+            // Check if mount point has different device ID than parent (indicates active mount)
+            #[cfg(unix)]
+            {
+                if let (Ok(path_meta), Ok(parent_meta)) =
+                    (fs.metadata(mount_point), fs.metadata(parent))
+                    && path_meta.dev() != parent_meta.dev() {
+                        tracing::debug!(
+                            "FUSE mount confirmed active at {} (dev {} != parent dev {})",
+                            mount_point.display(),
+                            path_meta.dev(),
+                            parent_meta.dev()
+                        );
+                        return Ok(());
+                    }
             }
+
+            // Non-unix fallback: just check if directory exists
+            #[cfg(not(unix))]
+            {
+                if fs.is_dir(mount_point) {
+                    return Ok(());
+                }
+            }
+
             std::thread::sleep(self.poll_interval);
         }
 
@@ -286,40 +330,27 @@ impl MountBackend for FuseBackend {
         password: &str,
         mountpoint: &Path,
     ) -> Result<Box<dyn MountHandle>, MountError> {
+        tracing::info!(
+            vault_id = %vault_id,
+            vault_path = %vault_path.display(),
+            mountpoint = %mountpoint.display(),
+            "Starting FUSE mount"
+        );
+
         if !self.is_available() {
             return Err(MountError::BackendUnavailable(
                 self.unavailable_reason().unwrap_or_default(),
             ));
         }
 
-        // Find an available mount point, detecting stale mounts and trying alternatives
-        let actual_mountpoint = find_available_mountpoint(mountpoint, DEFAULT_ACCESS_TIMEOUT)
-            .map_err(|e| match e {
-                MountPointError::ParentOnStaleFuseMount { parent, fuse_mount } => {
-                    MountError::Mount(std::io::Error::other(format!(
-                        "Cannot mount: {} is on a stale FUSE mount ({}). \
-                         Please unmount the stale mount first using: \
-                         diskutil unmount force {}",
-                        parent.display(),
-                        fuse_mount.display(),
-                        fuse_mount.display()
-                    )))
-                }
-                MountPointError::ParentInaccessible(path) => {
-                    MountError::Mount(std::io::Error::other(format!(
-                        "Parent directory {} is inaccessible. \
-                         It may be on a stale mount. Try: diskutil unmount force {}",
-                        path.display(),
-                        path.display()
-                    )))
-                }
-                other => MountError::Mount(std::io::Error::other(other.to_string())),
-            })?;
+        // Find an available mount point (one that's not already a mount point)
+        let actual_mountpoint = find_available_mountpoint(mountpoint)
+            .map_err(|e| MountError::Mount(std::io::Error::other(e.to_string())))?;
 
         // Log if we're using an alternative mountpoint
         if actual_mountpoint != mountpoint {
             tracing::info!(
-                "Using alternative mount point {} (original {} was unavailable)",
+                "Using alternative mount point {} (original {} already mounted)",
                 actual_mountpoint.display(),
                 mountpoint.display()
             );
@@ -334,32 +365,60 @@ impl MountBackend for FuseBackend {
         let fs = CryptomatorFS::new(vault_path, password)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
-        // Capture stats before spawning (spawn_mount2 takes ownership of fs)
+        // Capture stats and lock metrics before spawning (spawn_mount2 takes ownership of fs)
         let stats = fs.stats();
+        let lock_metrics = Arc::clone(fs.lock_metrics());
+        // Get pointer to notifier cell that we can use after fs is moved
+        let notifier_cell_ptr: *const std::sync::OnceLock<fuser::Notifier> = fs.notifier_cell();
 
         // Configure mount options
         let mut options = vec![
-            MountOption::FSName(format!("cryptomator:{}", vault_id)),
+            MountOption::FSName(format!("cryptomator:{vault_id}")),
             MountOption::Subtype("oxcrypt".to_string()),
             MountOption::AutoUnmount,
+            // Let kernel handle permission checks - avoids access() calls for every operation
+            MountOption::DefaultPermissions,
         ];
 
         // On macOS, set the volume name shown in Finder
         #[cfg(target_os = "macos")]
         {
-            options.push(MountOption::CUSTOM(format!("volname={}", vault_id)));
+            options.push(MountOption::CUSTOM(format!("volname={vault_id}")));
+            // Auto-eject after 30s if daemon stops responding (prevents ghost mounts)
+            options.push(MountOption::CUSTOM("daemon_timeout=30".to_string()));
         }
 
         // Mount the filesystem with timeout protection
         let session = self.spawn_mount_with_timeout(fs, &actual_mountpoint, &options)?;
 
+        // Inject notifier for kernel cache invalidation
+        // SAFETY: The pointer is valid because CryptomatorFS is kept alive by the session,
+        // and the OnceLock is at a stable address within the struct.
+        {
+            let notifier = session.notifier();
+            let notifier_cell = unsafe { &*notifier_cell_ptr };
+            tracing::debug!("Injecting kernel notifier for cache invalidation");
+            if notifier_cell.set(notifier).is_err() {
+                tracing::warn!("Failed to set notifier - already initialized");
+            } else {
+                tracing::info!("Successfully injected kernel notifier for cache invalidation");
+            }
+        }
+
         // Wait for mount to become ready (also with timeout protection)
         self.wait_for_mount(&actual_mountpoint)?;
+
+        tracing::info!(
+            mountpoint = %actual_mountpoint.display(),
+            vault_id = %vault_id,
+            "FUSE mount successful"
+        );
 
         Ok(Box::new(FuseMountHandle {
             session: Some(session),
             mountpoint: actual_mountpoint,
             stats,
+            lock_metrics,
         }))
     }
 
@@ -371,40 +430,28 @@ impl MountBackend for FuseBackend {
         mountpoint: &Path,
         options: &MountOptions,
     ) -> Result<Box<dyn MountHandle>, MountError> {
+        tracing::info!(
+            vault_id = %vault_id,
+            vault_path = %vault_path.display(),
+            mountpoint = %mountpoint.display(),
+            local_mode = options.local_mode,
+            "Starting FUSE mount with options"
+        );
+
         if !self.is_available() {
             return Err(MountError::BackendUnavailable(
                 self.unavailable_reason().unwrap_or_default(),
             ));
         }
 
-        // Find an available mount point, detecting stale mounts and trying alternatives
-        let actual_mountpoint = find_available_mountpoint(mountpoint, DEFAULT_ACCESS_TIMEOUT)
-            .map_err(|e| match e {
-                MountPointError::ParentOnStaleFuseMount { parent, fuse_mount } => {
-                    MountError::Mount(std::io::Error::other(format!(
-                        "Cannot mount: {} is on a stale FUSE mount ({}). \
-                         Please unmount the stale mount first using: \
-                         diskutil unmount force {}",
-                        parent.display(),
-                        fuse_mount.display(),
-                        fuse_mount.display()
-                    )))
-                }
-                MountPointError::ParentInaccessible(path) => {
-                    MountError::Mount(std::io::Error::other(format!(
-                        "Parent directory {} is inaccessible. \
-                         It may be on a stale mount. Try: diskutil unmount force {}",
-                        path.display(),
-                        path.display()
-                    )))
-                }
-                other => MountError::Mount(std::io::Error::other(other.to_string())),
-            })?;
+        // Find an available mount point (one that's not already a mount point)
+        let actual_mountpoint = find_available_mountpoint(mountpoint)
+            .map_err(|e| MountError::Mount(std::io::Error::other(e.to_string())))?;
 
         // Log if we're using an alternative mountpoint
         if actual_mountpoint != mountpoint {
             tracing::info!(
-                "Using alternative mount point {} (original {} was unavailable)",
+                "Using alternative mount point {} (original {} already mounted)",
                 actual_mountpoint.display(),
                 mountpoint.display()
             );
@@ -438,12 +485,15 @@ impl MountBackend for FuseBackend {
         let fs = CryptomatorFS::with_config(vault_path, password, config)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
-        // Capture stats before spawning (spawn_mount2 takes ownership of fs)
+        // Capture stats and lock metrics before spawning (spawn_mount2 takes ownership of fs)
         let stats = fs.stats();
+        let lock_metrics = Arc::clone(fs.lock_metrics());
+        // Get pointer to notifier cell that we can use after fs is moved
+        let notifier_cell_ptr: *const std::sync::OnceLock<fuser::Notifier> = fs.notifier_cell();
 
         // Configure mount options
         let mut mount_options = vec![
-            MountOption::FSName(format!("cryptomator:{}", vault_id)),
+            MountOption::FSName(format!("cryptomator:{vault_id}")),
             MountOption::Subtype("oxcrypt".to_string()),
             MountOption::AutoUnmount,
         ];
@@ -451,19 +501,43 @@ impl MountBackend for FuseBackend {
         // On macOS, set the volume name shown in Finder
         #[cfg(target_os = "macos")]
         {
-            mount_options.push(MountOption::CUSTOM(format!("volname={}", vault_id)));
+            mount_options.push(MountOption::CUSTOM(format!("volname={vault_id}")));
+            // Auto-eject after 30s if daemon stops responding (prevents ghost mounts)
+            mount_options.push(MountOption::CUSTOM("daemon_timeout=30".to_string()));
         }
 
         // Mount the filesystem with timeout protection
         let session = self.spawn_mount_with_timeout(fs, &actual_mountpoint, &mount_options)?;
 
+        // Inject notifier for kernel cache invalidation
+        // SAFETY: The pointer is valid because CryptomatorFS is kept alive by the session,
+        // and the OnceLock is at a stable address within the struct.
+        {
+            let notifier = session.notifier();
+            let notifier_cell = unsafe { &*notifier_cell_ptr };
+            tracing::debug!("Injecting kernel notifier for cache invalidation");
+            if notifier_cell.set(notifier).is_err() {
+                tracing::warn!("Failed to set notifier - already initialized");
+            } else {
+                tracing::info!("Successfully injected kernel notifier for cache invalidation");
+            }
+        }
+
         // Wait for mount to become ready (also with timeout protection)
         self.wait_for_mount(&actual_mountpoint)?;
+
+        tracing::info!(
+            mountpoint = %actual_mountpoint.display(),
+            vault_id = %vault_id,
+            local_mode = options.local_mode,
+            "FUSE mount successful"
+        );
 
         Ok(Box::new(FuseMountHandle {
             session: Some(session),
             mountpoint: actual_mountpoint,
             stats,
+            lock_metrics,
         }))
     }
 }

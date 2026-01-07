@@ -59,7 +59,7 @@ pub fn long_filename() -> String {
 /// Returns something like "a/b/c/d/e/..." with `depth` levels.
 pub fn deep_path(depth: usize) -> String {
     (0..depth)
-        .map(|i| format!("dir{}", i))
+        .map(|i| format!("dir{i}"))
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -126,7 +126,7 @@ mod tests {
         let bytes = all_byte_values();
         assert_eq!(bytes.len(), 256);
         for i in 0u8..=255 {
-            assert!(bytes.contains(&i), "Missing byte value: {}", i);
+            assert!(bytes.contains(&i), "Missing byte value: {i}");
         }
     }
 

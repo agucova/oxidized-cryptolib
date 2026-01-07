@@ -7,13 +7,26 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		05B2FFDF562B6BB759B2C940 /* TriggerImageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E71526F0E855D9A5EEB3039A /* TriggerImageManager.swift */; };
 		0B76FC9C793A37CEB557B9FB /* OxVaultFilesystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4682C5709F08160DCBEB3608 /* OxVaultFilesystem.swift */; };
 		29008D147A1B1C3006049AB6 /* OxVaultFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704FA4BE3BCA729418B8DBA0 /* OxVaultFSApp.swift */; };
-		5BBA7C29912E00BE94166AC1 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABF3C5C9BD070EF19A14A0C1 /* KeychainHelper.swift */; };
-		75B42DC37C68154B52C2110A /* oxcrypt-fskit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 601C4F0CD89BB18C6D4D84D7 /* oxcrypt-fskit.swift */; };
+		36441192FC226E1EF3C64F8E /* OxVaultServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16E469F95FB8F35D802E7DF8 /* OxVaultServiceProtocol.swift */; };
+		3AF869CF72FBB6D23D3F1927 /* PendingMount.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2517ACADE09C9A2F068DA75F /* PendingMount.swift */; };
+		55E21ACCDB614EB0F8D651BD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 32B84F9D309A667910AE3269 /* Assets.xcassets */; };
+		5AF83A114331EBE7BFD6BE7B /* TriggerMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945DB2F7A0205FBBB159E10B /* TriggerMarker.swift */; };
+		61089A86D4321A7AEFDF7893 /* OxVaultServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16E469F95FB8F35D802E7DF8 /* OxVaultServiceProtocol.swift */; };
+		7EDB0F55D54ECF4F32057DEA /* TriggerMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945DB2F7A0205FBBB159E10B /* TriggerMarker.swift */; };
 		9303C5D872691F2545EC6D97 /* OxVaultFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A6603F6CA067BCF6B4003D82 /* com.agucova.oxcrypt.hostapp.plist in Resources */ = {isa = PBXBuildFile; fileRef = 9725DB41DF12845223289D0A /* com.agucova.oxcrypt.hostapp.plist */; };
+		AA6095D97B7CBAEC94E36AF1 /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F963018A5134F90CD543F93 /* SwiftBridgeCore.swift */; };
 		B83DBB049F08D1C25810C37F /* OxVaultVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59B86CB9D3D10B9343D62DD2 /* OxVaultVolume.swift */; };
-		D3D61FD500214B5B9F28CD92 /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10F3B430D129A552FB1B521 /* SwiftBridgeCore.swift */; };
+		C0CC032DE8519CE528514E5A /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B93518C38C0C2C8C4EBC3353 /* KeychainHelper.swift */; };
+		C19FCDD3D364F9F8FE33000D /* oxidized-fskit-ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEB00F0CF0F26BE1BA129534 /* oxidized-fskit-ffi.swift */; };
+		C59B326CB25C3E6E07DE0D55 /* MountRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAE5E5552DECDF6CE4DB2F22 /* MountRegistry.swift */; };
+		C75EEAB0DB2CF9FE7B0A343D /* PendingMount.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2517ACADE09C9A2F068DA75F /* PendingMount.swift */; };
+		E687BD09F72BCAE00139448E /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B93518C38C0C2C8C4EBC3353 /* KeychainHelper.swift */; };
+		FE004157D20CD3134870126E /* MountRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAE5E5552DECDF6CE4DB2F22 /* MountRegistry.swift */; };
+		FE5E44FFACDBFC701EA45AED /* HostAppService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8E83C5253B03A7C442EBA2 /* HostAppService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -41,23 +54,51 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		16E469F95FB8F35D802E7DF8 /* OxVaultServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxVaultServiceProtocol.swift; sourceTree = "<group>"; };
+		2517ACADE09C9A2F068DA75F /* PendingMount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingMount.swift; sourceTree = "<group>"; };
+		2F963018A5134F90CD543F93 /* SwiftBridgeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftBridgeCore.swift; sourceTree = "<group>"; };
+		32B84F9D309A667910AE3269 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4682C5709F08160DCBEB3608 /* OxVaultFilesystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxVaultFilesystem.swift; sourceTree = "<group>"; };
 		59B86CB9D3D10B9343D62DD2 /* OxVaultVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxVaultVolume.swift; sourceTree = "<group>"; };
-		601C4F0CD89BB18C6D4D84D7 /* oxcrypt-fskit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "oxcrypt-fskit.swift"; sourceTree = "<group>"; };
+		5F8E83C5253B03A7C442EBA2 /* HostAppService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAppService.swift; sourceTree = "<group>"; };
 		704FA4BE3BCA729418B8DBA0 /* OxVaultFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxVaultFSApp.swift; sourceTree = "<group>"; };
+		945DB2F7A0205FBBB159E10B /* TriggerMarker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TriggerMarker.swift; sourceTree = "<group>"; };
+		9725DB41DF12845223289D0A /* com.agucova.oxcrypt.hostapp.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = com.agucova.oxcrypt.hostapp.plist; sourceTree = "<group>"; };
 		9A49A712E8F2E4715CD6B0FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A641242F9E0B8088DFB92E75 /* OxVaultFS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OxVaultFS.entitlements; sourceTree = "<group>"; };
-		ABF3C5C9BD070EF19A14A0C1 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		AAE5E5552DECDF6CE4DB2F22 /* MountRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountRegistry.swift; sourceTree = "<group>"; };
 		AC27308377B4B8AA8B341149 /* OxVaultFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = OxVaultFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD2FCCE476C33C4CDDE9862D /* OxVaultFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OxVaultFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		F10F3B430D129A552FB1B521 /* SwiftBridgeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftBridgeCore.swift; sourceTree = "<group>"; };
+		B93518C38C0C2C8C4EBC3353 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		DEB00F0CF0F26BE1BA129534 /* oxidized-fskit-ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "oxidized-fskit-ffi.swift"; sourceTree = "<group>"; };
+		E71526F0E855D9A5EEB3039A /* TriggerImageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TriggerImageManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		62300C927406AF8B6BC62407 /* oxcrypt-fskit */ = {
+		4CCC16A73A0647D9B44C216E /* swift */ = {
 			isa = PBXGroup;
 			children = (
-				F91482FB60B083885A96E499 /* swift */,
+				8F46C33D92DCCF13D16F5690 /* Sources */,
+			);
+			path = swift;
+			sourceTree = "<group>";
+		};
+		7266A593A23B6889EAC220E4 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				B93518C38C0C2C8C4EBC3353 /* KeychainHelper.swift */,
+				AAE5E5552DECDF6CE4DB2F22 /* MountRegistry.swift */,
+				16E469F95FB8F35D802E7DF8 /* OxVaultServiceProtocol.swift */,
+				2517ACADE09C9A2F068DA75F /* PendingMount.swift */,
+				945DB2F7A0205FBBB159E10B /* TriggerMarker.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		7FF30826B9F34410B1102E24 /* oxcrypt-fskit */ = {
+			isa = PBXGroup;
+			children = (
+				4CCC16A73A0647D9B44C216E /* swift */,
 			);
 			name = "oxcrypt-fskit";
 			path = ..;
@@ -67,16 +108,17 @@
 			isa = PBXGroup;
 			children = (
 				D2351870D9CCEA478C898046 /* HostApp */,
-				62300C927406AF8B6BC62407 /* oxcrypt-fskit */,
+				7FF30826B9F34410B1102E24 /* oxcrypt-fskit */,
+				7266A593A23B6889EAC220E4 /* Shared */,
 				AF04EEB6D839A0A434BE45BF /* Sources */,
 				BD126801974E92E320B0EBF5 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		87F176FBEA89900ACD4CA17B /* Sources */ = {
+		8F46C33D92DCCF13D16F5690 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				C0B37567C55D4C2B1ADEACBC /* OxVaultFFI */,
+				CE10B1A3713DC8DE127B8CD6 /* OxVaultFFI */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -84,7 +126,6 @@
 		AF04EEB6D839A0A434BE45BF /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				ABF3C5C9BD070EF19A14A0C1 /* KeychainHelper.swift */,
 				4682C5709F08160DCBEB3608 /* OxVaultFilesystem.swift */,
 				59B86CB9D3D10B9343D62DD2 /* OxVaultVolume.swift */,
 			);
@@ -100,11 +141,11 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		C0B37567C55D4C2B1ADEACBC /* OxVaultFFI */ = {
+		CE10B1A3713DC8DE127B8CD6 /* OxVaultFFI */ = {
 			isa = PBXGroup;
 			children = (
-				601C4F0CD89BB18C6D4D84D7 /* oxcrypt-fskit.swift */,
-				F10F3B430D129A552FB1B521 /* SwiftBridgeCore.swift */,
+				DEB00F0CF0F26BE1BA129534 /* oxidized-fskit-ffi.swift */,
+				2F963018A5134F90CD543F93 /* SwiftBridgeCore.swift */,
 			);
 			path = OxVaultFFI;
 			sourceTree = "<group>";
@@ -112,19 +153,15 @@
 		D2351870D9CCEA478C898046 /* HostApp */ = {
 			isa = PBXGroup;
 			children = (
+				32B84F9D309A667910AE3269 /* Assets.xcassets */,
+				9725DB41DF12845223289D0A /* com.agucova.oxcrypt.hostapp.plist */,
+				5F8E83C5253B03A7C442EBA2 /* HostAppService.swift */,
 				9A49A712E8F2E4715CD6B0FC /* Info.plist */,
 				A641242F9E0B8088DFB92E75 /* OxVaultFS.entitlements */,
 				704FA4BE3BCA729418B8DBA0 /* OxVaultFSApp.swift */,
+				E71526F0E855D9A5EEB3039A /* TriggerImageManager.swift */,
 			);
 			path = HostApp;
-			sourceTree = "<group>";
-		};
-		F91482FB60B083885A96E499 /* swift */ = {
-			isa = PBXGroup;
-			children = (
-				87F176FBEA89900ACD4CA17B /* Sources */,
-			);
-			path = swift;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -152,6 +189,7 @@
 			buildConfigurationList = 710E49D51BCDD73EE10CB397 /* Build configuration list for PBXNativeTarget "OxVaultFS" */;
 			buildPhases = (
 				46222CC216913EF47770237D /* Sources */,
+				C7040EDDBA630F1E2D8D2569 /* Resources */,
 				6D087B9A3D0EF793082BF340 /* Embed ExtensionKit Extensions */,
 			);
 			buildRules = (
@@ -205,12 +243,31 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		C7040EDDBA630F1E2D8D2569 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				55E21ACCDB614EB0F8D651BD /* Assets.xcassets in Resources */,
+				A6603F6CA067BCF6B4003D82 /* com.agucova.oxcrypt.hostapp.plist in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		46222CC216913EF47770237D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FE5E44FFACDBFC701EA45AED /* HostAppService.swift in Sources */,
+				C0CC032DE8519CE528514E5A /* KeychainHelper.swift in Sources */,
+				FE004157D20CD3134870126E /* MountRegistry.swift in Sources */,
 				29008D147A1B1C3006049AB6 /* OxVaultFSApp.swift in Sources */,
+				61089A86D4321A7AEFDF7893 /* OxVaultServiceProtocol.swift in Sources */,
+				C75EEAB0DB2CF9FE7B0A343D /* PendingMount.swift in Sources */,
+				05B2FFDF562B6BB759B2C940 /* TriggerImageManager.swift in Sources */,
+				5AF83A114331EBE7BFD6BE7B /* TriggerMarker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -218,11 +275,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				5BBA7C29912E00BE94166AC1 /* KeychainHelper.swift in Sources */,
+				E687BD09F72BCAE00139448E /* KeychainHelper.swift in Sources */,
+				C59B326CB25C3E6E07DE0D55 /* MountRegistry.swift in Sources */,
 				0B76FC9C793A37CEB557B9FB /* OxVaultFilesystem.swift in Sources */,
+				36441192FC226E1EF3C64F8E /* OxVaultServiceProtocol.swift in Sources */,
 				B83DBB049F08D1C25810C37F /* OxVaultVolume.swift in Sources */,
-				D3D61FD500214B5B9F28CD92 /* SwiftBridgeCore.swift in Sources */,
-				75B42DC37C68154B52C2110A /* oxcrypt-fskit.swift in Sources */,
+				3AF869CF72FBB6D23D3F1927 /* PendingMount.swift in Sources */,
+				AA6095D97B7CBAEC94E36AF1 /* SwiftBridgeCore.swift in Sources */,
+				7EDB0F55D54ECF4F32057DEA /* TriggerMarker.swift in Sources */,
+				C19FCDD3D364F9F8FE33000D /* oxidized-fskit-ffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,7 +371,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../../target/release",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.oxvaultfs;
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.desktop;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -337,7 +398,7 @@
 				OTHER_LDFLAGS = (
 					"-loxcrypt_fskit",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.oxvaultfs.extension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.desktop.fsextension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
 				SWIFT_INCLUDE_PATHS = (
@@ -368,7 +429,7 @@
 				OTHER_LDFLAGS = (
 					"-loxcrypt_fskit",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.oxvaultfs.extension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.desktop.fsextension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
 				SWIFT_INCLUDE_PATHS = (
@@ -392,7 +453,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../../target/release",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.oxvaultfs;
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.desktop;
 				SDKROOT = macosx;
 			};
 			name = Release;

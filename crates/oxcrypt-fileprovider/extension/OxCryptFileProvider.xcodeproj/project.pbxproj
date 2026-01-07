@@ -1,0 +1,537 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		07B16A66B971A15018A7DED0 /* OxCryptItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B569D7261508EE3DDE17931 /* OxCryptItem.swift */; };
+		08AB3B2DADBACAB8B8D218E1 /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70404A7F2337C90BA39ECF7D /* SwiftBridgeCore.swift */; };
+		0C70A6A318B660B374B80937 /* OxCryptFileProviderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A8681C6E265B59F4A0CC1BB /* OxCryptFileProviderApp.swift */; };
+		11DE6500C9D842E55DC40ABF /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70404A7F2337C90BA39ECF7D /* SwiftBridgeCore.swift */; };
+		1847754CF8E1AD802839743A /* PasswordRetrievalService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F3883BF514F7A902E30552F /* PasswordRetrievalService.swift */; };
+		2ACC017F48C5C37385E470F6 /* XPCPasswordClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D98335B383C066E1DE30DC /* XPCPasswordClient.swift */; };
+		34DBCAC90102BAD7CF6E89BF /* PasswordRetrievalService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F3883BF514F7A902E30552F /* PasswordRetrievalService.swift */; };
+		3A9B5E696B2FD39A3F3D8A7F /* generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28677E65FC79BB0EE5EE15BE /* generated.swift */; };
+		4AD3B883F730E2B4E01FA072 /* BookmarkHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDE508FE2706DFE7E8120E2 /* BookmarkHelper.swift */; };
+		50630EED303B1A57B3158136 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92A701074A7FEBD545B680CD /* ContentView.swift */; };
+		51FD14F171ED9C1B3FBE4675 /* DomainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62B38C8E16E7554008D19329 /* DomainManager.swift */; };
+		6F767B4115F749E7E91D61F4 /* PasswordRetrievalProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43869D7934F590D77A5755B /* PasswordRetrievalProtocol.swift */; };
+		72F83A0A48FFAFE800C0824B /* OxCryptEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FDEA2284C63FC19438BC699 /* OxCryptEnumerator.swift */; };
+		85511EF38294BFAA36175837 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C555A62927C6476DCF25B9E /* KeychainHelper.swift */; };
+		86F9B61EB8CAE49519FF490D /* OxCryptExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C4663F0938256E20D43CD7 /* OxCryptExtension.swift */; };
+		9C9A42E4E94A7033548BE268 /* XPCPasswordClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D98335B383C066E1DE30DC /* XPCPasswordClient.swift */; };
+		A119B3DC5E999402E90A3BFC /* HostAppService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C58274E8C68D2888EFC7EAB /* HostAppService.swift */; };
+		AB8FEE4F34E8E19AB908A6DE /* PasswordRetrievalProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43869D7934F590D77A5755B /* PasswordRetrievalProtocol.swift */; };
+		ACE6B8EECBDFFB56926354EA /* OxCryptFileProviderExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E4AF149A2C4E55441654423A /* OxCryptFileProviderExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		CE8D635C9A106B54A21DA0D0 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C555A62927C6476DCF25B9E /* KeychainHelper.swift */; };
+		DA3EB959DB62E8CA7E2C023F /* DomainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62B38C8E16E7554008D19329 /* DomainManager.swift */; };
+		E7D01B0F862D65E440968EE9 /* BookmarkHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDE508FE2706DFE7E8120E2 /* BookmarkHelper.swift */; };
+		FF4D9FDF433C01F1BCC5E808 /* generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28677E65FC79BB0EE5EE15BE /* generated.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		3647FB74A412600F000CB742 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 93AFA646E0286D7B5ED81756 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 64A202BDF757CF3321DCF095;
+			remoteInfo = OxCryptFileProviderExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		19A137B4CC3922B8917D3541 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				ACE6B8EECBDFFB56926354EA /* OxCryptFileProviderExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0B569D7261508EE3DDE17931 /* OxCryptItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxCryptItem.swift; sourceTree = "<group>"; };
+		12D98335B383C066E1DE30DC /* XPCPasswordClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XPCPasswordClient.swift; sourceTree = "<group>"; };
+		28677E65FC79BB0EE5EE15BE /* generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = generated.swift; sourceTree = "<group>"; };
+		366998D12ACC9C0FB4EA28FA /* OxCryptFileProvider.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OxCryptFileProvider.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4C555A62927C6476DCF25B9E /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		4F3883BF514F7A902E30552F /* PasswordRetrievalService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasswordRetrievalService.swift; sourceTree = "<group>"; };
+		54BA2F15903A22C6F2B780F5 /* generated.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = generated.h; sourceTree = "<group>"; };
+		5C58274E8C68D2888EFC7EAB /* HostAppService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAppService.swift; sourceTree = "<group>"; };
+		62B38C8E16E7554008D19329 /* DomainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainManager.swift; sourceTree = "<group>"; };
+		69C4663F0938256E20D43CD7 /* OxCryptExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxCryptExtension.swift; sourceTree = "<group>"; };
+		6BDE508FE2706DFE7E8120E2 /* BookmarkHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkHelper.swift; sourceTree = "<group>"; };
+		70404A7F2337C90BA39ECF7D /* SwiftBridgeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftBridgeCore.swift; sourceTree = "<group>"; };
+		8FDEA2284C63FC19438BC699 /* OxCryptEnumerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxCryptEnumerator.swift; sourceTree = "<group>"; };
+		9049ABEC478E441D953CBA93 /* SwiftBridgeCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SwiftBridgeCore.h; sourceTree = "<group>"; };
+		92A701074A7FEBD545B680CD /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		9A8681C6E265B59F4A0CC1BB /* OxCryptFileProviderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OxCryptFileProviderApp.swift; sourceTree = "<group>"; };
+		C43869D7934F590D77A5755B /* PasswordRetrievalProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasswordRetrievalProtocol.swift; sourceTree = "<group>"; };
+		E4AF149A2C4E55441654423A /* OxCryptFileProviderExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OxCryptFileProviderExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		3C6A41060282DA2C39A80055 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				6BDE508FE2706DFE7E8120E2 /* BookmarkHelper.swift */,
+				62B38C8E16E7554008D19329 /* DomainManager.swift */,
+				4C555A62927C6476DCF25B9E /* KeychainHelper.swift */,
+				C43869D7934F590D77A5755B /* PasswordRetrievalProtocol.swift */,
+				4F3883BF514F7A902E30552F /* PasswordRetrievalService.swift */,
+				12D98335B383C066E1DE30DC /* XPCPasswordClient.swift */,
+				7FD45A164B97B9DD15AC70EC /* generated */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		527A7E9317A1337E26647474 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				8FDEA2284C63FC19438BC699 /* OxCryptEnumerator.swift */,
+				69C4663F0938256E20D43CD7 /* OxCryptExtension.swift */,
+				0B569D7261508EE3DDE17931 /* OxCryptItem.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		716E5BA872A9C562C4B40005 /* generated */ = {
+			isa = PBXGroup;
+			children = (
+				54BA2F15903A22C6F2B780F5 /* generated.h */,
+				28677E65FC79BB0EE5EE15BE /* generated.swift */,
+			);
+			path = generated;
+			sourceTree = "<group>";
+		};
+		7FD45A164B97B9DD15AC70EC /* generated */ = {
+			isa = PBXGroup;
+			children = (
+				9049ABEC478E441D953CBA93 /* SwiftBridgeCore.h */,
+				70404A7F2337C90BA39ECF7D /* SwiftBridgeCore.swift */,
+				716E5BA872A9C562C4B40005 /* generated */,
+			);
+			path = generated;
+			sourceTree = "<group>";
+		};
+		895131831B35969BFA80BFB6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				366998D12ACC9C0FB4EA28FA /* OxCryptFileProvider.app */,
+				E4AF149A2C4E55441654423A /* OxCryptFileProviderExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D3C95624058D5B2650E1E277 = {
+			isa = PBXGroup;
+			children = (
+				FF7AEE1C590D672CBCE2594F /* HostApp */,
+				3C6A41060282DA2C39A80055 /* Shared */,
+				527A7E9317A1337E26647474 /* Sources */,
+				895131831B35969BFA80BFB6 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FF7AEE1C590D672CBCE2594F /* HostApp */ = {
+			isa = PBXGroup;
+			children = (
+				92A701074A7FEBD545B680CD /* ContentView.swift */,
+				5C58274E8C68D2888EFC7EAB /* HostAppService.swift */,
+				9A8681C6E265B59F4A0CC1BB /* OxCryptFileProviderApp.swift */,
+			);
+			path = HostApp;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0F51903CB7F1B0411E88BAF1 /* OxCryptFileProvider */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6E46F8D368F2B0417D250CED /* Build configuration list for PBXNativeTarget "OxCryptFileProvider" */;
+			buildPhases = (
+				26007C2535B8607E132DD4AF /* Sources */,
+				19A137B4CC3922B8917D3541 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2A6DED42E1EC8481E8DF9733 /* PBXTargetDependency */,
+			);
+			name = OxCryptFileProvider;
+			packageProductDependencies = (
+			);
+			productName = OxCryptFileProvider;
+			productReference = 366998D12ACC9C0FB4EA28FA /* OxCryptFileProvider.app */;
+			productType = "com.apple.product-type.application";
+		};
+		64A202BDF757CF3321DCF095 /* OxCryptFileProviderExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6C4F558C5CF586685F815177 /* Build configuration list for PBXNativeTarget "OxCryptFileProviderExtension" */;
+			buildPhases = (
+				8C095614A3546F2A1B6EA478 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OxCryptFileProviderExtension;
+			packageProductDependencies = (
+			);
+			productName = OxCryptFileProviderExtension;
+			productReference = E4AF149A2C4E55441654423A /* OxCryptFileProviderExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		93AFA646E0286D7B5ED81756 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					0F51903CB7F1B0411E88BAF1 = {
+						ProvisioningStyle = Automatic;
+					};
+					64A202BDF757CF3321DCF095 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 2CACF89427FCF26EFFEEBED5 /* Build configuration list for PBXProject "OxCryptFileProvider" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = D3C95624058D5B2650E1E277;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0F51903CB7F1B0411E88BAF1 /* OxCryptFileProvider */,
+				64A202BDF757CF3321DCF095 /* OxCryptFileProviderExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		26007C2535B8607E132DD4AF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7D01B0F862D65E440968EE9 /* BookmarkHelper.swift in Sources */,
+				50630EED303B1A57B3158136 /* ContentView.swift in Sources */,
+				51FD14F171ED9C1B3FBE4675 /* DomainManager.swift in Sources */,
+				A119B3DC5E999402E90A3BFC /* HostAppService.swift in Sources */,
+				CE8D635C9A106B54A21DA0D0 /* KeychainHelper.swift in Sources */,
+				0C70A6A318B660B374B80937 /* OxCryptFileProviderApp.swift in Sources */,
+				6F767B4115F749E7E91D61F4 /* PasswordRetrievalProtocol.swift in Sources */,
+				34DBCAC90102BAD7CF6E89BF /* PasswordRetrievalService.swift in Sources */,
+				08AB3B2DADBACAB8B8D218E1 /* SwiftBridgeCore.swift in Sources */,
+				9C9A42E4E94A7033548BE268 /* XPCPasswordClient.swift in Sources */,
+				3A9B5E696B2FD39A3F3D8A7F /* generated.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8C095614A3546F2A1B6EA478 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4AD3B883F730E2B4E01FA072 /* BookmarkHelper.swift in Sources */,
+				DA3EB959DB62E8CA7E2C023F /* DomainManager.swift in Sources */,
+				85511EF38294BFAA36175837 /* KeychainHelper.swift in Sources */,
+				72F83A0A48FFAFE800C0824B /* OxCryptEnumerator.swift in Sources */,
+				86F9B61EB8CAE49519FF490D /* OxCryptExtension.swift in Sources */,
+				07B16A66B971A15018A7DED0 /* OxCryptItem.swift in Sources */,
+				AB8FEE4F34E8E19AB908A6DE /* PasswordRetrievalProtocol.swift in Sources */,
+				1847754CF8E1AD802839743A /* PasswordRetrievalService.swift in Sources */,
+				11DE6500C9D842E55DC40ABF /* SwiftBridgeCore.swift in Sources */,
+				2ACC017F48C5C37385E470F6 /* XPCPasswordClient.swift in Sources */,
+				FF4D9FDF433C01F1BCC5E808 /* generated.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2A6DED42E1EC8481E8DF9733 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 64A202BDF757CF3321DCF095 /* OxCryptFileProviderExtension */;
+			targetProxy = 3647FB74A412600F000CB742 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		082DF681E47EA5CB719D23AD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OxCryptFileProviderExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = "Extension-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/../../../target/release",
+					"$(PROJECT_DIR)/../../../target/debug",
+				);
+				OTHER_CODE_SIGN_FLAGS = "--timestamp --options=runtime";
+				OTHER_LDFLAGS = (
+					"-loxcrypt_fileprovider",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.fileprovider.extension;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Sources/Bridging-Header.h";
+			};
+			name = Release;
+		};
+		32C2C09B25D4AF9ACC52AE3A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		73BD9DC2D3825A21949833C3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		AB0C093A074FAA47AC327A2E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = OxCryptFileProvider.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/../../../target/release",
+					"$(PROJECT_DIR)/../../../target/debug",
+				);
+				OTHER_LDFLAGS = (
+					"-loxcrypt_fileprovider",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.fileprovider;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "HostApp/Bridging-Header.h";
+			};
+			name = Debug;
+		};
+		BB90A170D1584F346A946ED4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "OxCryptFileProvider-Release.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/../../../target/release",
+					"$(PROJECT_DIR)/../../../target/debug",
+				);
+				OTHER_CODE_SIGN_FLAGS = "--timestamp --options=runtime";
+				OTHER_LDFLAGS = (
+					"-loxcrypt_fileprovider",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.fileprovider;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "HostApp/Bridging-Header.h";
+			};
+			name = Release;
+		};
+		CD4B685F995CDD0CDD13903C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OxCryptFileProviderExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = "Extension-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/../../../target/release",
+					"$(PROJECT_DIR)/../../../target/debug",
+				);
+				OTHER_LDFLAGS = (
+					"-loxcrypt_fileprovider",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.agucova.oxcrypt.fileprovider.extension;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Sources/Bridging-Header.h";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2CACF89427FCF26EFFEEBED5 /* Build configuration list for PBXProject "OxCryptFileProvider" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				73BD9DC2D3825A21949833C3 /* Debug */,
+				32C2C09B25D4AF9ACC52AE3A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6C4F558C5CF586685F815177 /* Build configuration list for PBXNativeTarget "OxCryptFileProviderExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CD4B685F995CDD0CDD13903C /* Debug */,
+				082DF681E47EA5CB719D23AD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6E46F8D368F2B0417D250CED /* Build configuration list for PBXNativeTarget "OxCryptFileProvider" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB0C093A074FAA47AC327A2E /* Debug */,
+				BB90A170D1584F346A946ED4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 93AFA646E0286D7B5ED81756 /* Project object */;
+}

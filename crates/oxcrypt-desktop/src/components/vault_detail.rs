@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use oxcrypt_mount::{find_processes_using_mount, format_bytes, ProcessInfo};
 use std::time::Duration;
 
-use crate::icons::{Icon, IconName, IconSize};
+use crate::icons::{Icon, IconColor, IconName, IconSize};
 
 /// Context for force lock dialog - tracks what triggered the dialog
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -45,21 +45,26 @@ pub fn VaultDetail(
     let mut blocking_processes = use_signal(Vec::<ProcessInfo>::new);
     let mut force_lock_context = use_signal(|| ForceLockContext::Lock);
 
-    let vault = match app_state.read().get_vault(&vault_id) {
-        Some(v) => v,
-        None => {
-            return rsx! {
-                div {
-                    class: "p-6 text-center text-gray-600 dark:text-gray-400",
-                    "Vault not found"
-                }
+    let Some(vault) = app_state.read().get_vault(&vault_id) else {
+        return rsx! {
+            div {
+                class: "p-6 text-center text-gray-600 dark:text-gray-400",
+                "Vault not found"
             }
         }
     };
 
-    let (status_icon_name, status_icon_class) = match &vault.state {
-        VaultState::Locked => (IconName::Lock, "vault-detail-icon vault-detail-icon-locked"),
-        VaultState::Mounted { .. } => (IconName::FolderOpen, "vault-detail-icon vault-detail-icon-mounted"),
+    let (status_icon_name, status_icon_class, status_icon_color) = match &vault.state {
+        VaultState::Locked => (
+            IconName::Lock,
+            "vault-detail-icon vault-detail-icon-locked",
+            IconColor::Secondary,
+        ),
+        VaultState::Mounted { .. } => (
+            IconName::FolderOpen,
+            "vault-detail-icon vault-detail-icon-mounted",
+            IconColor::Success,
+        ),
     };
 
     // Clone values needed for callbacks
@@ -127,19 +132,19 @@ pub fn VaultDetail(
                                 format!("Master key file not found: {}", path.display())
                             }
                             PasswordValidationError::InvalidFormat(msg) => {
-                                format!("Invalid vault format: {}", msg)
+                                format!("Invalid vault format: {msg}")
                             }
                             PasswordValidationError::Io(io_err) => {
-                                format!("Failed to read vault files: {}", io_err)
+                                format!("Failed to read vault files: {io_err}")
                             }
                             PasswordValidationError::Parse(json_err) => {
-                                format!("Failed to parse vault files: {}", json_err)
+                                format!("Failed to parse vault files: {json_err}")
                             }
                             PasswordValidationError::JwtValidation(jwt_err) => {
-                                format!("Vault configuration validation failed: {}", jwt_err)
+                                format!("Vault configuration validation failed: {jwt_err}")
                             }
                             PasswordValidationError::Crypto(crypto_err) => {
-                                format!("Cryptographic error: {}", crypto_err)
+                                format!("Cryptographic error: {crypto_err}")
                             }
                         };
                         tracing::info!("[UNLOCK] About to set unlock_result with error: {}", error_msg);
@@ -162,6 +167,8 @@ pub fn VaultDetail(
                 // Clone for use after spawn_blocking
                 let vault_id_for_log = vault_id.clone();
                 let vault_id_for_state = vault_id.clone();
+                let vault_path_for_recovery = vault_path.clone();
+                let backend_for_recovery = preferred_backend;
 
                 // Create mount options with local_mode from vault config
                 let mount_options = MountOptions {
@@ -182,7 +189,18 @@ pub fn VaultDetail(
                 match result {
                     Ok(Ok(mp)) => {
                         tracing::info!("Vault {} mounted at {}", vault_id_for_log, mp.display());
-                        app_state.write().set_vault_state(&vault_id_for_state, VaultState::Mounted { mountpoint: mp });
+                        let mountpoint = mp.clone();
+                        app_state
+                            .write()
+                            .set_vault_state(&vault_id_for_state, VaultState::Mounted { mountpoint });
+
+                        // Register FileProvider domain with recovery service (if applicable)
+                        mount_manager().register_fileprovider_domain(
+                            &vault_path_for_recovery,
+                            &mp,
+                            backend_for_recovery,
+                        );
+
                         // Success - close dialog (result will be set but dialog won't see it)
                         unlock_result.set(Some(Ok(())));
                         show_unlock_dialog.set(false);
@@ -204,7 +222,7 @@ pub fn VaultDetail(
                                 } else if msg.contains("vault.cryptomator") || msg.contains("not found") {
                                     "Invalid vault: Could not find vault configuration file.".to_string()
                                 } else {
-                                    format!("Failed to open vault: {}", msg)
+                                    format!("Failed to open vault: {msg}")
                                 }
                             }
                             crate::backend::MountError::Mount(io_err) => {
@@ -221,9 +239,6 @@ pub fn VaultDetail(
                                         crate::state::BackendType::Fuse => {
                                             "Permission denied. Make sure macFUSE is allowed in System Settings → Privacy & Security.".to_string()
                                         }
-                                        crate::state::BackendType::FSKit => {
-                                            "Permission denied. Check that the FSKit extension is enabled in System Settings.".to_string()
-                                        }
                                         _ => "Permission denied. Check filesystem permissions.".to_string()
                                     }
                                 }
@@ -239,12 +254,6 @@ pub fn VaultDetail(
                                 {
                                     "macFUSE kernel extension needs approval. Check System Settings → Privacy & Security.".to_string()
                                 }
-                                // FSKit bridge connection issues
-                                else if preferred_backend == crate::state::BackendType::FSKit
-                                    && (err_str_lower.contains("connection refused") || err_str_lower.contains("connection reset"))
-                                {
-                                    "FSKit mount failed. Make sure FSKitBridge is running.".to_string()
-                                }
                                 // Timeout
                                 else if err_kind == std::io::ErrorKind::TimedOut || err_str.contains("timed out") {
                                     "Mount operation timed out. The filesystem may be slow to respond.".to_string()
@@ -255,20 +264,20 @@ pub fn VaultDetail(
                                 }
                                 // Mount point doesn't exist or invalid
                                 else if err_kind == std::io::ErrorKind::NotFound {
-                                    format!("Mount point not found or inaccessible: {}", io_err)
+                                    format!("Mount point not found or inaccessible: {io_err}")
                                 }
                                 // Generic fallback - show the actual error
                                 else {
-                                    format!("{} mount failed: {}", preferred_backend.display_name(), io_err)
+                                    format!("{} mount failed: {io_err}", preferred_backend.display_name())
                                 }
                             }
                             crate::backend::MountError::MountPointNotFound(path) => {
                                 format!("Mount location not found: {}", path.display())
                             }
                             crate::backend::MountError::BackendUnavailable(reason) => {
-                                format!("{} is not available: {}", preferred_backend.display_name(), reason)
+                                format!("{} is not available: {reason}", preferred_backend.display_name())
                             }
-                            other => format!("Mount failed: {}", other),
+                            other => format!("Mount failed: {other}"),
                         };
                         unlock_result.set(Some(Err(error_msg)));
                     }
@@ -294,7 +303,7 @@ pub fn VaultDetail(
                     class: "{status_icon_class}",
                     span {
                         class: "icon-container w-full h-full",
-                        Icon { name: status_icon_name, size: IconSize(36) }
+                        Icon { name: status_icon_name, size: IconSize(36), color: status_icon_color }
                     }
                 }
 
@@ -323,10 +332,15 @@ pub fn VaultDetail(
                             button {
                                 class: "btn-ellipsis",
                                 title: "More options",
-                                onclick: move |_| show_dropdown.set(!show_dropdown()),
+                                onclick: move |_| { show_dropdown.set(!show_dropdown()); },
                                 span {
                                     class: "icon-container w-5 h-5",
-                                    Icon { name: IconName::EllipsisVertical, size: IconSize(20) }
+                                    Icon {
+                                        name: IconName::EllipsisVertical,
+                                        size: IconSize(20),
+                                        color: IconColor::Adaptive,
+                                        class: "icon-adaptive".to_string(),
+                                    }
                                 }
                             }
 
@@ -335,15 +349,15 @@ pub fn VaultDetail(
                                 DropdownMenu {
                                     show_stats: is_mounted,
                                     on_stats: if is_mounted {
-                                        Some(EventHandler::new(move |_| {
-                                            open_stats_window(vault_id_for_stats.clone(), vault_name_for_stats.clone());
+                                        Some(EventHandler::new(move |()| {
+                                            open_stats_window(vault_id_for_stats.clone(), &vault_name_for_stats);
                                         }))
                                     } else {
                                         None
                                     },
-                                    on_change_password: move |_| show_change_password.set(true),
-                                    on_remove: move |_| show_remove_confirm.set(true),
-                                    on_close: move |_| show_dropdown.set(false),
+                                    on_change_password: move |()| { show_change_password.set(true); },
+                                    on_remove: move |()| { show_remove_confirm.set(true); },
+                                    on_close: move |()| { show_dropdown.set(false); },
                                 }
                             }
                         }
@@ -365,11 +379,14 @@ pub fn VaultDetail(
 
                         match &vault.state {
                             VaultState::Mounted { mountpoint } => {
+                                let display_location = mount_manager()
+                                    .get_display_location(&vault.config.id)
+                                    .unwrap_or_else(|| mountpoint.display().to_string());
                                 rsx! {
                                     span { class: "status-mounted", "Mounted" }
                                     span {
                                         class: "text-sm text-secondary",
-                                        "at {mountpoint.display()}"
+                                        "at {display_location}"
                                     }
                                 }
                             }
@@ -386,21 +403,23 @@ pub fn VaultDetail(
                         let backend = vault.config.preferred_backend;
                         let badge_class = match backend {
                             crate::state::BackendType::Fuse => "badge-backend badge-backend-fuse",
-                            crate::state::BackendType::FSKit => "badge-backend badge-backend-fskit",
                             crate::state::BackendType::WebDav => "badge-backend badge-backend-webdav",
                             crate::state::BackendType::Nfs => "badge-backend badge-backend-nfs",
+                            crate::state::BackendType::FileProvider => "badge-backend badge-backend-fileprovider",
+                            crate::state::BackendType::FSKit => "badge-backend badge-muted",
                         };
                         let tooltip = match backend {
                             crate::state::BackendType::Fuse => "FUSE: Kernel-based filesystem via macFUSE. Click to change.",
-                            crate::state::BackendType::FSKit => "FSKit: Native macOS filesystem (15.4+). Click to change.",
                             crate::state::BackendType::WebDav => "WebDAV: Network-based access via local server. Click to change.",
                             crate::state::BackendType::Nfs => "NFS: Network filesystem via local server. Click to change.",
+                            crate::state::BackendType::FileProvider => "FileProvider: macOS cloud storage integration. Click to change.",
+                            crate::state::BackendType::FSKit => "FSKit is not supported in oxcrypt-desktop. Click to change.",
                         };
                         rsx! {
                             button {
                                 class: "{badge_class}",
                                 title: "{tooltip}",
-                                onclick: move |_| show_backend_dialog.set(true),
+                                onclick: move |_| { show_backend_dialog.set(true); },
                                 "{backend.display_name()}"
                             }
                         }
@@ -414,7 +433,7 @@ pub fn VaultDetail(
                             ActionButton {
                                 label: "Unlock Vault",
                                 icon: IconName::LockOpen,
-                                onclick: move |_| {
+                                onclick: move |()| {
                                     unlock_result.set(None);
                                     show_unlock_dialog.set(true);
                                 },
@@ -425,16 +444,17 @@ pub fn VaultDetail(
                         let mp = mountpoint.clone();
                         let mp_for_reveal = mp.clone();
                         let id_for_unmount = vault_id.clone();
+                        let vault_path_for_recovery = vault.config.path.clone();
                         rsx! {
                             div { class: "flex flex-col gap-3",
                                 ActionButton {
                                     label: "Reveal in Finder",
                                     icon: IconName::FolderOpen,
-                                    onclick: move |_| {
+                                    onclick: move |()| {
                                         if let Err(e) = open::that(&mp_for_reveal) {
                                             tracing::error!("Failed to open {}: {}", mp_for_reveal.display(), e);
                                             error_state.set(Some(
-                                                UserFacingError::new("Couldn't Open Vault", format!("Failed to open the vault location: {}", e))
+                                                UserFacingError::new("Couldn't Open Vault", format!("Failed to open the vault location: {e}"))
                                                     .with_suggestion("The mount point may no longer exist. Try locking and unlocking the vault.")
                                             ));
                                         }
@@ -444,10 +464,11 @@ pub fn VaultDetail(
                                     label: "Lock Vault",
                                     icon: IconName::Lock,
                                     secondary: true,
-                                    onclick: move |_| {
+                                    onclick: move |()| {
                                         let vault_id = id_for_unmount.clone();
                                         let vault_id_for_log = vault_id.clone();
                                         let vault_id_for_state = vault_id.clone();
+                                        let vault_path = vault_path_for_recovery.clone();
                                         let mp_for_lsof = mp.clone();
                                         spawn(async move {
                                             let manager = mount_manager();
@@ -459,6 +480,9 @@ pub fn VaultDetail(
                                                 Ok(Ok(())) => {
                                                     tracing::info!("Vault {} unmounted and locked", vault_id_for_log);
                                                     app_state.write().set_vault_state(&vault_id_for_state, VaultState::Locked);
+
+                                                    // Unregister FileProvider domain from recovery service (if applicable)
+                                                    mount_manager().unregister_fileprovider_domain(&vault_path);
                                                 }
                                                 Ok(Err(e)) => {
                                                     let err_str = e.to_string().to_lowercase();
@@ -484,7 +508,7 @@ pub fn VaultDetail(
                                                 Err(e) => {
                                                     tracing::error!("Unmount task panicked: {}", e);
                                                     error_state.set(Some(
-                                                        UserFacingError::new("Internal Error", "An unexpected error occurred while locking the vault.")
+                                                        UserFacingError::new("Lock Task Failed", "An unexpected error occurred while locking the vault.")
                                                             .with_technical(e.to_string())
                                                     ));
                                                 }
@@ -517,7 +541,7 @@ pub fn VaultDetail(
                 vault_name: vault_name.clone(),
                 unlock_result: unlock_result(),
                 on_unlock: handle_password_submit,
-                on_cancel: move |_| {
+                on_cancel: move |()| {
                     show_unlock_dialog.set(false);
                     unlock_result.set(None);
                 },
@@ -529,12 +553,13 @@ pub fn VaultDetail(
             {
                 let vault_id_for_backend = vault_id.clone();
                 let vault_id_for_unmount = vault_id.clone();
+                let vault_path_for_recovery = vault.config.path.clone();
                 let current_backend = vault.config.preferred_backend;
                 let current_local_mode = vault.config.local_mode;
                 let is_mounted = matches!(vault.state, VaultState::Mounted { .. });
                 let mountpoint_for_lsof = match &vault.state {
                     VaultState::Mounted { mountpoint } => Some(mountpoint.clone()),
-                    _ => None,
+                    VaultState::Locked => None,
                 };
                 rsx! {
                     BackendDialog {
@@ -555,6 +580,7 @@ pub fn VaultDetail(
                             let vault_id_for_log = vault_id.clone();
                             let vault_id_for_state = vault_id.clone();
                             let vault_id_for_settings_update = vault_id.clone();
+                            let vault_path = vault_path_for_recovery.clone();
                             let mp_for_lsof = mountpoint_for_lsof.clone();
                             show_backend_dialog.set(false);
                             spawn(async move {
@@ -574,6 +600,9 @@ pub fn VaultDetail(
                                     Ok(Ok(())) => {
                                         tracing::info!("Vault {} unmounted after settings change", vault_id_for_log);
                                         app_state.write().set_vault_state(&vault_id_for_state, VaultState::Locked);
+
+                                        // Unregister FileProvider domain from recovery service (if applicable)
+                                        mount_manager().unregister_fileprovider_domain(&vault_path);
                                     }
                                     Ok(Err(e)) => {
                                         let err_str = e.to_string().to_lowercase();
@@ -603,14 +632,14 @@ pub fn VaultDetail(
                                     Err(e) => {
                                         tracing::error!("Unmount task panicked: {}", e);
                                         error_state.set(Some(
-                                            UserFacingError::new("Internal Error", "An unexpected error occurred while unmounting the vault.")
+                                            UserFacingError::new("Unmount Task Failed", "An unexpected error occurred while unmounting the vault.")
                                                 .with_technical(e.to_string())
                                         ));
                                     }
                                 }
                             });
                         },
-                        on_cancel: move |_| {
+                        on_cancel: move |()| {
                             show_backend_dialog.set(false);
                         },
                     }
@@ -627,12 +656,12 @@ pub fn VaultDetail(
                     ChangePasswordDialog {
                         vault_path: vault_path_for_change,
                         vault_name: vault_name_for_change,
-                        on_complete: move |_| {
+                        on_complete: move |()| {
                             show_change_password.set(false);
                             // Show success message (optional)
                             tracing::info!("Password changed successfully");
                         },
-                        on_cancel: move |_| {
+                        on_cancel: move |()| {
                             show_change_password.set(false);
                         },
                     }
@@ -649,10 +678,10 @@ pub fn VaultDetail(
                     ConfirmDialog {
                         title: "Remove Vault?".to_string(),
                         message: format!("Remove \"{}\" from your vault list?", vault_name_for_dialog),
-                        warning: Some("This only removes the vault from Oxidized Vault. Your encrypted files will NOT be deleted.".to_string()),
+                        warning: Some("This only removes the vault from Oxcrypt. Your encrypted files will NOT be deleted.".to_string()),
                         confirm_label: "Remove",
                         danger: true,
-                        on_confirm: move |_| {
+                        on_confirm: move |()| {
                             // Remove the vault from state
                             app_state.write().remove_vault(&vault_id_for_remove);
                             // Save to disk
@@ -665,7 +694,7 @@ pub fn VaultDetail(
                                 handler.call(());
                             }
                         },
-                        on_cancel: move |_| {
+                        on_cancel: move |()| {
                             show_remove_confirm.set(false);
                         },
                     }
@@ -677,7 +706,7 @@ pub fn VaultDetail(
         if let Some(error) = error_state() {
             ErrorDialog {
                 error: error,
-                on_dismiss: move |_| error_state.set(None),
+                on_dismiss: move |()| error_state.set(None),
             }
         }
 
@@ -686,18 +715,21 @@ pub fn VaultDetail(
             {
                 let vault_id_for_force = vault_id.clone();
                 let vault_id_for_retry = vault_id.clone();
+                let vault_path_for_retry = vault.config.path.clone();
+                let vault_path_for_force = vault.config.path.clone();
                 let vault_name_for_dialog = vault_name.clone();
                 rsx! {
                     ForceLockDialog {
                         vault_name: vault_name_for_dialog,
                         error_message: force_lock_error(),
                         processes: blocking_processes(),
-                        on_retry: move |_| {
+                        on_retry: move |()| {
                             // Close dialog and retry normal unmount
                             show_force_lock_dialog.set(false);
                             let vault_id = vault_id_for_retry.clone();
                             let vault_id_for_log = vault_id.clone();
                             let vault_id_for_state = vault_id.clone();
+                            let vault_path = vault_path_for_retry.clone();
                             spawn(async move {
                                 let manager = mount_manager();
                                 let result = tokio::task::spawn_blocking(move || {
@@ -708,6 +740,9 @@ pub fn VaultDetail(
                                     Ok(Ok(())) => {
                                         tracing::info!("Vault {} unmounted on retry", vault_id_for_log);
                                         app_state.write().set_vault_state(&vault_id_for_state, VaultState::Locked);
+
+                                        // Unregister FileProvider domain from recovery service (if applicable)
+                                        mount_manager().unregister_fileprovider_domain(&vault_path);
                                     }
                                     Ok(Err(e)) => {
                                         tracing::error!("Retry unmount failed: {}", e);
@@ -719,19 +754,20 @@ pub fn VaultDetail(
                                     Err(e) => {
                                         tracing::error!("Retry unmount task panicked: {}", e);
                                         error_state.set(Some(
-                                            UserFacingError::new("Internal Error", "An unexpected error occurred.")
+                                            UserFacingError::new("Retry Lock Failed", "An unexpected error occurred while retrying the lock operation.")
                                                 .with_technical(e.to_string())
                                         ));
                                     }
                                 }
                             });
                         },
-                        on_force: move |_| {
+                        on_force: move |()| {
                             // Force unmount the vault
                             show_force_lock_dialog.set(false);
                             let vault_id = vault_id_for_force.clone();
                             let vault_id_for_log = vault_id.clone();
                             let vault_id_for_state = vault_id.clone();
+                            let vault_path = vault_path_for_force.clone();
                             let context = force_lock_context();
                             spawn(async move {
                                 let manager = mount_manager();
@@ -747,6 +783,9 @@ pub fn VaultDetail(
                                         };
                                         tracing::info!("Vault {} {}", vault_id_for_log, action);
                                         app_state.write().set_vault_state(&vault_id_for_state, VaultState::Locked);
+
+                                        // Unregister FileProvider domain from recovery service (if applicable)
+                                        mount_manager().unregister_fileprovider_domain(&vault_path);
                                     }
                                     Ok(Err(e)) => {
                                         tracing::error!("Force unmount failed: {}", e);
@@ -758,14 +797,14 @@ pub fn VaultDetail(
                                     Err(e) => {
                                         tracing::error!("Force unmount task panicked: {}", e);
                                         error_state.set(Some(
-                                            UserFacingError::new("Internal Error", "An unexpected error occurred.")
+                                            UserFacingError::new("Force Lock Task Failed", "An unexpected error occurred during the force lock operation.")
                                                 .with_technical(e.to_string())
                                         ));
                                     }
                                 }
                             });
                         },
-                        on_cancel: move |_| {
+                        on_cancel: move |()| {
                             show_force_lock_dialog.set(false);
                         },
                     }
@@ -787,7 +826,7 @@ fn ActionButton(
     rsx! {
         button {
             class: "{class}",
-            onclick: move |_| onclick.call(()),
+            onclick: move |_| { onclick.call(()); },
             span { class: "icon-container w-5 h-5", Icon { name: icon, size: IconSize(18) } }
             span { "{label}" }
         }
@@ -807,7 +846,7 @@ fn DropdownMenu(
         // Click catcher to close dropdown when clicking outside
         div {
             class: "fixed inset-0 z-40",
-            onclick: move |_| on_close.call(()),
+            onclick: move |_| { on_close.call(()); },
         }
 
         // Dropdown menu

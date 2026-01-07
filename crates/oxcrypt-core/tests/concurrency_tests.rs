@@ -26,7 +26,7 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 /// Test helper to create a vault with test content.
-async fn create_test_vault() -> (TempDir, Arc<VaultOperationsAsync>) {
+fn create_test_vault() -> (TempDir, Arc<VaultOperationsAsync>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let vault_path = temp_dir.path().join("test_vault");
 
@@ -42,7 +42,7 @@ async fn create_test_vault() -> (TempDir, Arc<VaultOperationsAsync>) {
 /// Test that multiple sequential reads to the same file succeed.
 #[tokio::test]
 async fn test_sequential_reads_same_file() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create a test file
@@ -56,14 +56,14 @@ async fn test_sequential_reads_same_file() {
         let result = ops.read_file(&root, "test.txt").await;
         assert!(result.is_ok(), "Read {} failed: {:?}", i, result.err());
         let file = result.unwrap();
-        assert_eq!(file.content, content, "Read {} got wrong content", i);
+        assert_eq!(file.content, content, "Read {i} got wrong content");
     }
 }
 
 /// Test that concurrent reads via join! work correctly.
 #[tokio::test]
 async fn test_concurrent_reads_via_join() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create test files
@@ -92,7 +92,7 @@ async fn test_concurrent_reads_via_join() {
 /// Test that concurrent writes via join! work correctly.
 #[tokio::test]
 async fn test_concurrent_writes_via_join() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Write multiple files concurrently
@@ -115,7 +115,7 @@ async fn test_concurrent_writes_via_join() {
 /// Test concurrent directory creation.
 #[tokio::test]
 async fn test_concurrent_directory_creation() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create multiple directories concurrently
@@ -142,7 +142,7 @@ async fn test_concurrent_directory_creation() {
 /// Test concurrent operations across different directories.
 #[tokio::test]
 async fn test_concurrent_operations_different_directories() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create directories
@@ -219,13 +219,13 @@ async fn test_lock_manager_cleanup() {
 /// Test that the handle table generates unique IDs.
 #[tokio::test]
 async fn test_handle_table_unique_ids() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
     let table = ops.handle_table();
 
     // Create multiple files
     for i in 0..5 {
-        ops.write_file(&root, &format!("file_{}.txt", i), format!("content {}", i).as_bytes())
+        ops.write_file(&root, &format!("file_{i}.txt"), format!("content {i}").as_bytes())
             .await
             .expect("Failed to write");
     }
@@ -234,26 +234,26 @@ async fn test_handle_table_unique_ids() {
     let mut handles = Vec::new();
     for i in 0..5 {
         let reader = ops
-            .open_file(&root, &format!("file_{}.txt", i))
+            .open_file(&root, &format!("file_{i}.txt"))
             .await
             .expect("Failed to open");
 
         let handle_id = table.insert(oxcrypt_core::vault::OpenHandle::Reader(reader));
 
         // All handles should be unique
-        assert!(!handles.contains(&handle_id), "Duplicate handle ID: {}", handle_id);
+        assert!(!handles.contains(&handle_id), "Duplicate handle ID: {handle_id}");
         handles.push(handle_id);
     }
 
     // Verify all handles exist
     for handle_id in &handles {
-        assert!(table.contains(*handle_id), "Handle {} not found", handle_id);
+        assert!(table.contains(*handle_id), "Handle {handle_id} not found");
     }
 
     // Remove handles
     for handle_id in handles {
         let removed = table.remove(handle_id);
-        assert!(removed.is_some(), "Handle {} not removed", handle_id);
+        assert!(removed.is_some(), "Handle {handle_id} not removed");
     }
 
     // Table should be empty
@@ -263,13 +263,13 @@ async fn test_handle_table_unique_ids() {
 /// Test that many sequential operations don't deadlock.
 #[tokio::test]
 async fn test_many_sequential_operations_no_deadlock() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Perform many mixed operations
     for i in 0..50 {
         let filename = format!("file_{}.txt", i % 10);
-        let content = format!("Content iteration {}", i);
+        let content = format!("Content iteration {i}");
 
         match i % 4 {
             0 => {
@@ -298,7 +298,7 @@ async fn test_many_sequential_operations_no_deadlock() {
 /// Test Arc-cloned ops properly shares lock state.
 #[tokio::test]
 async fn test_arc_shared_shares_locks() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
 
     let ops1 = Arc::clone(&ops);
     let ops2 = Arc::clone(&ops);
@@ -323,7 +323,7 @@ async fn test_arc_shared_shares_locks() {
 /// Test that move operations between directories work correctly.
 #[tokio::test]
 async fn test_move_operations_no_deadlock() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create two directories
@@ -352,12 +352,12 @@ async fn test_move_operations_no_deadlock() {
 /// Test concurrent list and write operations.
 #[tokio::test]
 async fn test_concurrent_list_and_write() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Write some initial files
     for i in 0..5 {
-        ops.write_file(&root, &format!("initial_{}.txt", i), b"initial")
+        ops.write_file(&root, &format!("initial_{i}.txt"), b"initial")
             .await
             .expect("write initial");
     }
@@ -379,7 +379,7 @@ async fn test_concurrent_list_and_write() {
 /// Test rename operations don't deadlock.
 #[tokio::test]
 async fn test_rename_operations_no_deadlock() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create files
@@ -399,19 +399,19 @@ async fn test_rename_operations_no_deadlock() {
 /// Test delete operations don't deadlock with lists.
 #[tokio::test]
 async fn test_delete_and_list_no_deadlock() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create files
     for i in 0..5 {
-        ops.write_file(&root, &format!("file_{}.txt", i), b"content")
+        ops.write_file(&root, &format!("file_{i}.txt"), b"content")
             .await
             .expect("write");
     }
 
     // Delete files while listing
     for i in 0..5 {
-        let filename = format!("file_{}.txt", i);
+        let filename = format!("file_{i}.txt");
         let (delete_result, list_result) = tokio::join!(
             ops.delete_file(&root, &filename),
             ops.list_files(&root),
@@ -563,7 +563,7 @@ async fn test_regression_global_lock_registry_path_canonicalization() {
 /// immediately when the function returned, leaving the reader unprotected.
 #[tokio::test]
 async fn test_regression_reader_holds_locks() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create a file
@@ -592,7 +592,7 @@ async fn test_regression_reader_holds_locks() {
 /// immediately when the function returned, leaving the writer unprotected.
 #[tokio::test]
 async fn test_regression_writer_holds_locks() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create a streaming writer
@@ -618,7 +618,7 @@ async fn test_regression_writer_holds_locks() {
 async fn test_regression_reader_locks_block_writes() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create a file
@@ -674,12 +674,12 @@ async fn test_regression_reader_locks_block_writes() {
 /// If there's a deadlock, this test will hang (and timeout in CI).
 #[tokio::test]
 async fn test_regression_lock_ordering_no_deadlock() {
-    let (_temp_dir, ops) = create_test_vault().await;
+    let (_temp_dir, ops) = create_test_vault();
     let root = DirId::root();
 
     // Create initial files
     for i in 0..5 {
-        ops.write_file(&root, &format!("file_{}.txt", i), format!("content {}", i).as_bytes())
+        ops.write_file(&root, &format!("file_{i}.txt"), format!("content {i}").as_bytes())
             .await
             .expect("write");
     }
@@ -691,7 +691,7 @@ async fn test_regression_lock_ordering_no_deadlock() {
 
         // Pre-compute filenames to avoid temporary lifetime issues
         let read_file = format!("file_{}.txt", iteration % 5);
-        let write_file = format!("new_{}.txt", iteration);
+        let write_file = format!("new_{iteration}.txt");
         let open_file = format!("file_{}.txt", iteration % 5);
 
         // Mix of read, write, list, and delete operations

@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::file::{
     decrypt_file_content, decrypt_file_header, encrypt_file_content, encrypt_file_header,
@@ -6,6 +6,7 @@ use oxcrypt_core::fs::file::{
 use oxcrypt_core::fs::symlink::{decrypt_symlink_target, encrypt_symlink_target};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use std::hint::black_box;
 
 fn setup_master_key() -> MasterKey {
     MasterKey::random().unwrap()

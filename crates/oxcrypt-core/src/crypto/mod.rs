@@ -77,14 +77,14 @@ pub enum CryptoError {
     /// **[SYSTEM ERROR]** This indicates a failure in the memory protection
     /// subsystem (mlock, mprotect) or a concurrent access attempt.
     #[error("Key access failed: {0}")]
-    KeyAccess(#[from] keys::KeyAccessError),
+    KeyAccess(#[from] KeyAccessError),
 }
 
 impl From<key_wrap::UnwrapError> for CryptoError {
     fn from(err: key_wrap::UnwrapError) -> Self {
         match err {
-            key_wrap::UnwrapError::InvalidCiphertextLength => CryptoError::InvalidCiphertextLength,
-            key_wrap::UnwrapError::CiphertextTooShort => CryptoError::InvalidCiphertextLength,
+            key_wrap::UnwrapError::InvalidCiphertextLength
+            | key_wrap::UnwrapError::CiphertextTooShort => CryptoError::InvalidCiphertextLength,
             key_wrap::UnwrapError::InvalidIntegrityCheck => CryptoError::KeyUnwrapIntegrityFailed,
         }
     }

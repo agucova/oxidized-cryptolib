@@ -7,11 +7,40 @@
 //!
 //! Error handling uses a Result-like pattern with opaque `FsResult*` types.
 //! Each result type has `isOk()`, `getError()` (returns errno), and a value getter.
+//!
+//! ## XPC Client
+//!
+//! On macOS, this crate also provides an XPC client for communicating with the
+//! FSKit extension from CLI or Desktop applications. See the [`xpc`] module for details.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+// swift_bridge generates code with unnecessary casts that we can't control
+#![allow(clippy::unnecessary_cast)]
 
 mod filesystem;
+
+/// FSKit mount backend implementation.
+///
+/// This module provides a `MountBackend` implementation for FSKit,
+/// allowing the CLI and desktop apps to use FSKit as a mount backend.
+#[cfg(target_os = "macos")]
+mod backend;
+
+#[cfg(target_os = "macos")]
+pub use backend::{FskitBackend, FskitMountHandle};
+
+/// XPC client for controlling the FSKit extension.
+///
+/// This module provides a high-level Rust client for mounting and managing
+/// Cryptomator vaults via the FSKit extension's XPC service.
+///
+/// # Availability
+///
+/// The XPC client is only available on macOS 15.4+. Use [`FskitClient::is_available`]
+/// to check before attempting to connect.
+#[cfg(target_os = "macos")]
+pub mod xpc;
 
 pub use filesystem::{
     crypto_fs_new, CryptoFilesystem, DirectoryEntry, FileAttributes, FsError,

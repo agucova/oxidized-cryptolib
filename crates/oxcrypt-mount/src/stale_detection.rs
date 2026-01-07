@@ -10,13 +10,12 @@
 //! 2. The owning process is dead
 //! 3. The mount still exists in the system mount table
 //!
-//! We NEVER auto-unmount orphaned mounts (ours but not tracked) - we only warn.
+//! By default we NEVER auto-unmount orphaned mounts (ours but not tracked) - we only warn.
 
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 use crate::mount_markers::{find_our_mounts, is_our_mount, SystemMount};
-use crate::mount_utils::is_directory_readable;
+use crate::mount_utils::normalize_mount_path;
 
 /// Classification of a mount's status for cleanup decisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +46,7 @@ pub enum MountStatus {
 }
 
 /// Reasons why a mount is considered stale.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaleReason {
     /// The process that created the mount is no longer running.
     ProcessDead {
@@ -67,7 +66,7 @@ pub enum StaleReason {
 #[derive(Debug, Clone)]
 pub struct TrackedMount {
     /// The mount point path
-    pub mountpoint: std::path::PathBuf,
+    pub mountpoint: PathBuf,
     /// Process ID of the mount daemon/process
     pub pid: u32,
     /// Optional: filesystem name for marker verification
@@ -77,36 +76,30 @@ pub struct TrackedMount {
 /// Check the status of a tracked mount.
 ///
 /// This is the primary function for determining if a mount is safe to cleanup.
+/// It uses only non-blocking operations (mount table + process checks).
 ///
 /// # Arguments
 ///
 /// * `tracked` - Information about the tracked mount
 /// * `system_mounts` - Current system mounts (from `get_system_mounts_detailed`)
-/// * `check_timeout` - Timeout for responsiveness checks (recommended: 500ms)
 ///
 /// # Safety Guarantees
 ///
 /// This function will return:
-/// - `MountStatus::Active` if the process is alive (even if mount is unresponsive)
+/// - `MountStatus::Active` if the process is alive
 /// - `MountStatus::Foreign` if the mount doesn't have our markers
-/// - `MountStatus::Stale` only if process is dead AND mount exists
-pub fn check_mount_status(
-    tracked: &TrackedMount,
-    system_mounts: &[SystemMount],
-    check_timeout: Duration,
-) -> MountStatus {
+/// - `MountStatus::Stale` only if process is dead AND mount exists in table
+///
+/// # Non-blocking
+///
+/// This function never touches the filesystem, so it cannot block on ghost mounts.
+pub fn check_mount_status(tracked: &TrackedMount, system_mounts: &[SystemMount]) -> MountStatus {
     // Step 1: Check if this mount is in the system mount table
-    // Canonicalize paths for comparison (handles /tmp -> /private/tmp symlinks on macOS)
-    let tracked_canonical = tracked
-        .mountpoint
-        .canonicalize()
-        .unwrap_or_else(|_| tracked.mountpoint.clone());
+    // Use normalize_mount_path for comparison (handles /tmp -> /private/tmp symlinks on macOS)
+    let tracked_normalized = normalize_mount_path(&tracked.mountpoint);
     let system_mount = system_mounts.iter().find(|m| {
-        let mount_canonical = m
-            .mountpoint
-            .canonicalize()
-            .unwrap_or_else(|_| m.mountpoint.clone());
-        mount_canonical == tracked_canonical
+        let mount_normalized = normalize_mount_path(&m.mountpoint);
+        mount_normalized == tracked_normalized
     });
 
     // Step 2: If not in system mounts, it's already unmounted (just stale state entry)
@@ -127,11 +120,6 @@ pub fn check_mount_status(
     }
 
     // Step 5: Process is dead - this is a stale mount
-    // Optional: verify mount is unresponsive (extra safety check)
-    let _is_responsive = is_directory_readable(&tracked.mountpoint, check_timeout);
-
-    // Even if responsive, if process is dead, consider it stale
-    // (The mount might be in a zombie state that still responds to some operations)
     MountStatus::Stale {
         reason: StaleReason::ProcessDead { pid: tracked.pid },
     }
@@ -145,32 +133,87 @@ pub fn check_mount_status(
 ///
 /// # Safety
 ///
-/// Orphaned mounts should be WARNED about but NOT automatically cleaned up,
-/// because:
+/// Orphaned mounts should be WARNED about by default and only cleaned up
+/// if explicitly configured (e.g., during startup cleanup), because:
 /// - They might be from another user running the same tool
 /// - They might be from a process that crashed before writing state
 /// - They might be intentionally mounted via a different mechanism
 pub fn find_orphaned_mounts(tracked_mountpoints: &[&Path]) -> anyhow::Result<Vec<SystemMount>> {
     let our_mounts = find_our_mounts()?;
 
-    // Canonicalize tracked paths for comparison (handles /tmp -> /private/tmp symlinks on macOS)
-    let tracked_canonical: Vec<_> = tracked_mountpoints
+    // Normalize tracked paths for comparison (handles /tmp -> /private/tmp symlinks on macOS)
+    // Uses normalize_mount_path which doesn't touch the filesystem (no ghost mount blocking)
+    let tracked_normalized: Vec<_> = tracked_mountpoints
         .iter()
-        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+        .map(|p| normalize_mount_path(p))
         .collect();
 
     let orphans: Vec<SystemMount> = our_mounts
         .into_iter()
         .filter(|m| {
-            let mount_canonical = m
-                .mountpoint
-                .canonicalize()
-                .unwrap_or_else(|_| m.mountpoint.clone());
-            !tracked_canonical.contains(&mount_canonical)
+            let mount_normalized = normalize_mount_path(&m.mountpoint);
+            !tracked_normalized.contains(&mount_normalized)
         })
         .collect();
 
     Ok(orphans)
+}
+
+/// Canonicalize a path with a timeout to avoid blocking on ghost mounts.
+///
+/// # Deprecation Warning
+///
+/// This function leaks threads when the canonicalize call blocks on a ghost mount.
+/// The spawned thread enters kernel D-state and cannot be killed.
+///
+/// **Prefer [`normalize_mount_path`](crate::normalize_mount_path)** for mount path
+/// comparison, which handles known symlinks without touching the filesystem.
+///
+/// # Arguments
+///
+/// * `path` - The path to canonicalize
+/// * `timeout_secs` - Timeout in seconds before giving up and returning the original path
+///
+/// # Returns
+///
+/// The canonical path if successful, or the original path if:
+/// - The path doesn't exist
+/// - The canonicalize call timed out (likely a ghost mount)
+#[deprecated(
+    since = "0.2.0",
+    note = "Leaks threads on ghost mounts. Use normalize_mount_path() instead."
+)]
+pub fn canonicalize_with_timeout(path: &Path, timeout_secs: u64) -> PathBuf {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    let path_clone = path.to_path_buf();
+
+    std::thread::spawn(move || {
+        let result = path_clone.canonicalize();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(canonical)) => canonical,
+        Ok(Err(_)) => {
+            // canonicalize() returned an error (e.g., path doesn't exist)
+            tracing::debug!(
+                "Failed to canonicalize {}, using original path",
+                path.display()
+            );
+            path.to_path_buf()
+        }
+        Err(_) => {
+            // Timeout - likely a ghost mount
+            tracing::warn!(
+                "canonicalize() timed out for {} (possible ghost mount), using original path",
+                path.display()
+            );
+            path.to_path_buf()
+        }
+    }
 }
 
 /// Check if a process with the given PID is alive.
@@ -183,7 +226,10 @@ pub fn is_process_alive(pid: u32) -> bool {
 
     // kill(pid, 0) checks if process exists without sending a signal
     // Returns Ok(()) if process exists, Err with ESRCH if it doesn't
-    kill(Pid::from_raw(pid as i32), None).is_ok()
+    // Safe cast: PID values are always small positive integers, well within i32 range
+    #[allow(clippy::cast_possible_wrap)]
+    let raw_pid = pid as i32;
+    kill(Pid::from_raw(raw_pid), None).is_ok()
 }
 
 #[cfg(windows)]
@@ -233,7 +279,7 @@ mod tests {
         let tracked = make_tracked("/mnt/vault", 12345);
         let system_mounts = vec![]; // No system mounts
 
-        let status = check_mount_status(&tracked, &system_mounts, Duration::from_millis(100));
+        let status = check_mount_status(&tracked, &system_mounts);
 
         assert_eq!(
             status,
@@ -248,7 +294,7 @@ mod tests {
         let tracked = make_tracked("/mnt/vault", 12345);
         let system_mounts = vec![make_system_mount("/mnt/vault", "sshfs#user@host")];
 
-        let status = check_mount_status(&tracked, &system_mounts, Duration::from_millis(100));
+        let status = check_mount_status(&tracked, &system_mounts);
 
         assert_eq!(status, MountStatus::Foreign);
     }
@@ -260,7 +306,7 @@ mod tests {
         let tracked = make_tracked("/mnt/vault", current_pid);
         let system_mounts = vec![make_system_mount("/mnt/vault", "cryptomator:test")];
 
-        let status = check_mount_status(&tracked, &system_mounts, Duration::from_millis(100));
+        let status = check_mount_status(&tracked, &system_mounts);
 
         assert_eq!(status, MountStatus::Active);
     }
@@ -272,7 +318,7 @@ mod tests {
         let tracked = make_tracked("/mnt/vault", dead_pid);
         let system_mounts = vec![make_system_mount("/mnt/vault", "cryptomator:test")];
 
-        let status = check_mount_status(&tracked, &system_mounts, Duration::from_millis(100));
+        let status = check_mount_status(&tracked, &system_mounts);
 
         assert!(matches!(
             status,

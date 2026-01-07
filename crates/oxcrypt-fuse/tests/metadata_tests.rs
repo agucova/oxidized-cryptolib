@@ -353,3 +353,157 @@ fn test_file_in_deep_directory() {
     assert_is_file(&mount, "deep/path/to/dir/file.txt");
     assert_file_size(&mount, "deep/path/to/dir/file.txt", 7);
 }
+
+// =============================================================================
+// Timestamps
+// =============================================================================
+
+#[test]
+fn test_mtime_is_not_current_time() {
+    // Tests that getattr returns actual mtime from the encrypted file,
+    // not the current time. This is critical for `ls -lt`, `rsync --update`,
+    // and incremental backup tools.
+    skip_if_no_fuse!();
+    let mount = require_mount!(TestMount::with_temp_vault());
+
+    // Create a file
+    mount.write("timestamp_test.txt", b"content").expect("write failed");
+
+    // Wait a bit to ensure any clock drift is noticeable
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Get metadata
+    let metadata = mount.metadata("timestamp_test.txt").expect("stat failed");
+    let mtime = metadata.modified().expect("mtime unavailable");
+
+    // The mtime should be in the past (when file was created), not now
+    let now = std::time::SystemTime::now();
+    let age = now.duration_since(mtime).expect("mtime is in the future");
+
+    // File was created 200ms+ ago, so mtime should reflect that
+    // (Allow some tolerance for filesystem granularity)
+    assert!(
+        age.as_millis() >= 100,
+        "mtime should reflect actual creation time, not current time. Age: {:?}",
+        age
+    );
+}
+
+#[test]
+fn test_mtime_changes_on_write() {
+    // Tests that mtime is updated when file content is modified
+    skip_if_no_fuse!();
+    let mount = require_mount!(TestMount::with_temp_vault());
+
+    // Create initial file
+    mount.write("mtime_write.txt", b"initial").expect("write 1 failed");
+    let meta1 = mount.metadata("mtime_write.txt").expect("stat 1 failed");
+    let mtime1 = meta1.modified().expect("mtime1 unavailable");
+
+    // Wait to ensure mtime difference is detectable
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Modify file
+    mount.write("mtime_write.txt", b"modified content").expect("write 2 failed");
+    let meta2 = mount.metadata("mtime_write.txt").expect("stat 2 failed");
+    let mtime2 = meta2.modified().expect("mtime2 unavailable");
+
+    // mtime should have changed
+    assert!(
+        mtime2 > mtime1,
+        "mtime should increase after write: mtime1={:?}, mtime2={:?}",
+        mtime1,
+        mtime2
+    );
+}
+
+#[test]
+fn test_different_files_have_different_mtimes() {
+    // Tests that multiple files created at different times have different mtimes
+    skip_if_no_fuse!();
+    let mount = require_mount!(TestMount::with_temp_vault());
+
+    // Create first file
+    mount.write("file1.txt", b"one").expect("write 1 failed");
+    let meta1 = mount.metadata("file1.txt").expect("stat 1 failed");
+    let mtime1 = meta1.modified().expect("mtime1 unavailable");
+
+    // Wait to ensure mtime difference
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Create second file
+    mount.write("file2.txt", b"two").expect("write 2 failed");
+    let meta2 = mount.metadata("file2.txt").expect("stat 2 failed");
+    let mtime2 = meta2.modified().expect("mtime2 unavailable");
+
+    // Files created at different times should have different mtimes
+    assert!(
+        mtime2 > mtime1,
+        "Files created at different times should have different mtimes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_touch_updates_mtime() {
+    // Tests that touch (utimens setattr) updates mtime
+    skip_if_no_fuse!();
+    let mount = require_mount!(TestMount::with_temp_vault());
+
+    // Create a file
+    mount.write("touch_test.txt", b"content").expect("write failed");
+    let meta1 = mount.metadata("touch_test.txt").expect("stat 1 failed");
+    let mtime1 = meta1.modified().expect("mtime1 unavailable");
+
+    // Wait to ensure mtime difference
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Touch the file (update mtime to now)
+    use filetime::{set_file_mtime, FileTime};
+    let new_mtime = FileTime::now();
+    set_file_mtime(mount.path("touch_test.txt"), new_mtime).expect("touch failed");
+
+    // Read mtime again
+    let meta2 = mount.metadata("touch_test.txt").expect("stat 2 failed");
+    let mtime2 = meta2.modified().expect("mtime2 unavailable");
+
+    // mtime should have been updated
+    assert!(
+        mtime2 > mtime1,
+        "touch should update mtime: mtime1={:?}, mtime2={:?}",
+        mtime1,
+        mtime2
+    );
+}
+
+#[test]
+fn test_mtime_persists_across_close_reopen() {
+    // Tests that mtime from encrypted file is read correctly after close/reopen
+    skip_if_no_fuse!();
+    let mount = require_mount!(TestMount::with_temp_vault());
+
+    // Create a file and record mtime
+    mount.write("persist_mtime.txt", b"content").expect("write failed");
+    let meta1 = mount.metadata("persist_mtime.txt").expect("stat 1 failed");
+    let mtime1 = meta1.modified().expect("mtime1 unavailable");
+
+    // Read it again (forces a fresh getattr after cache expires)
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let meta2 = mount.metadata("persist_mtime.txt").expect("stat 2 failed");
+    let mtime2 = meta2.modified().expect("mtime2 unavailable");
+
+    // mtime should remain the same (within 1 second tolerance for granularity)
+    let diff = if mtime1 > mtime2 {
+        mtime1.duration_since(mtime2).unwrap_or_default()
+    } else {
+        mtime2.duration_since(mtime1).unwrap_or_default()
+    };
+
+    assert!(
+        diff.as_secs() < 2,
+        "mtime should persist: mtime1={:?}, mtime2={:?}, diff={:?}",
+        mtime1,
+        mtime2,
+        diff
+    );
+}

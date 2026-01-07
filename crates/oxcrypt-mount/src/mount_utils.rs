@@ -3,16 +3,77 @@
 //! When a FUSE daemon crashes without proper cleanup, the mount becomes "stale" -
 //! any filesystem operation on it blocks indefinitely. This module provides
 //! utilities to detect such situations and find alternative mount points.
+//!
+//! # Non-blocking Design
+//!
+//! The primary functions in this module use the system mount table for detection,
+//! which never blocks on ghost mounts. Functions that probe the filesystem directly
+//! are deprecated as they can leak threads.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Duration;
 
-/// Default timeout for filesystem accessibility checks
+use crate::mount_markers::{get_system_mounts_detailed, SystemMount};
+
+/// Default timeout for filesystem accessibility checks (deprecated functions only)
 pub const DEFAULT_ACCESS_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Maximum suffix number to try when finding alternative mount points
 const MAX_SUFFIX: u32 = 99;
+
+/// Normalize a path for mount comparison without touching the filesystem.
+///
+/// This avoids the `canonicalize()` syscall which can block indefinitely on ghost mounts.
+/// For mount comparison purposes, we only need to handle:
+/// 1. Trailing slashes
+/// 2. Known symlink mappings (e.g., `/tmp` -> `/private/tmp` on macOS)
+///
+/// # Example
+///
+/// ```
+/// use std::path::Path;
+/// use oxcrypt_mount::normalize_mount_path;
+///
+/// // On macOS, /tmp is a symlink to /private/tmp
+/// #[cfg(target_os = "macos")]
+/// assert_eq!(
+///     normalize_mount_path(Path::new("/tmp/myvault")),
+///     Path::new("/private/tmp/myvault")
+/// );
+///
+/// // Trailing slashes are removed
+/// assert_eq!(
+///     normalize_mount_path(Path::new("/mnt/vault/")),
+///     Path::new("/mnt/vault")
+/// );
+/// ```
+pub fn normalize_mount_path(path: &Path) -> PathBuf {
+    let mut path_str = path.to_string_lossy().into_owned();
+
+    // Remove trailing slash (except for root)
+    if path_str.len() > 1 && path_str.ends_with('/') {
+        path_str.pop();
+    }
+
+    // Handle known macOS symlinks without syscalls
+    #[cfg(target_os = "macos")]
+    {
+        // /tmp is a symlink to /private/tmp on macOS
+        if path_str == "/tmp" || path_str.starts_with("/tmp/") {
+            path_str = path_str.replacen("/tmp", "/private/tmp", 1);
+        }
+        // /var is a symlink to /private/var on macOS
+        if path_str == "/var" || path_str.starts_with("/var/") {
+            path_str = path_str.replacen("/var", "/private/var", 1);
+        }
+        // /etc is a symlink to /private/etc on macOS
+        if path_str == "/etc" || path_str.starts_with("/etc/") {
+            path_str = path_str.replacen("/etc", "/private/etc", 1);
+        }
+    }
+
+    PathBuf::from(path_str)
+}
 
 /// Result of checking mount point accessibility
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,62 +88,129 @@ pub enum MountPointStatus {
     NotADirectory,
     /// Parent directory is inaccessible (possibly stale mount)
     ParentInaccessible,
+    /// Path is already a mount point
+    AlreadyMounted,
     /// Some other error occurred
     Error(String),
 }
 
-/// Check if a path is accessible within a timeout.
+// ============================================================================
+// Non-blocking mount table functions (preferred)
+// ============================================================================
+
+/// Check if a path is already a mount point using the system mount table.
 ///
-/// This spawns a thread to perform the check, avoiding blocking the caller
-/// if the path is on a stale FUSE mount.
-///
-/// # Arguments
-///
-/// * `path` - The path to check
-/// * `timeout` - Maximum time to wait for the check
+/// This is a non-blocking check that never touches the filesystem.
 ///
 /// # Returns
 ///
-/// `true` if the path was accessible within the timeout, `false` otherwise.
+/// `Some(mount)` if the path is a mountpoint, `None` otherwise.
+pub fn is_path_mounted(path: &Path) -> Option<SystemMount> {
+    let system_mounts = get_system_mounts_detailed().ok()?;
+    let normalized = normalize_mount_path(path);
+
+    system_mounts.into_iter().find(|m| {
+        let mount_normalized = normalize_mount_path(&m.mountpoint);
+        mount_normalized == normalized
+    })
+}
+
+/// Check if a path is under a FUSE mount point using the system mount table.
+///
+/// This is a non-blocking check that never touches the filesystem.
+///
+/// # Returns
+///
+/// `Some(mountpoint)` if the path is under a FUSE mount, `None` otherwise.
+pub fn is_under_fuse_mount(path: &Path) -> Option<PathBuf> {
+    let system_mounts = get_system_mounts_detailed().ok()?;
+    let normalized = normalize_mount_path(path);
+    let path_str = normalized.to_string_lossy();
+
+    for mount in system_mounts {
+        if crate::mount_markers::is_fuse_fstype(&mount.fstype) {
+            let mount_str = mount.mountpoint.to_string_lossy();
+            if path_str.starts_with(mount_str.as_ref()) {
+                return Some(mount.mountpoint);
+            }
+        }
+    }
+    None
+}
+
+// ============================================================================
+// Deprecated probing functions (leak threads on ghost mounts)
+// ============================================================================
+
+/// Check if a path is accessible within a timeout.
+///
+/// # Deprecation Warning
+///
+/// This function spawns a thread that may leak if the path is on a ghost mount.
+/// Prefer using [`is_path_mounted`] or [`is_under_fuse_mount`] for mount detection.
+#[deprecated(
+    since = "0.2.0",
+    note = "Leaks threads on ghost mounts. Use is_path_mounted() for mount detection."
+)]
 pub fn is_path_accessible(path: &Path, timeout: Duration) -> bool {
+    use crate::bounded_pool::BOUNDED_FS_POOL;
+
     let path = path.to_path_buf();
-    let (tx, rx) = mpsc::channel();
-
-    std::thread::spawn(move || {
-        // Try to stat the path - this will block on stale mounts
-        let result = std::fs::metadata(&path).is_ok();
-        let _ = tx.send(result);
-    });
-
-    rx.recv_timeout(timeout).unwrap_or(false)
+    BOUNDED_FS_POOL
+        .run_with_timeout(timeout, move || {
+            std::fs::metadata(&path).map(|_| true)
+        })
+        .unwrap_or(false)
 }
 
 /// Check if a directory is readable within a timeout.
 ///
-/// More thorough than `is_path_accessible` - actually tries to read directory entries.
+/// # Deprecation Warning
+///
+/// This function spawns a thread that may leak if the path is on a ghost mount.
+/// Prefer using [`is_path_mounted`] for mount detection.
+#[deprecated(
+    since = "0.2.0",
+    note = "Leaks threads on ghost mounts. Use is_path_mounted() for mount detection."
+)]
 pub fn is_directory_readable(path: &Path, timeout: Duration) -> bool {
+    use crate::bounded_pool::BOUNDED_FS_POOL;
+    use std::io;
+
     let path = path.to_path_buf();
-    let (tx, rx) = mpsc::channel();
-
-    std::thread::spawn(move || {
-        let result = std::fs::read_dir(&path)
-            .map(|mut entries| {
-                // Try to actually iterate - confirms FUSE is responding
-                let _ = entries.next();
-                true
-            })
-            .unwrap_or(false);
-        let _ = tx.send(result);
-    });
-
-    rx.recv_timeout(timeout).unwrap_or(false)
+    BOUNDED_FS_POOL
+        .run_with_timeout(timeout, move || {
+            std::fs::read_dir(&path)
+                .map(|mut entries| {
+                    let _ = entries.next();
+                    true
+                })
+                .map_err(|e| io::Error::new(e.kind(), e))
+        })
+        .unwrap_or(false)
 }
 
 /// Check the status of a potential mount point.
 ///
-/// Uses timeout-wrapped filesystem operations to avoid blocking on stale mounts.
+/// # Deprecation Warning
+///
+/// This function probes the filesystem and may leak threads on ghost mounts.
+/// Use [`is_path_mounted`] instead for non-blocking mount detection.
+#[deprecated(
+    since = "0.2.0",
+    note = "Leaks threads on ghost mounts. Use is_path_mounted() instead."
+)]
 pub fn check_mountpoint_status(path: &Path, timeout: Duration) -> MountPointStatus {
-    // First, check if parent directory is accessible
+    use crate::bounded_pool::BOUNDED_FS_POOL;
+    use std::io;
+
+    // First check mount table (non-blocking)
+    if is_path_mounted(path).is_some() {
+        return MountPointStatus::AlreadyMounted;
+    }
+
+    // Check parent with probe (may leak)
+    #[allow(deprecated)]
     if let Some(parent) = path.parent() {
         if parent.as_os_str().is_empty() || parent == Path::new("/") {
             // Root or empty parent, skip check
@@ -91,40 +219,35 @@ pub fn check_mountpoint_status(path: &Path, timeout: Duration) -> MountPointStat
         }
     }
 
-    // Now check the path itself with a timeout
     let path_buf = path.to_path_buf();
-    let (tx, rx) = mpsc::channel();
 
-    std::thread::spawn(move || {
+    let result = BOUNDED_FS_POOL.run_with_timeout(timeout, move || {
         match std::fs::metadata(&path_buf) {
             Ok(meta) => {
                 if meta.is_dir() {
-                    // It's a directory - check if it's readable (not stale)
                     match std::fs::read_dir(&path_buf) {
                         Ok(mut entries) => {
-                            // Try to iterate
                             let _ = entries.next();
-                            tx.send(MountPointStatus::Available)
+                            Ok(MountPointStatus::Available)
                         }
-                        Err(_) => tx.send(MountPointStatus::StaleMountDetected),
+                        Err(_) => Ok(MountPointStatus::StaleMountDetected),
                     }
                 } else {
-                    tx.send(MountPointStatus::NotADirectory)
+                    Ok(MountPointStatus::NotADirectory)
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tx.send(MountPointStatus::DoesNotExist)
-            }
-            Err(e) => tx.send(MountPointStatus::Error(e.to_string())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(MountPointStatus::DoesNotExist),
+            Err(e) => Ok(MountPointStatus::Error(e.to_string())),
         }
     });
 
-    match rx.recv_timeout(timeout) {
+    match result {
         Ok(status) => status,
-        Err(mpsc::RecvTimeoutError::Timeout) => MountPointStatus::StaleMountDetected,
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            MountPointStatus::Error("Check thread panicked".to_string())
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => MountPointStatus::StaleMountDetected,
+        Err(e) if e.kind() == io::ErrorKind::ResourceBusy => {
+            MountPointStatus::Error("Too many blocked threads - possible ghost mounts".to_string())
         }
+        Err(e) => MountPointStatus::Error(e.to_string()),
     }
 }
 
@@ -208,111 +331,61 @@ pub fn is_on_fuse_mount(_path: &Path) -> Option<PathBuf> {
 ///
 /// ...up to `/path/to/vault-99`
 ///
+/// # Non-blocking Design
+///
+/// This function only checks the system mount table. It does NOT probe the filesystem,
+/// which means it won't block on ghost FUSE mounts.
+///
+/// A path is considered "available" if it's not already a mount point. The caller
+/// is responsible for:
+/// - Creating the directory if it doesn't exist
+/// - Handling any filesystem errors during the actual mount operation
+///
 /// # Arguments
 ///
 /// * `base_path` - The preferred mount point path
-/// * `timeout` - Timeout for accessibility checks
 ///
 /// # Returns
 ///
-/// The first available path, or an error if none found.
-pub fn find_available_mountpoint(
-    base_path: &Path,
-    timeout: Duration,
-) -> Result<PathBuf, MountPointError> {
-    // First, check if parent directory is accessible
+/// The first path that is not already a mount point, or an error if none found.
+pub fn find_available_mountpoint(base_path: &Path) -> Result<PathBuf, MountPointError> {
+    // Check if parent is under a FUSE mount (potential ghost mount issue)
+    // This is informational only - we can't know if it's stale without probing
     if let Some(parent) = base_path.parent()
         && !parent.as_os_str().is_empty()
         && parent != Path::new("/")
+        && let Some(fuse_mount) = is_under_fuse_mount(parent)
     {
-        match check_mountpoint_status(parent, timeout) {
-            MountPointStatus::Available | MountPointStatus::DoesNotExist => {}
-            MountPointStatus::StaleMountDetected | MountPointStatus::ParentInaccessible => {
-                // Parent is on a stale mount - we can't create anything here
-                if let Some(fuse_mount) = is_on_fuse_mount(parent) {
-                    return Err(MountPointError::ParentOnStaleFuseMount {
-                        parent: parent.to_path_buf(),
-                        fuse_mount,
-                    });
-                }
-                return Err(MountPointError::ParentInaccessible(parent.to_path_buf()));
-            }
-            MountPointStatus::NotADirectory => {
-                return Err(MountPointError::ParentNotDirectory(parent.to_path_buf()));
-            }
-            MountPointStatus::Error(e) => {
-                return Err(MountPointError::AccessError(e));
-            }
-        }
+        tracing::debug!(
+            "Parent {} is under FUSE mount {}",
+            parent.display(),
+            fuse_mount.display()
+        );
+        // We don't block here - let the actual mount operation fail if there's a problem
     }
 
     // Try the base path first
-    match check_mountpoint_status(base_path, timeout) {
-        MountPointStatus::Available => {
-            // Path exists and is accessible - check if it's empty
-            if is_directory_empty(base_path, timeout) {
-                return Ok(base_path.to_path_buf());
-            }
-            // Directory not empty, might be an existing mount - try suffixes
-        }
-        MountPointStatus::DoesNotExist => {
-            // Perfect - we can create it
-            return Ok(base_path.to_path_buf());
-        }
-        MountPointStatus::StaleMountDetected => {
-            // Stale mount at base path - try suffixes
-            tracing::warn!(
-                "Stale mount detected at {}, trying alternative paths",
-                base_path.display()
-            );
-        }
-        MountPointStatus::NotADirectory => {
-            // There's a file here - try suffixes
-        }
-        MountPointStatus::ParentInaccessible => {
-            // Already handled above, but just in case
-            return Err(MountPointError::ParentInaccessible(
-                base_path.parent().unwrap_or(base_path).to_path_buf(),
-            ));
-        }
-        MountPointStatus::Error(e) => {
-            return Err(MountPointError::AccessError(e));
-        }
+    if is_path_mounted(base_path).is_none() {
+        // Not a mount point - available
+        return Ok(base_path.to_path_buf());
     }
+
+    tracing::debug!(
+        "Path {} is already a mount point, trying alternatives",
+        base_path.display()
+    );
 
     // Try with suffixes
     let base_str = base_path.to_string_lossy();
     for suffix in 2..=MAX_SUFFIX {
-        let suffixed_path = PathBuf::from(format!("{}-{}", base_str, suffix));
+        let suffixed_path = PathBuf::from(format!("{base_str}-{suffix}"));
 
-        match check_mountpoint_status(&suffixed_path, timeout) {
-            MountPointStatus::DoesNotExist => {
-                tracing::info!(
-                    "Using alternative mount point: {}",
-                    suffixed_path.display()
-                );
-                return Ok(suffixed_path);
-            }
-            MountPointStatus::Available => {
-                if is_directory_empty(&suffixed_path, timeout) {
-                    tracing::info!(
-                        "Using alternative mount point: {}",
-                        suffixed_path.display()
-                    );
-                    return Ok(suffixed_path);
-                }
-                // Not empty, continue to next suffix
-            }
-            MountPointStatus::StaleMountDetected
-            | MountPointStatus::NotADirectory
-            | MountPointStatus::Error(_) => {
-                // Keep trying
-                continue;
-            }
-            MountPointStatus::ParentInaccessible => {
-                // Same parent, won't work
-                break;
-            }
+        if is_path_mounted(&suffixed_path).is_none() {
+            tracing::info!(
+                "Using alternative mount point: {}",
+                suffixed_path.display()
+            );
+            return Ok(suffixed_path);
         }
     }
 
@@ -322,46 +395,9 @@ pub fn find_available_mountpoint(
     })
 }
 
-/// Check if a directory is empty (with timeout protection).
-fn is_directory_empty(path: &Path, timeout: Duration) -> bool {
-    let path = path.to_path_buf();
-    let (tx, rx) = mpsc::channel();
-
-    std::thread::spawn(move || {
-        let result = std::fs::read_dir(&path)
-            .map(|mut entries| entries.next().is_none())
-            .unwrap_or(false);
-        let _ = tx.send(result);
-    });
-
-    rx.recv_timeout(timeout).unwrap_or(false)
-}
-
 /// Errors that can occur when finding a mount point.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum MountPointError {
-    /// Parent directory is on a stale FUSE mount
-    #[error(
-        "Cannot mount: parent directory {} is on a stale FUSE mount ({}). \
-         Please unmount or force-unmount the stale mount first.",
-        parent.display(),
-        fuse_mount.display()
-    )]
-    ParentOnStaleFuseMount {
-        /// The parent directory path
-        parent: PathBuf,
-        /// The FUSE mount point containing it
-        fuse_mount: PathBuf,
-    },
-
-    /// Parent directory is inaccessible
-    #[error("Parent directory {} is inaccessible", .0.display())]
-    ParentInaccessible(PathBuf),
-
-    /// Parent path is not a directory
-    #[error("Parent path {} is not a directory", .0.display())]
-    ParentNotDirectory(PathBuf),
-
     /// Could not find any available mount point path
     #[error(
         "Could not find available mount point. Tried {} through {}-{}",
@@ -375,10 +411,6 @@ pub enum MountPointError {
         /// Number of suffixes tried
         tried: u32,
     },
-
-    /// General access error
-    #[error("Error accessing path: {0}")]
-    AccessError(String),
 }
 
 #[cfg(test)]
@@ -424,46 +456,43 @@ mod tests {
     }
 
     #[test]
-    fn test_find_available_mountpoint_prefers_base() {
+    fn test_find_available_mountpoint_returns_base_when_not_mounted() {
+        // Test that find_available_mountpoint returns the base path when it's not a mount point
+        // Since we can't easily create mock mount points, we test with a path that definitely
+        // isn't a mount point
         let temp = TempDir::new().unwrap();
         let base = temp.path().join("vault");
 
-        let result = find_available_mountpoint(&base, DEFAULT_ACCESS_TIMEOUT);
+        let result = find_available_mountpoint(&base);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), base);
     }
 
     #[test]
-    fn test_find_available_mountpoint_uses_suffix_when_occupied() {
+    fn test_find_available_mountpoint_with_existing_dir() {
+        // Creating a directory does NOT make it a mount point, so it should still be returned
         let temp = TempDir::new().unwrap();
         let base = temp.path().join("vault");
 
-        // Create base directory with content
+        // Create base directory with content - this is NOT a mount point
         fs::create_dir(&base).unwrap();
         fs::write(base.join("file.txt"), "content").unwrap();
 
-        let result = find_available_mountpoint(&base, DEFAULT_ACCESS_TIMEOUT);
+        // Should still return base because it's not a mount point
+        let result = find_available_mountpoint(&base);
         assert!(result.is_ok());
-        let found = result.unwrap();
-        assert_eq!(found, temp.path().join("vault-2"));
+        assert_eq!(result.unwrap(), base);
     }
 
     #[test]
-    fn test_find_available_mountpoint_skips_occupied_suffixes() {
+    fn test_find_available_mountpoint_nonexistent_path() {
+        // A nonexistent path is also not a mount point
         let temp = TempDir::new().unwrap();
-        let base = temp.path().join("vault");
+        let base = temp.path().join("nonexistent_vault");
 
-        // Create base and -2 with content
-        fs::create_dir(&base).unwrap();
-        fs::write(base.join("file.txt"), "content").unwrap();
-
-        let vault2 = temp.path().join("vault-2");
-        fs::create_dir(&vault2).unwrap();
-        fs::write(vault2.join("file.txt"), "content").unwrap();
-
-        let result = find_available_mountpoint(&base, DEFAULT_ACCESS_TIMEOUT);
+        let result = find_available_mountpoint(&base);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), temp.path().join("vault-3"));
+        assert_eq!(result.unwrap(), base);
     }
 
     #[test]

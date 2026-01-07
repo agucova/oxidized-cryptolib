@@ -5,6 +5,7 @@
 //! the refactoring to share `VaultCore` between implementations.
 
 #![cfg(feature = "async")]
+#![allow(clippy::cast_possible_truncation)] // Test code with safe type conversions
 
 mod common;
 

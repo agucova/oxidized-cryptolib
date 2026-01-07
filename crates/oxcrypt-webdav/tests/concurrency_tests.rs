@@ -163,7 +163,7 @@ async fn test_concurrent_write_same_file_last_wins() {
 
     // Wait for all writes
     while let Some(result) = handles.join_next().await {
-        result.expect("Task panicked");
+        let _ = result.expect("Task panicked");
     }
 
     // File should exist with one of the written contents
@@ -238,7 +238,7 @@ async fn test_concurrent_create_delete_same_file() {
 
     // Wait for all operations
     while let Some(result) = handles.join_next().await {
-        result.expect("Task panicked");
+        let _ = result.expect("Task panicked");
     }
 
     // File may or may not exist - but server shouldn't crash
@@ -364,7 +364,7 @@ async fn test_read_after_parallel_write() {
     }
 
     while let Some(result) = handles.join_next().await {
-        result.expect("Task panicked");
+        let _ = result.expect("Task panicked");
     }
 
     // Final read should see updated content
@@ -406,7 +406,7 @@ async fn test_propfind_during_writes() {
     }
 
     while let Some(result) = handles.join_next().await {
-        result.expect("Task panicked");
+        let _ = result.expect("Task panicked");
     }
 
     // All files should exist
@@ -481,7 +481,7 @@ async fn test_many_small_files() {
     }
 
     while let Some(result) = handles.join_next().await {
-        result.expect("Task panicked");
+        let _ = result.expect("Task panicked");
     }
 
     // Verify all exist

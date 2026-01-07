@@ -95,14 +95,14 @@ pub async fn decrypt_file_with_context_async(
     // Decryption is CPU-bound, so we do it synchronously
     // (could use spawn_blocking for very large files, but chunk processing is already efficient)
     debug!("Decrypting header");
-    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, context.clone())?;
+    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, &context)?;
 
     debug!("Decrypting content");
     let content = decrypt_file_content_with_context(
         &encrypted[68..],
         &header.content_key,
         &encrypted[0..12],
-        context,
+        &context,
     )?;
 
     Ok(DecryptedFile { header, content })

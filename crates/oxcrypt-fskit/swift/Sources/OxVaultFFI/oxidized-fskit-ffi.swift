@@ -1,4 +1,3 @@
-import Foundation
 import COxVaultFFI
 
 public func create<GenericIntoRustString: IntoRustString>(_ vault_path: GenericIntoRustString, _ password: GenericIntoRustString) -> FsResultFs {
@@ -1169,3 +1168,6 @@ extension VolumeStatistics: Vectorizable {
         __swift_bridge__$Vec_VolumeStatistics$len(vecPtr)
     }
 }
+
+
+

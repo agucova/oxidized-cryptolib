@@ -58,12 +58,11 @@ impl WebDavError {
             WebDavError::Vault(e) => vault_error_to_fs_error_ref(e.as_ref()),
             WebDavError::Write(e) => write_error_to_fs_error_ref(e.as_ref()),
             WebDavError::Io(e) => io_error_to_fs_error(e),
-            WebDavError::InvalidPath(_) => FsError::GeneralFailure,
+            WebDavError::InvalidPath(_) | WebDavError::Server(_) => FsError::GeneralFailure,
             WebDavError::NotFound(_) => FsError::NotFound,
             WebDavError::AlreadyExists(_) => FsError::Exists,
             WebDavError::NotEmpty(_) => FsError::Forbidden,
             WebDavError::NotSupported => FsError::NotImplemented,
-            WebDavError::Server(_) => FsError::GeneralFailure,
         }
     }
 }
@@ -75,12 +74,13 @@ fn category_to_fs_error(category: VaultErrorCategory) -> FsError {
     match category {
         VaultErrorCategory::NotFound => FsError::NotFound,
         VaultErrorCategory::AlreadyExists => FsError::Exists,
-        VaultErrorCategory::NotEmpty => FsError::Forbidden,
-        VaultErrorCategory::IsDirectory => FsError::Forbidden,
-        VaultErrorCategory::NotDirectory => FsError::Forbidden,
-        VaultErrorCategory::InvalidArgument => FsError::GeneralFailure,
-        VaultErrorCategory::IoError => FsError::GeneralFailure,
-        VaultErrorCategory::PermissionDenied => FsError::Forbidden,
+        VaultErrorCategory::NotEmpty
+        | VaultErrorCategory::IsDirectory
+        | VaultErrorCategory::NotDirectory
+        | VaultErrorCategory::PermissionDenied => FsError::Forbidden,
+        VaultErrorCategory::InvalidArgument | VaultErrorCategory::IoError => {
+            FsError::GeneralFailure
+        }
         VaultErrorCategory::NotSupported => FsError::NotImplemented,
     }
 }
@@ -96,11 +96,17 @@ fn write_error_to_fs_error_ref(e: &VaultWriteError) -> FsError {
 }
 
 /// Converts a vault operation error to a dav-server FsError.
+///
+/// Takes ownership to work with `.map_err()` - the error is moved, not consumed.
+#[allow(clippy::needless_pass_by_value)]
 pub fn vault_error_to_fs_error(e: VaultOperationError) -> FsError {
     category_to_fs_error(VaultErrorCategory::from(&e))
 }
 
 /// Converts a vault write error to a dav-server FsError.
+///
+/// Takes ownership to work with `.map_err()` - the error is moved, not consumed.
+#[allow(clippy::needless_pass_by_value)]
 pub fn write_error_to_fs_error(e: VaultWriteError) -> FsError {
     category_to_fs_error(VaultErrorCategory::from(&e))
 }

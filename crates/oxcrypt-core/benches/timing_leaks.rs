@@ -411,7 +411,7 @@ fn timing_ctrmac_header(runner: &mut CtRunner, rng: &mut BenchRng) {
             let _ = std::hint::black_box(ctrmac_decrypt_header(
                 &header,
                 &master_key,
-                FileContext::new(),
+                &FileContext::new(),
             ));
         });
     }
@@ -476,7 +476,7 @@ fn timing_ctrmac_content(runner: &mut CtRunner, rng: &mut BenchRng) {
                 &content_key,
                 &header_nonce,
                 &mac_key,
-                FileContext::new(),
+                &FileContext::new(),
             ));
         });
     }

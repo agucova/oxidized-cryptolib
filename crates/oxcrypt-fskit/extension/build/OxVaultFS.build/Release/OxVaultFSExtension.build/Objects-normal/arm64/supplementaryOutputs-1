@@ -1,0 +1,12 @@
+{
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Shared/KeychainHelper.swift" : {
+    "abi-baseline-json" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension.abi.json",
+    "const-values" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension-primary.swiftconstvalues",
+    "dependencies" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension-primary.d",
+    "diagnostics" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension-primary.dia",
+    "objc-header" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension-Swift.h",
+    "swiftdoc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension.swiftdoc",
+    "swiftmodule" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension.swiftmodule",
+    "swiftsourceinfo" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/arm64/OxVaultFSExtension.swiftsourceinfo"
+  }
+}

@@ -19,7 +19,7 @@ tracing = { workspace = true }
 dav-server = "0.8"
 
 # HTTP server
-hyper = { version = "1.5", features = ["server", "http1"] }
+hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
 
 # Async runtime
@@ -44,3 +44,6 @@ tokio-test = "0.4"
 default = []
 # Enable tokio-console for async debugging (run `tokio-console` in another terminal)
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+
+[lints]
+workspace = true

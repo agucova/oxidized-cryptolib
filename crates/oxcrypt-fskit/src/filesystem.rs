@@ -99,14 +99,13 @@ impl FsError {
 impl From<VaultOperationError> for FsError {
     fn from(e: VaultOperationError) -> Self {
         match &e {
-            VaultOperationError::PathNotFound { .. } => FsError::NotFound,
-            VaultOperationError::FileNotFound { .. } => FsError::NotFound,
-            VaultOperationError::DirectoryNotFound { .. } => FsError::NotFound,
-            VaultOperationError::SymlinkNotFound { .. } => FsError::NotFound,
+            VaultOperationError::PathNotFound { .. }
+            | VaultOperationError::FileNotFound { .. }
+            | VaultOperationError::DirectoryNotFound { .. }
+            | VaultOperationError::SymlinkNotFound { .. } => FsError::NotFound,
             VaultOperationError::NotAFile { .. } => FsError::IsDirectory,
             VaultOperationError::NotADirectory { .. } => FsError::NotDirectory,
-            VaultOperationError::NotASymlink { .. } => FsError::InvalidArgument,
-            VaultOperationError::EmptyPath => FsError::InvalidArgument,
+            VaultOperationError::NotASymlink { .. } | VaultOperationError::EmptyPath => FsError::InvalidArgument,
             _ => {
                 let msg = e.to_string();
                 FsError::from_message(&msg)
@@ -118,12 +117,11 @@ impl From<VaultOperationError> for FsError {
 impl From<VaultWriteError> for FsError {
     fn from(e: VaultWriteError) -> Self {
         match &e {
-            VaultWriteError::FileNotFound { .. } => FsError::NotFound,
-            VaultWriteError::DirectoryNotFound { .. } => FsError::NotFound,
-            VaultWriteError::FileAlreadyExists { .. } => FsError::AlreadyExists,
-            VaultWriteError::DirectoryAlreadyExists { .. } => FsError::AlreadyExists,
-            VaultWriteError::SymlinkAlreadyExists { .. } => FsError::AlreadyExists,
-            VaultWriteError::PathExists { .. } => FsError::AlreadyExists,
+            VaultWriteError::FileNotFound { .. } | VaultWriteError::DirectoryNotFound { .. } => FsError::NotFound,
+            VaultWriteError::FileAlreadyExists { .. }
+            | VaultWriteError::DirectoryAlreadyExists { .. }
+            | VaultWriteError::SymlinkAlreadyExists { .. }
+            | VaultWriteError::PathExists { .. } => FsError::AlreadyExists,
             VaultWriteError::DirectoryNotEmpty { .. } => FsError::NotEmpty,
             _ => {
                 let msg = e.to_string();
@@ -275,7 +273,7 @@ impl FsResultHandle {
 
     /// Unwraps the handle (returns 0 if error).
     pub fn result_handle_unwrap(&self) -> u64 {
-        self.0.clone().unwrap_or(0)
+        self.0.unwrap_or(0)
     }
 }
 
@@ -291,7 +289,7 @@ impl FsResultUnit {
     /// Gets the error code (0 if success).
     pub fn result_unit_error(&self) -> i32 {
         match &self.0 {
-            Ok(_) => 0,
+            Ok(()) => 0,
             Err(e) => e.to_errno(),
         }
     }
@@ -339,13 +337,14 @@ impl FsResultWritten {
 
     /// Unwraps the count (returns 0 if error).
     pub fn result_written_unwrap(&self) -> i64 {
-        self.0.clone().unwrap_or(0)
+        self.0.unwrap_or(0)
     }
 }
 
 /// Factory function exposed to FFI for CryptoFilesystem creation.
+#[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
 pub fn crypto_fs_new(vault_path: String, password: String) -> FsResultFs {
-    FsResultFs(CryptoFilesystem::new_internal(vault_path, password))
+    FsResultFs(CryptoFilesystem::new_internal(&vault_path, &password))
 }
 
 /// Root item ID (FSKit reserves ID 1, so we use 2).
@@ -566,6 +565,7 @@ impl VolumeStatistics {
 /// Cached file attributes.
 #[derive(Clone)]
 struct CachedAttr {
+    #[allow(dead_code)]
     file_type: FileType,
     size: u64,
 }
@@ -600,7 +600,7 @@ pub struct CryptoFilesystem {
 
 impl CryptoFilesystem {
     /// Opens a Cryptomator vault at the given path (internal implementation).
-    fn new_internal(vault_path: String, password: String) -> Result<Self, FsError> {
+    fn new_internal(vault_path: &str, password: &str) -> Result<Self, FsError> {
         // Create tokio runtime for async operations
         let runtime = runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -612,7 +612,7 @@ impl CryptoFilesystem {
             })?;
 
         // Open vault - extracts key, reads config
-        let ops = VaultOperationsAsync::open(Path::new(&vault_path), &password)
+        let ops = VaultOperationsAsync::open(Path::new(vault_path), password)
             .map_err(|e| {
                 error!("Failed to open vault: {e}");
                 FsError::from(e)
@@ -675,7 +675,7 @@ impl CryptoFilesystem {
         let path_cstr = std::ffi::CString::new(vault_path.to_string_lossy().as_bytes())
             .map_err(|_| FsError::InvalidArgument)?;
 
-        let ret = unsafe { libc::statvfs(path_cstr.as_ptr(), &mut stat) };
+        let ret = unsafe { libc::statvfs(path_cstr.as_ptr(), &raw mut stat) };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
             error!("statvfs failed: {}", err);
@@ -683,20 +683,23 @@ impl CryptoFilesystem {
         }
 
         Ok(VolumeStatistics::new(
-            (stat.f_blocks as u64) * (stat.f_frsize as u64),
-            (stat.f_bavail as u64) * (stat.f_frsize as u64),
-            stat.f_files as u64,
-            stat.f_ffree as u64,
-            stat.f_frsize as u32,
+            u64::from(stat.f_blocks) * (stat.f_frsize as u64),
+            u64::from(stat.f_bavail) * (stat.f_frsize as u64),
+            u64::from(stat.f_files),
+            u64::from(stat.f_ffree),
+            // Safe cast: f_frsize from stat structure is a valid filesystem block size
+            #[allow(clippy::cast_possible_truncation)]
+            { stat.f_frsize as u32 },
         ))
     }
 
     /// Looks up an item by name in a parent directory.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
     pub fn lookup(&self, parent_id: u64, name: String) -> FsResultAttrs {
-        FsResultAttrs(self.lookup_internal(parent_id, name))
+        FsResultAttrs(self.lookup_internal(parent_id, &name))
     }
 
-    fn lookup_internal(&self, parent_id: u64, name: String) -> Result<FileAttributes, FsError> {
+    fn lookup_internal(&self, parent_id: u64, name: &str) -> Result<FileAttributes, FsError> {
         let start = Instant::now();
         self.stats.record_metadata_op();
 
@@ -719,7 +722,7 @@ impl CryptoFilesystem {
 
         // Try to find the item in the vault
         let ops = Arc::clone(&self.ops);
-        let name_clone = name.clone();
+        let name_clone = name.to_string();
         let parent_dir_id_clone = parent_dir_id.clone();
 
         let result: Result<(ItemKind, FileType), FsError> = self.runtime.block_on(async move {
@@ -757,19 +760,19 @@ impl CryptoFilesystem {
 
             Err(FsError::NotFound)
         });
-        let (kind, file_type) = result.map_err(|e| {
+        let (kind, file_type) = result.inspect_err(|_e| {
             self.stats.record_error();
             self.stats.record_metadata_latency(start.elapsed());
-            e
         })?;
 
-        let child_path = parent_path.join(&name);
+        let child_path = parent_path.join(name);
 
         // Allocate item ID
         let kind_clone: ItemKind = kind.clone();
+        let vault_path = VaultPath::new(name);
         let item_id = self
             .items
-            .get_or_insert_with(child_path, || PathEntry::new(VaultPath::new(&name), kind_clone));
+            .get_or_insert_with(&child_path, || PathEntry::new(vault_path, kind_clone));
 
         // Get size if it's a file
         let size = if file_type == FileType::Regular {
@@ -818,6 +821,19 @@ impl CryptoFilesystem {
     /// Enumerates directory contents.
     pub fn enumerate_directory(&self, item_id: u64, cookie: u64) -> FsResultDirEntries {
         FsResultDirEntries(self.enumerate_directory_internal(item_id, cookie))
+    }
+
+    /// Converts an entry name to a stable offset cookie for directory enumeration.
+    ///
+    /// This ensures iteration remains stable even if directory contents change
+    /// between pagination requests (e.g., during fs::remove_dir_all).
+    fn name_to_cookie(name: &str) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn enumerate_directory_internal(
@@ -905,23 +921,43 @@ impl CryptoFilesystem {
             ));
         }
 
+        // Sort entries by name for stable iteration across cache invalidations
+        all_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Find starting position based on cookie
+        let start_idx = if cookie == 0 {
+            0
+        } else {
+            // Find the entry whose hash matches this cookie
+            // Return the index of the NEXT entry (the one after the match)
+            all_entries
+                .iter()
+                .position(|(name, _, _)| Self::name_to_cookie(name) == cookie)
+                .map(|idx| idx + 1)
+                .unwrap_or(all_entries.len()) // If not found, we're done
+        };
+
         // Apply pagination
-        let page_start = cookie as usize;
         let page_size = 100;
-        let end = std::cmp::min(page_start + page_size, all_entries.len());
+        let end = std::cmp::min(start_idx + page_size, all_entries.len());
         let has_more = end < all_entries.len();
 
-        // Store next cookie
-        let next_cookie = if has_more { end as u64 } else { 0 };
+        // Store next cookie as hash of last-returned entry
+        let next_cookie = if has_more && end > 0 {
+            Self::name_to_cookie(&all_entries[end - 1].0)
+        } else {
+            0
+        };
         self.enum_cookies.insert(item_id, next_cookie);
 
-        let entries: Vec<DirectoryEntry> = all_entries[page_start..end]
+        let entries: Vec<DirectoryEntry> = all_entries[start_idx..end]
             .iter()
             .map(|(name, kind, file_type)| {
                 let child_path = parent_path.join(name);
+                let vault_path = VaultPath::new(name);
                 let child_id = self
                     .items
-                    .get_or_insert_with(child_path, || PathEntry::new(VaultPath::new(&name), kind.clone()));
+                    .get_or_insert_with(&child_path, || PathEntry::new(vault_path, kind.clone()));
 
                 let size = if *file_type == FileType::Regular {
                     self.get_file_size_cached(child_id, kind).unwrap_or(0)
@@ -939,7 +975,7 @@ impl CryptoFilesystem {
 
     /// Gets the next enumeration cookie for a directory.
     pub fn get_enumeration_cookie(&self, item_id: u64, _cookie: u64) -> u64 {
-        self.enum_cookies.get(&item_id).map(|v| *v).unwrap_or(0)
+        self.enum_cookies.get(&item_id).map_or(0, |v| *v)
     }
 
     /// Opens a file for reading or writing.
@@ -999,8 +1035,8 @@ impl CryptoFilesystem {
             .ok_or(FsError::BadFileHandle)?;
 
         // If it's a write buffer, flush to vault
-        if let FileHandle::WriteBuffer(buffer) = handle {
-            if buffer.is_dirty() {
+        if let FileHandle::WriteBuffer(buffer) = handle
+            && buffer.is_dirty() {
                 let ops = Arc::clone(&self.ops);
                 let dir_id = buffer.dir_id().clone();
                 let name = buffer.filename().to_string();
@@ -1013,7 +1049,6 @@ impl CryptoFilesystem {
                         FsError::from(e)
                     })?;
             }
-        }
 
         trace!(handle_id = handle_id, "Closed file");
         Ok(())
@@ -1030,8 +1065,8 @@ impl CryptoFilesystem {
             .get(&handle_id)
             .ok_or(FsError::BadFileHandle)?;
 
-        let offset = offset as usize;
-        let length = length as usize;
+        let offset = usize::try_from(offset).unwrap_or(0);
+        let length = usize::try_from(length).unwrap_or(0);
 
         let data: &[u8] = match &*handle {
             FileHandle::ReadOnly { content } => content,
@@ -1047,11 +1082,12 @@ impl CryptoFilesystem {
     }
 
     /// Writes data to an open file.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned Vec<u8> (swift_bridge)
     pub fn write_file(&self, handle_id: u64, offset: i64, data: Vec<u8>) -> FsResultWritten {
-        FsResultWritten(self.write_file_internal(handle_id, offset, data))
+        FsResultWritten(self.write_file_internal(handle_id, offset, &data))
     }
 
-    fn write_file_internal(&self, handle_id: u64, offset: i64, data: Vec<u8>) -> Result<i64, FsError> {
+    fn write_file_internal(&self, handle_id: u64, offset: i64, data: &[u8]) -> Result<i64, FsError> {
         let mut handle = self
             .handles
             .get_mut(&handle_id)
@@ -1060,18 +1096,19 @@ impl CryptoFilesystem {
         match &mut *handle {
             FileHandle::ReadOnly { .. } => Err(FsError::PermissionDenied),
             FileHandle::WriteBuffer(buffer) => {
-                buffer.write(offset as u64, &data);
-                Ok(data.len() as i64)
+                buffer.write(u64::try_from(offset).unwrap_or(0), data);
+                Ok(i64::try_from(data.len()).unwrap_or(0))
             }
         }
     }
 
     /// Creates a new empty file.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
     pub fn create_file(&self, parent_id: u64, name: String) -> FsResultAttrs {
-        FsResultAttrs(self.create_file_internal(parent_id, name))
+        FsResultAttrs(self.create_file_internal(parent_id, &name))
     }
 
-    fn create_file_internal(&self, parent_id: u64, name: String) -> Result<FileAttributes, FsError> {
+    fn create_file_internal(&self, parent_id: u64, name: &str) -> Result<FileAttributes, FsError> {
         let start = Instant::now();
         self.stats.record_metadata_op();
 
@@ -1093,7 +1130,7 @@ impl CryptoFilesystem {
 
         // Check if file, directory, or symlink with this name already exists
         let ops = Arc::clone(&self.ops);
-        let name_clone = name.clone();
+        let name_clone = name.to_string();
         let dir_id_clone = dir_id.clone();
 
         let exists = self.runtime.block_on(async {
@@ -1120,7 +1157,7 @@ impl CryptoFilesystem {
 
         // Create empty file
         let ops = Arc::clone(&self.ops);
-        let name_clone = name.clone();
+        let name_clone = name.to_string();
         let dir_id_clone = dir_id.clone();
 
         self.runtime
@@ -1133,13 +1170,14 @@ impl CryptoFilesystem {
             })?;
 
         // Allocate item ID
-        let child_path = parent_path.join(&name);
-        let item_id = self.items.get_or_insert_with(child_path, || {
+        let child_path = parent_path.join(name);
+        let vault_path = VaultPath::new(name);
+        let item_id = self.items.get_or_insert_with(&child_path, || {
             PathEntry::new(
-                VaultPath::new(&name),
+                vault_path,
                 ItemKind::File {
                     dir_id,
-                    name: name.clone(),
+                    name: name.to_string(),
                 },
             )
         });
@@ -1149,11 +1187,12 @@ impl CryptoFilesystem {
     }
 
     /// Creates a new directory.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
     pub fn create_directory(&self, parent_id: u64, name: String) -> FsResultAttrs {
-        FsResultAttrs(self.create_directory_internal(parent_id, name))
+        FsResultAttrs(self.create_directory_internal(parent_id, &name))
     }
 
-    fn create_directory_internal(&self, parent_id: u64, name: String) -> Result<FileAttributes, FsError> {
+    fn create_directory_internal(&self, parent_id: u64, name: &str) -> Result<FileAttributes, FsError> {
         let start = Instant::now();
         self.stats.record_metadata_op();
 
@@ -1174,7 +1213,7 @@ impl CryptoFilesystem {
         drop(entry);
 
         let ops = Arc::clone(&self.ops);
-        let name_clone = name.clone();
+        let name_clone = name.to_string();
 
         // Create directory
         let new_dir_id = self
@@ -1188,10 +1227,11 @@ impl CryptoFilesystem {
             })?;
 
         // Allocate item ID
-        let child_path = parent_path.join(&name);
-        let item_id = self.items.get_or_insert_with(child_path, || {
+        let child_path = parent_path.join(name);
+        let vault_path = VaultPath::new(name);
+        let item_id = self.items.get_or_insert_with(&child_path, || {
             PathEntry::new(
-                VaultPath::new(&name),
+                vault_path,
                 ItemKind::Directory { dir_id: new_dir_id },
             )
         });
@@ -1201,15 +1241,16 @@ impl CryptoFilesystem {
     }
 
     /// Creates a new symbolic link.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
     pub fn create_symlink(&self, parent_id: u64, name: String, target: String) -> FsResultAttrs {
-        FsResultAttrs(self.create_symlink_internal(parent_id, name, target))
+        FsResultAttrs(self.create_symlink_internal(parent_id, &name, &target))
     }
 
     fn create_symlink_internal(
         &self,
         parent_id: u64,
-        name: String,
-        target: String,
+        name: &str,
+        target: &str,
     ) -> Result<FileAttributes, FsError> {
         let start = Instant::now();
         self.stats.record_metadata_op();
@@ -1231,8 +1272,8 @@ impl CryptoFilesystem {
         drop(entry);
 
         let ops = Arc::clone(&self.ops);
-        let name_clone = name.clone();
-        let target_clone = target.clone();
+        let name_clone = name.to_string();
+        let target_clone = target.to_string();
         let dir_id_clone = dir_id.clone();
 
         // Create symlink
@@ -1249,13 +1290,14 @@ impl CryptoFilesystem {
             })?;
 
         // Allocate item ID
-        let child_path = parent_path.join(&name);
-        let item_id = self.items.get_or_insert_with(child_path, || {
+        let child_path = parent_path.join(name);
+        let vault_path = VaultPath::new(name);
+        let item_id = self.items.get_or_insert_with(&child_path, || {
             PathEntry::new(
-                VaultPath::new(&name),
+                vault_path,
                 ItemKind::Symlink {
                     dir_id,
-                    name: name.clone(),
+                    name: name.to_string(),
                 },
             )
         });
@@ -1271,11 +1313,12 @@ impl CryptoFilesystem {
     }
 
     /// Removes a file, directory, or symlink.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
     pub fn remove(&self, parent_id: u64, name: String, item_id: u64) -> FsResultUnit {
-        FsResultUnit(self.remove_internal(parent_id, name, item_id))
+        FsResultUnit(self.remove_internal(parent_id, &name, item_id))
     }
 
-    fn remove_internal(&self, parent_id: u64, name: String, item_id: u64) -> Result<(), FsError> {
+    fn remove_internal(&self, parent_id: u64, name: &str, item_id: u64) -> Result<(), FsError> {
         let start = Instant::now();
         self.stats.record_metadata_op();
 
@@ -1305,7 +1348,7 @@ impl CryptoFilesystem {
         drop(parent_entry);
 
         let ops = Arc::clone(&self.ops);
-        let name_clone = name.clone();
+        let name_clone = name.to_string();
 
         match kind {
             ItemKind::File { .. } => {
@@ -1319,7 +1362,7 @@ impl CryptoFilesystem {
                     })?;
             }
             ItemKind::Directory { .. } => {
-                let name_for_dir = name.clone();
+                let name_for_dir = name.to_string();
                 self.runtime
                     .block_on(async move { ops.delete_directory(&parent_dir_id, &name_for_dir).await })
                     .map_err(|e| {
@@ -1330,7 +1373,7 @@ impl CryptoFilesystem {
                     })?;
             }
             ItemKind::Symlink { .. } => {
-                let name_for_symlink = name.clone();
+                let name_for_symlink = name.to_string();
                 self.runtime
                     .block_on(async move { ops.delete_symlink(&parent_dir_id, &name_for_symlink).await })
                     .map_err(|e| {
@@ -1357,6 +1400,7 @@ impl CryptoFilesystem {
     }
 
     /// Renames or moves an item.
+    #[allow(clippy::needless_pass_by_value)] // FFI boundary requires owned String (swift_bridge)
     pub fn rename(
         &self,
         src_parent_id: u64,
@@ -1365,15 +1409,15 @@ impl CryptoFilesystem {
         dst_name: String,
         item_id: u64,
     ) -> FsResultUnit {
-        FsResultUnit(self.rename_internal(src_parent_id, src_name, dst_parent_id, dst_name, item_id))
+        FsResultUnit(self.rename_internal(src_parent_id, &src_name, dst_parent_id, &dst_name, item_id))
     }
 
     fn rename_internal(
         &self,
         src_parent_id: u64,
-        src_name: String,
+        src_name: &str,
         dst_parent_id: u64,
-        dst_name: String,
+        dst_name: &str,
         item_id: u64,
     ) -> Result<(), FsError> {
         let start = Instant::now();
@@ -1425,8 +1469,8 @@ impl CryptoFilesystem {
         let dst_dir_id_for_path_update = dst_dir_id.clone();
 
         let ops = Arc::clone(&self.ops);
-        let src_name_clone = src_name.clone();
-        let dst_name_clone = dst_name.clone();
+        let src_name_clone = src_name.to_string();
+        let dst_name_clone = dst_name.to_string();
 
         match kind {
             ItemKind::File { .. } => {
@@ -1480,8 +1524,8 @@ impl CryptoFilesystem {
                     self.stats.record_metadata_latency(start.elapsed());
                     return Err(FsError::NotSupported); // Cross-directory move not supported
                 }
-                let src_name_for_dir = src_name.clone();
-                let dst_name_for_dir = dst_name.clone();
+                let src_name_for_dir = src_name.to_string();
+                let dst_name_for_dir = dst_name.to_string();
                 self.runtime
                     .block_on(async move {
                         ops.rename_directory(&src_dir_id, &src_name_for_dir, &dst_name_for_dir)
@@ -1500,8 +1544,8 @@ impl CryptoFilesystem {
                     self.stats.record_metadata_latency(start.elapsed());
                     return Err(FsError::NotSupported); // Cross-directory symlink move not supported
                 }
-                let src_name_for_sym = src_name.clone();
-                let dst_name_for_sym = dst_name.clone();
+                let src_name_for_sym = src_name.to_string();
+                let dst_name_for_sym = dst_name.to_string();
 
                 // Read the symlink target
                 let target = self.runtime
@@ -1517,7 +1561,7 @@ impl CryptoFilesystem {
                 // Delete the old symlink
                 let ops2 = Arc::clone(&self.ops);
                 let src_dir_id2 = src_dir_id.clone();
-                let src_name_for_delete = src_name.clone();
+                let src_name_for_delete = src_name.to_string();
                 self.runtime
                     .block_on(async move {
                         ops2.delete_symlink(&src_dir_id2, &src_name_for_delete).await
@@ -1549,20 +1593,16 @@ impl CryptoFilesystem {
         }
 
         // Update path table and ItemKind with new name (and dir_id for cross-directory moves)
-        let new_path = dst_parent_path.join(&dst_name);
-        let new_name = dst_name.clone();
+        let new_path = dst_parent_path.join(dst_name);
+        let new_name = dst_name.to_string();
         self.items
             .update_path(item_id, &old_path, new_path, |entry, path| {
                 entry.path = path;
                 // Also update the name (and dir_id) in the ItemKind
                 match &mut entry.kind {
-                    ItemKind::File { dir_id, name } => {
-                        *name = new_name.clone();
-                        *dir_id = dst_dir_id_for_path_update.clone();
-                    }
-                    ItemKind::Symlink { dir_id, name } => {
-                        *name = new_name.clone();
-                        *dir_id = dst_dir_id_for_path_update.clone();
+                    ItemKind::File { dir_id, name } | ItemKind::Symlink { dir_id, name } => {
+                        name.clone_from(&new_name);
+                        dir_id.clone_from(&dst_dir_id_for_path_update);
                     }
                     // Directories don't have a name field, but they might need dir_id update
                     // for parent directory reference (not implemented for cross-dir moves)
@@ -1579,7 +1619,7 @@ impl CryptoFilesystem {
 
     /// Reads the target of a symbolic link (returns UTF-8 bytes for FFI).
     pub fn read_symlink(&self, item_id: u64) -> FsResultBytes {
-        FsResultBytes(self.read_symlink_string(item_id).map(|s| s.into_bytes()))
+        FsResultBytes(self.read_symlink_string(item_id).map(String::into_bytes))
     }
 
     /// Internal: reads symlink target as String.
@@ -1598,7 +1638,7 @@ impl CryptoFilesystem {
 
         self.runtime
             .block_on(async move { ops.read_symlink(&dir_id, &name).await })
-            .map_err(|e| FsError::from(e))
+            .map_err(FsError::from)
     }
 
     /// Truncates a file to the specified size.
@@ -1626,11 +1666,14 @@ impl CryptoFilesystem {
         let decrypted_file = self
             .runtime
             .block_on(async move { ops.read_file(&dir_id, &name).await })
-            .map_err(|e| FsError::from(e))?;
+            .map_err(FsError::from)?;
 
         // Get the content and truncate or extend
         let mut content = decrypted_file.content;
-        content.resize(size as usize, 0);
+        // Safe cast: u64 size comes from FSKit which uses filesystem limits
+        #[allow(clippy::cast_possible_truncation)]
+        let target_size = size as usize;
+        content.resize(target_size, 0);
 
         // Write back
         let ops = Arc::clone(&self.ops);
@@ -1646,7 +1689,7 @@ impl CryptoFilesystem {
 
         self.runtime
             .block_on(async move { ops.write_file(&dir_id, &name, &content).await })
-            .map_err(|e| FsError::from(e))?;
+            .map_err(FsError::from)?;
 
         // Invalidate cache
         self.attr_cache.invalidate(&item_id);
@@ -1691,7 +1734,7 @@ impl CryptoFilesystem {
                 FsError::from(e)
             })?;
 
-        let encrypted_size = file_info.map(|info| info.encrypted_size).unwrap_or(0);
+        let encrypted_size = file_info.map_or(0, |info| info.encrypted_size);
         let size = encrypted_to_plaintext_size_or_zero(encrypted_size);
 
         // Cache the result

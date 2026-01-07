@@ -268,7 +268,7 @@ mod tests {
 
         // Verify all IDs are unique
         let mut sorted_ids = ids.clone();
-        sorted_ids.sort();
+        sorted_ids.sort_unstable();
         sorted_ids.dedup();
         assert_eq!(ids.len(), sorted_ids.len(), "All handle IDs should be unique");
 
@@ -308,7 +308,7 @@ mod tests {
 
         // Verify all IDs are unique (no duplicates from concurrent access)
         let count_before = all_ids.len();
-        all_ids.sort();
+        all_ids.sort_unstable();
         all_ids.dedup();
         assert_eq!(
             count_before,
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_handle_table_debug_format() {
         let table = VaultHandleTable::new();
-        let debug_str = format!("{:?}", table);
+        let debug_str = format!("{table:?}");
         assert!(debug_str.contains("VaultHandleTable"));
         assert!(debug_str.contains("handles"));
         assert!(debug_str.contains("next_id"));
@@ -419,7 +419,7 @@ mod integration_tests {
         let mut handle_ids = Vec::new();
         for i in 0..5 {
             let writer =
-                create_test_writer(&temp_dir, &format!("test_{}.c9r", i), &master_key).await;
+                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             let id = table.insert(OpenHandle::Writer(writer));
             handle_ids.push(id);
         }
@@ -432,7 +432,7 @@ mod integration_tests {
 
         // All IDs should be unique
         let mut sorted_ids = handle_ids.clone();
-        sorted_ids.sort();
+        sorted_ids.sort_unstable();
         sorted_ids.dedup();
         assert_eq!(handle_ids.len(), sorted_ids.len());
 
@@ -504,7 +504,7 @@ mod integration_tests {
         let mut handle_ids = Vec::new();
         for i in 0..3 {
             let writer =
-                create_test_writer(&temp_dir, &format!("test_{}.c9r", i), &master_key).await;
+                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             handle_ids.push(table.insert(OpenHandle::Writer(writer)));
         }
 
@@ -535,7 +535,7 @@ mod integration_tests {
 
         for i in 0..5 {
             let writer =
-                create_test_writer(&temp_dir, &format!("test_{}.c9r", i), &master_key).await;
+                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             let id = table.insert(OpenHandle::Writer(writer));
             all_ids.push(id);
 
@@ -548,7 +548,7 @@ mod integration_tests {
         // Insert more handles
         for i in 5..10 {
             let writer =
-                create_test_writer(&temp_dir, &format!("test_{}.c9r", i), &master_key).await;
+                create_test_writer(&temp_dir, &format!("test_{i}.c9r"), &master_key).await;
             let id = table.insert(OpenHandle::Writer(writer));
             all_ids.push(id);
 
@@ -559,7 +559,7 @@ mod integration_tests {
 
         // All IDs should be unique (no reuse)
         let mut sorted_ids = all_ids.clone();
-        sorted_ids.sort();
+        sorted_ids.sort_unstable();
         sorted_ids.dedup();
         assert_eq!(
             all_ids.len(),
@@ -810,7 +810,7 @@ mod open_handle_tests {
         let writer = create_test_writer(&temp_dir, "test.c9r").await;
 
         let handle = OpenHandle::Writer(writer);
-        let debug_str = format!("{:?}", handle);
+        let debug_str = format!("{handle:?}");
 
         // Should contain "Writer" for a Writer handle
         assert!(debug_str.contains("Writer"));

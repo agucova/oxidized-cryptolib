@@ -177,14 +177,17 @@ impl MasterKeyFile {
         let normalized_passphrase = Zeroizing::new(passphrase.nfc().collect::<String>());
 
         // Define the scrypt parameters
+        // log_2() returns u32, but scrypt needs u8. For i32 values, log2 result is always < 32 (fits in u8)
+        #[allow(clippy::cast_possible_truncation)]
         let log2_n: u8 = log_2(self.scrypt_cost_param) as u8;
+        // Safe cast: scrypt_block_size is always positive (at least 8), fits comfortably in u32
+        #[allow(clippy::cast_sign_loss)]
         let r: u32 = self.scrypt_block_size as u32;
         let p: u32 = DEFAULT_SCRYPT_PARALLELIZATION;
 
         let scrypt_params = scrypt::Params::new(log2_n, r, p, 32).map_err(|e| {
             CryptoError::InvalidScryptParams(format!(
-                "Invalid scrypt parameters (N=2^{}, r={}, p={}): {}",
-                log2_n, r, p, e
+                "Invalid scrypt parameters (N=2^{log2_n}, r={r}, p={p}): {e}"
             ))
         })?;
 
@@ -203,7 +206,7 @@ impl MasterKeyFile {
             &scrypt_params,
             &mut kek[..],
         )
-        .map_err(|e| CryptoError::KeyDerivationFailed(format!("Scrypt derivation failed: {}", e)))?;
+        .map_err(|e| CryptoError::KeyDerivationFailed(format!("Scrypt derivation failed: {e}")))?;
 
         Ok(SecretBox::new(Box::new(*kek)))
     }
@@ -291,12 +294,16 @@ impl MasterKeyFile {
 
 // From: https://users.rust-lang.org/t/logarithm-of-integers/8506/5
 const fn num_bits<T>() -> usize {
-    std::mem::size_of::<T>() * 8
+    size_of::<T>() * 8
 }
 
 fn log_2(x: i32) -> u32 {
     assert!(x > 0);
-    num_bits::<i32>() as u32 - x.leading_zeros() - 1
+    // Safe cast: num_bits::<i32>() is always 32 at compile time, fits in u32
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        num_bits::<i32>() as u32 - x.leading_zeros() - 1
+    }
 }
 
 /// Create a master key file content with default parameters.
@@ -372,8 +379,7 @@ pub fn create_masterkey_file_with_pepper(
     let normalized_passphrase = Zeroizing::new(passphrase.nfc().collect::<String>());
     let scrypt_params = scrypt::Params::new(log2_n, r, p, 32).map_err(|e| {
         MasterKeyCreationError::InvalidScryptParams(format!(
-            "Invalid scrypt parameters (N=2^{}, r={}, p={}): {}",
-            log2_n, r, p, e
+            "Invalid scrypt parameters (N=2^{log2_n}, r={r}, p={p}): {e}"
         ))
     })?;
     let mut kek = Zeroizing::new([0u8; 32]);
@@ -383,7 +389,7 @@ pub fn create_masterkey_file_with_pepper(
         &scrypt_params,
         &mut kek[..],
     )
-    .map_err(|e| MasterKeyCreationError::KeyDerivation(format!("Scrypt derivation failed: {}", e)))?;
+    .map_err(|e| MasterKeyCreationError::KeyDerivation(format!("Scrypt derivation failed: {e}")))?;
     let kek_secret = SecretBox::new(Box::new(*kek));
 
     // Wrap the keys (encryption key first, then MAC key - same order as Java)
@@ -403,7 +409,13 @@ pub fn create_masterkey_file_with_pepper(
         version,
         scrypt_salt: salt,
         scrypt_cost_param: (1i32 << log2_n),
-        scrypt_block_size: r as i32,
+        // Safe cast: r is u32 from DEFAULT_SCRYPT_BLOCK_SIZE (8), fits safely in i32
+        // Domain knowledge: r is always a small positive integer (8), well within i32 range
+        scrypt_block_size: {
+            #[allow(clippy::cast_possible_wrap)]
+            let block_size = r as i32;
+            block_size
+        },
         primary_master_key: wrapped_aes,
         hmac_master_key: wrapped_mac,
         version_mac,
@@ -532,8 +544,7 @@ pub fn derive_keys(passphrase: &str) -> Result<(MasterKey, SecretBox<[u8; 32]>),
     let normalized_passphrase = Zeroizing::new(passphrase.nfc().collect::<String>());
     let scrypt_params = scrypt::Params::new(log2_n, r, p, 32).map_err(|e| {
         CryptoError::InvalidScryptParams(format!(
-            "Invalid scrypt parameters (N=2^{}, r={}, p={}): {}",
-            log2_n, r, p, e
+            "Invalid scrypt parameters (N=2^{log2_n}, r={r}, p={p}): {e}"
         ))
     })?;
     let mut kek = Zeroizing::new([0u8; 32]);
@@ -543,7 +554,7 @@ pub fn derive_keys(passphrase: &str) -> Result<(MasterKey, SecretBox<[u8; 32]>),
         &scrypt_params,
         &mut kek[..],
     )
-    .map_err(|e| CryptoError::KeyDerivationFailed(format!("Scrypt derivation failed: {}", e)))?;
+    .map_err(|e| CryptoError::KeyDerivationFailed(format!("Scrypt derivation failed: {e}")))?;
 
     Ok((master_key, SecretBox::new(Box::new(*kek))))
 }

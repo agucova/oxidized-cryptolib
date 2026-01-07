@@ -32,7 +32,7 @@ impl VaultBuilder {
     /// Create a new vault builder with default test values
     pub fn new() -> Self {
         Self {
-            temp_dir: assert_fs::TempDir::new().unwrap(),
+            temp_dir: TempDir::new().unwrap(),
             master_key: super::create_test_master_key(),
             passphrase: super::TEST_PASSPHRASE.to_string(),
             vault_id: super::TEST_VAULT_ID.to_string(),
@@ -101,7 +101,7 @@ impl VaultBuilder {
         
         // Track directory structure
         let mut dir_map: HashMap<String, String> = HashMap::new();
-        dir_map.insert("".to_string(), "".to_string()); // Root directory
+        dir_map.insert(String::new(), String::new()); // Root directory
         
         // Create deterministic RNG for content keys (always use seed for reproducibility)
         let seed = self.rng_seed.unwrap_or(42); // Default deterministic seed

@@ -7,6 +7,7 @@ authors = ["Aggustin Covarrubias <gh@agucova.dev>"]
 description = "Core Cryptomator vault encryption library for OxCrypt"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 keywords = ["cryptomator", "encryption", "vault", "aes", "cryptography"]
 categories = ["cryptography", "filesystem"]
 
@@ -18,6 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = ["async"]
 async = ["dep:tokio", "dep:dashmap", "dep:futures"]
 stress = []  # Enable long-running stress tests
+debug-tools = [] # Internal test/debug helpers
 
 [dependencies]
 aead = "0.5"
@@ -52,6 +54,8 @@ tracing.workspace = true
 tokio = { version = "1", features = ["fs", "io-util", "sync", "rt", "macros"], optional = true }
 dashmap = { version = "6", optional = true }
 futures = { version = "0.3", optional = true }
+moka = { version = "0.12.12", features = ["sync"] }
+bumpalo = "3.19.1"
 
 [dev-dependencies]
 assert_fs = "1"
@@ -90,3 +94,6 @@ harness = false
 [[bench]]
 name = "file_operations_ctrmac"
 harness = false
+
+[lints]
+workspace = true

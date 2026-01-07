@@ -33,8 +33,10 @@
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+
+use parking_lot::RwLock;
 
 use crate::moka_cache::{CacheHealth, CacheHealthThresholds, CacheWarning};
 
@@ -253,6 +255,8 @@ impl LatencyStats {
     /// * `elapsed` - Duration of the operation
     #[inline]
     pub fn record(&self, elapsed: Duration) {
+        // Safe cast: Duration.as_nanos() returns u128 but fits in u64 for reasonable timeouts
+        #[allow(clippy::cast_possible_truncation)]
         let nanos = elapsed.as_nanos() as u64;
         self.total_nanos.fetch_add(nanos, Ordering::Relaxed);
         self.count.fetch_add(1, Ordering::Relaxed);
@@ -387,6 +391,11 @@ pub struct VaultStats {
     /// Total number of errors encountered.
     pub total_errors: AtomicU64,
 
+    // === Inode/Entry Tracking ===
+    /// Current number of inodes/entries in the filesystem table.
+    /// This is updated by the mount backend to track memory usage.
+    pub inode_count: AtomicU64,
+
     // === Session Information ===
     /// When this statistics instance was created.
     session_start: SystemTime,
@@ -421,6 +430,7 @@ impl VaultStats {
             metadata_latency: LatencyStats::new(),
             total_metadata_ops: AtomicU64::new(0),
             total_errors: AtomicU64::new(0),
+            inode_count: AtomicU64::new(0),
             session_start: SystemTime::now(),
         }
     }
@@ -574,12 +584,23 @@ impl VaultStats {
         self.total_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Update the inode/entry count.
+    ///
+    /// Call this periodically from the mount backend to track memory usage.
+    #[inline]
+    pub fn set_inode_count(&self, count: u64) {
+        self.inode_count.store(count, Ordering::Relaxed);
+    }
+
+    /// Get the current inode/entry count.
+    pub fn get_inode_count(&self) -> u64 {
+        self.inode_count.load(Ordering::Relaxed)
+    }
+
     /// Update the last activity timestamp.
     #[inline]
     fn touch(&self) {
-        if let Ok(mut last) = self.last_activity.write() {
-            *last = Instant::now();
-        }
+        *self.last_activity.write() = Instant::now();
     }
 
     // === Query Methods ===
@@ -639,11 +660,7 @@ impl VaultStats {
 
     /// Check if the vault has had activity within the given duration.
     pub fn is_active(&self, threshold: Duration) -> bool {
-        if let Ok(last) = self.last_activity.read() {
-            last.elapsed() < threshold
-        } else {
-            false
-        }
+        self.last_activity.read().elapsed() < threshold
     }
 
     /// Get the current activity status.
@@ -664,11 +681,7 @@ impl VaultStats {
 
     /// Get the duration since the last activity.
     pub fn time_since_activity(&self) -> Duration {
-        if let Ok(last) = self.last_activity.read() {
-            last.elapsed()
-        } else {
-            Duration::ZERO
-        }
+        self.last_activity.read().elapsed()
     }
 
     /// Get the session start time.
@@ -861,7 +874,7 @@ pub fn format_bytes(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.2} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -886,7 +899,7 @@ mod tests {
     #[test]
     fn test_cache_stats_zero_rate() {
         let stats = CacheStats::new();
-        assert_eq!(stats.hit_rate(), 0.0);
+        assert!((stats.hit_rate() - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -997,7 +1010,7 @@ mod tests {
 
         // Initially no ops
         assert_eq!(stats.count(), 0);
-        assert_eq!(stats.avg_nanos(), 0.0);
+        assert!((stats.avg_nanos() - 0.0).abs() < f64::EPSILON);
 
         // Record some durations
         stats.record(Duration::from_millis(10));
@@ -1007,7 +1020,7 @@ mod tests {
         assert_eq!(stats.count(), 3);
         // Average should be 20ms
         let avg_ms = stats.avg_millis();
-        assert!((avg_ms - 20.0).abs() < 0.1, "avg_ms = {}", avg_ms);
+        assert!((avg_ms - 20.0).abs() < 0.1, "avg_ms = {avg_ms}");
     }
 
     #[test]
@@ -1018,7 +1031,7 @@ mod tests {
 
         stats.reset();
         assert_eq!(stats.count(), 0);
-        assert_eq!(stats.avg_nanos(), 0.0);
+        assert!((stats.avg_nanos() - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1034,11 +1047,11 @@ mod tests {
 
         // Average read latency should be 10ms
         let avg_read = stats.avg_read_latency_ms();
-        assert!((avg_read - 10.0).abs() < 0.1, "avg_read = {}", avg_read);
+        assert!((avg_read - 10.0).abs() < 0.1, "avg_read = {avg_read}");
 
         // Average write latency should be 10ms
         let avg_write = stats.avg_write_latency_ms();
-        assert!((avg_write - 10.0).abs() < 0.1, "avg_write = {}", avg_write);
+        assert!((avg_write - 10.0).abs() < 0.1, "avg_write = {avg_write}");
     }
 
     #[test]
@@ -1077,7 +1090,7 @@ mod tests {
         assert_eq!(stats.metadata_latency_count(), 2);
         // Average should be 10ms
         let avg = stats.avg_metadata_latency_ms();
-        assert!((avg - 10.0).abs() < 0.1, "avg_metadata_latency = {}", avg);
+        assert!((avg - 10.0).abs() < 0.1, "avg_metadata_latency = {avg}");
     }
 
     #[test]

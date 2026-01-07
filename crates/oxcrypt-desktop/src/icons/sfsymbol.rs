@@ -14,8 +14,9 @@ use objc2_foundation::NSString;
 ///
 /// URL format: `sfsymbol://symbol.name?size=24&color=ffffff`
 /// Example: `sfsymbol://lock.fill?size=24&color=ff0000`
+#[allow(clippy::needless_pass_by_value)] // Protocol handler signature requires ownership
 pub fn handle_sfsymbol_request(
-    _webview_id: WebViewId,
+    _webview_id: WebViewId<'_>,
     request: dioxus::desktop::wry::http::Request<Vec<u8>>,
 ) -> dioxus::desktop::wry::http::Response<Cow<'static, [u8]>> {
     let uri = request.uri();
@@ -33,7 +34,7 @@ pub fn handle_sfsymbol_request(
         .get("weight")
         .and_then(|s| parse_weight(s))
         .unwrap_or(0.0);
-    let color = params.get("color").map(|s| s.as_str());
+    let color = params.get("color").map(std::string::String::as_str);
 
     tracing::debug!(
         "SF Symbol request: {} @ {}pt, weight={}, color={:?}",
@@ -133,7 +134,7 @@ fn render_sf_symbol(name: &str, size: u32, weight: f64, color: Option<&str>) -> 
         // Create symbol configuration with size and weight
         // Render at 3x for crisp retina display
         let config = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
-            size as f64 * 3.0,
+            f64::from(size) * 3.0,
             weight,
             NSImageSymbolScale::Large,
         );
@@ -154,11 +155,10 @@ fn render_sf_symbol(name: &str, size: u32, weight: f64, color: Option<&str>) -> 
             .into_rgba8();
 
         // Apply tint color if specified
-        if let Some(hex) = color {
-            if let Some((r, g, b)) = parse_hex_color(hex) {
+        if let Some(hex) = color
+            && let Some((r, g, b)) = parse_hex_color(hex) {
                 apply_tint(&mut img, r, g, b);
             }
-        }
 
         // Encode as PNG
         let mut png_bytes = Vec::new();

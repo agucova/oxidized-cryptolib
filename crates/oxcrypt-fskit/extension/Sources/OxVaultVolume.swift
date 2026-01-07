@@ -4,7 +4,7 @@
 import FSKit
 import Foundation
 import os
-import COxVaultFFI  // C bridging header for Rust FFI
+// OxVaultFFI types are included directly in target sources via swift-bridge
 
 /// FSVolume implementation for a Cryptomator vault.
 final class OxVaultVolume: FSVolume, FSVolume.Operations,
@@ -78,17 +78,13 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
     var restrictsOwnershipChanges: Bool { false }
     var truncatesLongNames: Bool { false }
 
-    // MARK: - FSVolumeOperations Methods
+    // MARK: - FSVolumeOperations Methods (async/await)
 
-    func mount(
-        options: FSTaskOptions,
-        replyHandler reply: @escaping ((any Error)?) -> Void
-    ) {
+    func mount(options: FSTaskOptions) async throws {
         Self.logger.info("Mounting volume")
-        reply(nil)
     }
 
-    func unmount(replyHandler reply: @escaping () -> Void) {
+    func unmount() async {
         Self.logger.info("Unmounting volume")
 
         // Close all open file handles
@@ -104,42 +100,32 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         itemCacheLock.lock()
         itemCache.removeAll()
         itemCacheLock.unlock()
-
-        reply()
     }
 
-    func synchronize(
-        flags: FSSyncFlags,
-        replyHandler reply: @escaping ((any Error)?) -> Void
-    ) {
+    func synchronize(flags: FSSyncFlags) async throws {
         // Vault writes are synchronous, no pending data to flush
-        reply(nil)
     }
 
-    func getAttributes(
+    func attributes(
         _ request: FSItem.GetAttributesRequest,
-        of item: FSItem,
-        replyHandler reply: @escaping (FSItem.Attributes?, (any Error)?) -> Void
-    ) {
+        of item: FSItem
+    ) async throws -> FSItem.Attributes {
         let itemId = getItemId(for: item)
 
         let result = cryptoFS.getAttributes(itemId)
 
         guard result.isOk() else {
-            reply(nil, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let rustAttrs = result.unwrap()
-        let attrs = toFSItemAttributes(rustAttrs)
-        reply(attrs, nil)
+        return toFSItemAttributes(rustAttrs)
     }
 
     func setAttributes(
         _ newAttributes: FSItem.SetAttributesRequest,
-        on item: FSItem,
-        replyHandler reply: @escaping (FSItem.Attributes?, (any Error)?) -> Void
-    ) {
+        on item: FSItem
+    ) async throws -> FSItem.Attributes {
         let itemId = getItemId(for: item)
 
         // Handle size changes (truncate)
@@ -147,83 +133,69 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
             let result = cryptoFS.truncate(itemId, newAttributes.size)
 
             guard result.isOk() else {
-                reply(nil, posixError(result.getError()))
-                return
+                throw posixError(result.getError())
             }
         }
 
         // Return updated attributes
         let attrsResult = cryptoFS.getAttributes(itemId)
         guard attrsResult.isOk() else {
-            reply(nil, posixError(attrsResult.getError()))
-            return
+            throw posixError(attrsResult.getError())
         }
 
         let rustAttrs = attrsResult.unwrap()
-        reply(toFSItemAttributes(rustAttrs), nil)
+        return toFSItemAttributes(rustAttrs)
     }
 
     func lookupItem(
         named name: FSFileName,
-        inDirectory directory: FSItem,
-        replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void
-    ) {
+        inDirectory directory: FSItem
+    ) async throws -> (FSItem, FSFileName) {
         let parentId = getItemId(for: directory)
         let nameStr = name.string ?? ""
 
         let result = cryptoFS.lookup(parentId, nameStr)
 
         guard result.isOk() else {
-            reply(nil, nil, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let attrs = result.unwrap()
         let childId = attrs.getItemId()
 
         let childItem = getOrCreateItem(for: childId)
-        reply(childItem, name, nil)
+        return (childItem, name)
     }
 
-    func reclaimItem(
-        _ item: FSItem,
-        replyHandler reply: @escaping ((any Error)?) -> Void
-    ) {
+    func reclaimItem(_ item: FSItem) async throws {
         let itemId = getItemId(for: item)
         cryptoFS.reclaim(itemId)
 
         itemCacheLock.lock()
         itemCache.removeValue(forKey: itemId)
         itemCacheLock.unlock()
-
-        reply(nil)
     }
 
-    func readSymbolicLink(
-        _ item: FSItem,
-        replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void
-    ) {
+    func readSymbolicLink(_ item: FSItem) async throws -> FSFileName {
         let itemId = getItemId(for: item)
 
         let result = cryptoFS.readSymlink(itemId)
 
         guard result.isOk() else {
-            reply(nil, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let targetBytes = result.unwrap()
         let target = String(bytes: targetBytes, encoding: .utf8) ?? ""
-        reply(FSFileName(string: target), nil)
+        return FSFileName(string: target)
     }
 
     func createItem(
         named name: FSFileName,
         type: FSItem.ItemType,
         inDirectory directory: FSItem,
-        attributes: FSItem.SetAttributesRequest,
-        replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void
-    ) {
+        attributes: FSItem.SetAttributesRequest
+    ) async throws -> (FSItem, FSFileName) {
         let parentId = getItemId(for: directory)
         let nameStr = name.string ?? ""
 
@@ -234,27 +206,24 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         case .file:
             result = cryptoFS.createFile(parentId, nameStr)
         default:
-            reply(nil, nil, posixError(ENOTSUP))
-            return
+            throw posixError(ENOTSUP)
         }
 
         guard result.isOk() else {
-            reply(nil, nil, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let attrs = result.unwrap()
         let childItem = getOrCreateItem(for: attrs.getItemId())
-        reply(childItem, name, nil)
+        return (childItem, name)
     }
 
     func createSymbolicLink(
         named name: FSFileName,
         inDirectory directory: FSItem,
         attributes: FSItem.SetAttributesRequest,
-        linkContents contents: FSFileName,
-        replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void
-    ) {
+        linkContents contents: FSFileName
+    ) async throws -> (FSItem, FSFileName) {
         let parentId = getItemId(for: directory)
         let nameStr = name.string ?? ""
         let targetStr = contents.string ?? ""
@@ -262,45 +231,41 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         let result = cryptoFS.createSymlink(parentId, nameStr, targetStr)
 
         guard result.isOk() else {
-            reply(nil, nil, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let attrs = result.unwrap()
         let childItem = getOrCreateItem(for: attrs.getItemId())
-        reply(childItem, name, nil)
+        return (childItem, name)
     }
 
     func createLink(
         to item: FSItem,
         named name: FSFileName,
-        inDirectory directory: FSItem,
-        replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void
-    ) {
+        inDirectory directory: FSItem
+    ) async throws -> FSFileName {
         // No hard links supported
-        reply(nil, posixError(ENOTSUP))
+        throw posixError(ENOTSUP)
     }
 
     func removeItem(
         _ item: FSItem,
         named name: FSFileName,
-        fromDirectory directory: FSItem,
-        replyHandler reply: @escaping @Sendable ((any Error)?) -> Void
-    ) {
+        fromDirectory directory: FSItem
+    ) async throws {
         let itemId = getItemId(for: item)
         let parentId = getItemId(for: directory)
         let nameStr = name.string ?? ""
 
         let result = cryptoFS.remove(parentId, nameStr, itemId)
 
-        if result.isOk() {
-            itemCacheLock.lock()
-            itemCache.removeValue(forKey: itemId)
-            itemCacheLock.unlock()
-            reply(nil)
-        } else {
-            reply(posixError(result.getError()))
+        guard result.isOk() else {
+            throw posixError(result.getError())
         }
+
+        itemCacheLock.lock()
+        itemCache.removeValue(forKey: itemId)
+        itemCacheLock.unlock()
     }
 
     func renameItem(
@@ -309,9 +274,8 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         named sourceName: FSFileName,
         to destinationName: FSFileName,
         inDirectory destinationDirectory: FSItem,
-        overItem: FSItem?,
-        replyHandler reply: @escaping @Sendable (FSFileName?, (any Error)?) -> Void
-    ) {
+        overItem: FSItem?
+    ) async throws -> FSFileName {
         let itemId = getItemId(for: item)
         let srcParentId = getItemId(for: sourceDirectory)
         let dstParentId = getItemId(for: destinationDirectory)
@@ -320,28 +284,20 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
 
         let result = cryptoFS.rename(srcParentId, srcNameStr, dstParentId, dstNameStr, itemId)
 
-        if result.isOk() {
-            reply(destinationName, nil)
-        } else {
-            reply(nil, posixError(result.getError()))
+        guard result.isOk() else {
+            throw posixError(result.getError())
         }
+
+        return destinationName
     }
 
-    func activate(
-        options: FSTaskOptions,
-        replyHandler reply: @escaping @Sendable (FSItem?, (any Error)?) -> Void
-    ) {
+    func activate(options: FSTaskOptions) async throws -> FSItem {
         Self.logger.info("Activating volume")
-        let rootItem = getRootItem()
-        reply(rootItem, nil)
+        return getRootItem()
     }
 
-    func deactivate(
-        options: FSDeactivateOptions,
-        replyHandler reply: @escaping @Sendable ((any Error)?) -> Void
-    ) {
+    func deactivate(options: FSDeactivateOptions = []) async throws {
         Self.logger.info("Deactivating volume")
-        reply(nil)
     }
 
     func enumerateDirectory(
@@ -349,16 +305,14 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         startingAt cookie: FSDirectoryCookie,
         verifier: FSDirectoryVerifier,
         attributes: FSItem.GetAttributesRequest?,
-        packer: FSDirectoryEntryPacker,
-        replyHandler reply: @escaping @Sendable (FSDirectoryVerifier, (any Error)?) -> Void
-    ) {
+        packer: FSDirectoryEntryPacker
+    ) async throws -> FSDirectoryVerifier {
         let itemId = getItemId(for: directory)
 
         let result = cryptoFS.enumerateDirectory(itemId, cookie.rawValue)
 
         guard result.isOk() else {
-            reply(verifier, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let entries = result.unwrap()
@@ -397,54 +351,39 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
             }
         }
 
-        reply(verifier, nil)
+        return verifier
     }
 
     // MARK: - FSVolume.OpenCloseOperations
 
-    func openItem(
-        _ item: FSItem,
-        modes: FSVolume.OpenModes,
-        replyHandler reply: @escaping @Sendable ((any Error)?) -> Void
-    ) {
+    func openItem(_ item: FSItem, modes: FSVolume.OpenModes) async throws {
         let itemId = getItemId(for: item)
         let forWrite = modes.contains(.write)
 
         let result = cryptoFS.openFile(itemId, forWrite)
 
         guard result.isOk() else {
-            reply(posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let handle = result.unwrap()
         setHandle(for: item, handle: handle)
-
-        reply(nil)
     }
 
-    func closeItem(
-        _ item: FSItem,
-        modes: FSVolume.OpenModes,
-        replyHandler reply: @escaping @Sendable ((any Error)?) -> Void
-    ) {
+    func closeItem(_ item: FSItem, modes: FSVolume.OpenModes) async throws {
         // If modes is not empty, we're doing a partial close - keep file open
         guard modes.isEmpty else {
-            reply(nil)
             return
         }
 
         guard let handle = removeHandle(for: item) else {
-            reply(nil) // Not an error if already closed
-            return
+            return // Not an error if already closed
         }
 
         let result = cryptoFS.closeFile(handle)
 
-        if result.isOk() {
-            reply(nil)
-        } else {
-            reply(posixError(result.getError()))
+        guard result.isOk() else {
+            throw posixError(result.getError())
         }
     }
 
@@ -454,19 +393,16 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         from item: FSItem,
         at offset: off_t,
         length: Int,
-        into buffer: FSMutableFileDataBuffer,
-        replyHandler reply: @escaping @Sendable (Int, (any Error)?) -> Void
-    ) {
+        into buffer: FSMutableFileDataBuffer
+    ) async throws -> Int {
         guard let handle = getHandle(for: item) else {
-            reply(0, posixError(EBADF))
-            return
+            throw posixError(EBADF)
         }
 
         let result = cryptoFS.readFile(handle, Int64(offset), Int64(length))
 
         guard result.isOk() else {
-            reply(0, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
         let rustBytes = result.unwrap()
@@ -484,18 +420,16 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
             return count
         }
 
-        reply(bytesWritten, nil)
+        return bytesWritten
     }
 
     func write(
         contents: Data,
         to item: FSItem,
-        at offset: off_t,
-        replyHandler reply: @escaping @Sendable (Int, (any Error)?) -> Void
-    ) {
+        at offset: off_t
+    ) async throws -> Int {
         guard let handle = getHandle(for: item) else {
-            reply(0, posixError(EBADF))
-            return
+            throw posixError(EBADF)
         }
 
         // Convert Data to RustVec<UInt8>
@@ -507,12 +441,10 @@ final class OxVaultVolume: FSVolume, FSVolume.Operations,
         let result = cryptoFS.writeFile(handle, Int64(offset), rustVec)
 
         guard result.isOk() else {
-            reply(0, posixError(result.getError()))
-            return
+            throw posixError(result.getError())
         }
 
-        let bytesWritten = result.unwrap()
-        reply(Int(bytesWritten), nil)
+        return Int(result.unwrap())
     }
 
     // MARK: - Handle Management

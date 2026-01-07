@@ -1,7 +1,7 @@
 //! Oxidized Vault - Desktop GUI for Cryptomator vault management
 //!
 //! A Dioxus-based desktop application for managing Cryptomator vaults with
-//! support for multiple filesystem backends (FUSE, FSKit).
+//! support for multiple filesystem backends (FUSE, WebDAV, NFS, File Provider).
 
 // Allow unsafe code for objc2 interop (SF Symbols on macOS)
 #![cfg_attr(not(target_os = "macos"), forbid(unsafe_code))]
@@ -104,6 +104,9 @@ fn main() {
         tracing::warn!("Stale mount cleanup failed: {}", e);
     }
 
+    // Initialize FileProvider recovery service for automatic domain monitoring
+    backend::init_recovery_service();
+
     // Set up signal handler for graceful shutdown (Cmd+Q, Dock quit, etc.)
     if let Err(e) = ctrlc::set_handler(|| backend::cleanup_and_exit()) {
         tracing::warn!("Failed to set signal handler: {}", e);
@@ -131,11 +134,23 @@ fn main() {
         }
     };
 
+    // Load window icon from embedded PNG
+    let icon = {
+        let icon_bytes = include_bytes!("../assets/icon.png");
+        let icon_image = image::load_from_memory(icon_bytes)
+            .expect("Failed to load embedded icon")
+            .into_rgba8();
+        let (width, height) = icon_image.dimensions();
+        dioxus::desktop::tao::window::Icon::from_rgba(icon_image.into_raw(), width, height)
+            .expect("Failed to create window icon")
+    };
+
     // Build desktop config
     let mut config = dioxus::desktop::Config::new()
         .with_window(
             dioxus::desktop::WindowBuilder::new()
-                .with_title("Oxidized Vault")
+                .with_title("Oxcrypt")
+                .with_window_icon(Some(icon))
                 .with_inner_size(dioxus::desktop::LogicalSize::new(900.0, 600.0))
                 .with_min_inner_size(dioxus::desktop::LogicalSize::new(600.0, 400.0))
                 .with_resizable(true),
@@ -213,7 +228,10 @@ fn proactive_cleanup() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let options = CleanupOptions::default();
+    let options = CleanupOptions {
+        cleanup_orphans: true,
+        ..CleanupOptions::default()
+    };
     let results = cleanup_stale_mounts(&tracked_mounts, &options)?;
 
     // Collect mountpoints that were cleaned or removed from state

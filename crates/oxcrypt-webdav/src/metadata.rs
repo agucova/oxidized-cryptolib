@@ -159,10 +159,9 @@ impl CryptomatorMetaData {
 impl DavMetaData for CryptomatorMetaData {
     fn len(&self) -> u64 {
         match self {
-            CryptomatorMetaData::Root => 0,
             CryptomatorMetaData::File(f) => f.size,
-            CryptomatorMetaData::Directory(_) => 0,
             CryptomatorMetaData::Symlink(s) => s.size,
+            CryptomatorMetaData::Root | CryptomatorMetaData::Directory(_) => 0,
         }
     }
 

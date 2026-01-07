@@ -11,6 +11,12 @@
 //!
 //! Then run `tokio-console` in another terminal to connect (default: 127.0.0.1:6669).
 
+// Use mimalloc for reduced allocation latency (enabled by default).
+// Disable with `--no-default-features` if debugging allocator issues.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use oxcrypt_fuse::{CryptomatorFS, MountConfig};
@@ -79,6 +85,7 @@ fn main() -> Result<()> {
         // Build the multi-threaded runtime FIRST, before setting up tracing
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
+            .max_blocking_threads(2048)
             .build()
             .context("Failed to create tokio runtime")?;
 
@@ -116,7 +123,7 @@ fn main() -> Result<()> {
 
         // Run the mount logic, passing the runtime handle
         let handle = runtime.handle().clone();
-        run_mount(cli, handle, &runtime)
+        run_mount(&cli, handle, &runtime)
     }
 
     #[cfg(not(feature = "tokio-console"))]
@@ -130,7 +137,7 @@ fn main() -> Result<()> {
             .init();
 
         // Run without external runtime (CryptomatorFS creates its own)
-        run_mount_simple(cli)
+        run_mount_simple(&cli)
     }
 }
 
@@ -153,7 +160,7 @@ fn build_config(cli: &Cli) -> MountConfig {
 
 /// Run the mount with an external runtime handle (for tokio-console support).
 #[cfg(feature = "tokio-console")]
-fn run_mount(cli: Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Result<()> {
+fn run_mount(cli: &Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Result<()> {
     // Enter the runtime context so Handle::current() works
     let _guard = runtime.enter();
 
@@ -166,10 +173,10 @@ fn run_mount(cli: Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Res
     }
 
     // Get password
-    let password = get_password(&cli)?;
+    let password = get_password(cli)?;
 
     // Build configuration
-    let config = build_config(&cli);
+    let config = build_config(cli);
     let mode = if cli.local_mode { "local" } else { "network" };
 
     info!(
@@ -189,7 +196,7 @@ fn run_mount(cli: Cli, handle: Handle, runtime: &tokio::runtime::Runtime) -> Res
 
 /// Run the mount without external runtime (standard mode).
 #[cfg(not(feature = "tokio-console"))]
-fn run_mount_simple(cli: Cli) -> Result<()> {
+fn run_mount_simple(cli: &Cli) -> Result<()> {
     // Validate paths
     if !cli.vault.exists() {
         anyhow::bail!("Vault path does not exist: {}", cli.vault.display());
@@ -199,10 +206,10 @@ fn run_mount_simple(cli: Cli) -> Result<()> {
     }
 
     // Get password
-    let password = get_password(&cli)?;
+    let password = get_password(cli)?;
 
     // Build configuration
-    let config = build_config(&cli);
+    let config = build_config(cli);
     let mode = if cli.local_mode { "local" } else { "network" };
 
     info!(
@@ -235,23 +242,29 @@ fn get_password(cli: &Cli) -> Result<Zeroizing<String>> {
 }
 
 /// Mount the filesystem and wait for Ctrl+C.
-fn mount_and_wait(cli: Cli, fs: CryptomatorFS) -> Result<()> {
+fn mount_and_wait(cli: &Cli, fs: CryptomatorFS) -> Result<()> {
     // Derive vault name from path for display
     let vault_name = cli
         .vault
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Vault".to_string());
+        .file_name().map_or_else(|| "Vault".to_string(), |n| n.to_string_lossy().to_string());
 
     // Mount options
     let mut options = vec![
-        fuser::MountOption::FSName(format!("cryptomator:{}", vault_name)),
+        fuser::MountOption::FSName(format!("cryptomator:{vault_name}")),
         fuser::MountOption::Subtype("oxcrypt".to_string()),
         fuser::MountOption::AutoUnmount,
+        // Let kernel handle permission checks - avoids access() calls for every operation
+        fuser::MountOption::DefaultPermissions,
     ];
 
     #[cfg(target_os = "macos")]
-    options.push(fuser::MountOption::CUSTOM(format!("volname={}", vault_name)));
+    {
+        options.push(fuser::MountOption::CUSTOM(format!("volname={vault_name}")));
+        // Enable auto_cache to automatically invalidate cached data when files change.
+        // This helps prevent SIGBUS crashes with mmap by keeping the buffer cache
+        // consistent with actual file contents (e.g., SQLite WAL shared memory files).
+        options.push(fuser::MountOption::CUSTOM("auto_cache".to_string()));
+    }
 
     if cli.read_only {
         options.push(fuser::MountOption::RO);
@@ -271,7 +284,7 @@ fn mount_and_wait(cli: Cli, fs: CryptomatorFS) -> Result<()> {
 
     let session = fuser::spawn_mount2(fs, &cli.mount, &options).map_err(|e| {
         error!(error = %e, "Mount failed");
-        anyhow::anyhow!("Failed to mount filesystem: {}", e)
+        anyhow::anyhow!("Failed to mount filesystem: {e}")
     })?;
 
     info!("Filesystem mounted at {}", cli.mount.display());

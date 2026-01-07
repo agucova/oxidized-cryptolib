@@ -24,7 +24,7 @@ pub mod patterns {
         pattern.iter()
             .cycle()
             .take(size)
-            .cloned()
+            .copied()
             .collect()
     }
     

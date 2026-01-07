@@ -68,6 +68,7 @@ impl TestFilesystem {
     }
 
     /// Provides direct access to the underlying filesystem for advanced tests.
+    #[allow(dead_code)]
     pub fn inner(&self) -> &CryptoFilesystem {
         &self.fs
     }
@@ -289,6 +290,7 @@ impl TestFilesystem {
     }
 
     /// Reclaims an item ID, allowing it to be reused.
+    #[allow(dead_code)]
     pub fn reclaim(&self, item_id: u64) {
         self.fs.reclaim(item_id);
     }

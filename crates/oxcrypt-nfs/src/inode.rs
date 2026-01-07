@@ -47,9 +47,9 @@ impl NfsInodeTable {
     ///
     /// If the path already has an ID, returns the existing ID.
     /// Otherwise, allocates a new ID and stores the entry.
-    pub fn get_or_insert(&self, path: VaultPath, kind: InodeKind) -> u64 {
+    pub fn get_or_insert(&self, path: &VaultPath, kind: InodeKind) -> u64 {
         self.inner
-            .get_or_insert_with(path.clone(), || PathEntry::new(path, kind))
+            .get_or_insert_with(path, || PathEntry::new(path.clone(), kind))
     }
 
     /// Looks up an entry by file ID.
@@ -87,7 +87,7 @@ impl NfsInodeTable {
     }
 
     /// Updates the path for an entry (used after rename operations).
-    pub fn update_path(&self, id: u64, old_path: &VaultPath, new_path: VaultPath) {
+    pub fn update_path(&self, id: u64, old_path: &VaultPath, new_path: &VaultPath) {
         self.inner
             .update_path(id, old_path, new_path.clone(), |entry, path| {
                 entry.path = path;
@@ -153,12 +153,12 @@ mod tests {
         let path = VaultPath::new("documents");
         let dir_id = DirId::from_raw("test-uuid");
 
-        let id = table.get_or_insert(path.clone(), InodeKind::Directory { dir_id });
+        let id = table.get_or_insert(&path, InodeKind::Directory { dir_id });
         assert!(id > ROOT_FILEID);
 
         // Second call should return same ID
         let id2 = table.get_or_insert(
-            path.clone(),
+            &path,
             InodeKind::Directory {
                 dir_id: DirId::from_raw("different"),
             },
@@ -172,7 +172,7 @@ mod tests {
         let path = VaultPath::new("temp");
 
         let id = table.get_or_insert(
-            path.clone(),
+            &path,
             InodeKind::File {
                 dir_id: DirId::root(),
                 name: "temp".to_string(),
@@ -201,14 +201,14 @@ mod tests {
         let new_path = VaultPath::new("new_name");
 
         let id = table.get_or_insert(
-            old_path.clone(),
+            &old_path,
             InodeKind::File {
                 dir_id: DirId::root(),
                 name: "old_name".to_string(),
             },
         );
 
-        table.update_path(id, &old_path, new_path.clone());
+        table.update_path(id, &old_path, &new_path);
 
         assert!(table.get_id(&old_path).is_none());
         assert_eq!(table.get_id(&new_path), Some(id));
@@ -232,7 +232,7 @@ mod tests {
         assert!(!file_entry.is_symlink());
         assert_eq!(file_entry.filename(), Some("file.txt"));
         assert_eq!(
-            file_entry.parent_dir_id().map(|d| d.as_str()),
+            file_entry.parent_dir_id().map(DirId::as_str),
             Some("parent-id")
         );
         assert!(file_entry.dir_id().is_none());
@@ -269,12 +269,12 @@ mod tests {
         for i in 0..10 {
             let table = Arc::clone(&table);
             handles.push(thread::spawn(move || {
-                let path = VaultPath::new(format!("file_{}", i));
+                let path = VaultPath::new(format!("file_{i}"));
                 table.get_or_insert(
-                    path,
+                    &path,
                     InodeKind::File {
                         dir_id: DirId::root(),
-                        name: format!("file_{}", i),
+                        name: format!("file_{i}"),
                     },
                 )
             }));
@@ -284,7 +284,7 @@ mod tests {
 
         // All IDs should be unique
         let mut sorted = ids.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len());
 
@@ -299,10 +299,10 @@ mod tests {
         // Add some entries
         for i in 0..5 {
             table.get_or_insert(
-                VaultPath::new(format!("file_{}", i)),
+                &VaultPath::new(format!("file_{i}")),
                 InodeKind::File {
                     dir_id: DirId::root(),
-                    name: format!("file_{}", i),
+                    name: format!("file_{i}"),
                 },
             );
         }

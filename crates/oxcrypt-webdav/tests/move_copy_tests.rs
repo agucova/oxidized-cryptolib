@@ -54,12 +54,10 @@ async fn test_move_file_different_dir() {
     let resp = server.move_("/source_dir/file.txt", "/dest_dir/file.txt", false).await;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    eprintln!("DEBUG: MOVE response status: {}, body: {}", status, body);
+    eprintln!("DEBUG: MOVE response status: {status}, body: {body}");
     assert!(
         status.is_success() || status == StatusCode::CREATED,
-        "Cross-dir MOVE failed with status {}: {}",
-        status,
-        body
+        "Cross-dir MOVE failed with status {status}: {body}"
     );
 
     assert_not_found(&server, "/source_dir/file.txt").await;
@@ -96,12 +94,10 @@ async fn test_move_file_overwrite_true() {
     let resp = server.move_("/source.txt", "/dest.txt", true).await;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    eprintln!("DEBUG: MOVE status={}, body={}", status, body);
+    eprintln!("DEBUG: MOVE status={status}, body={body}");
     assert!(
         status.is_success() || status == StatusCode::NO_CONTENT,
-        "MOVE with overwrite=true failed with status {}: {}",
-        status,
-        body
+        "MOVE with overwrite=true failed with status {status}: {body}"
     );
 
     assert_not_found(&server, "/source.txt").await;
@@ -165,17 +161,17 @@ async fn test_move_directory() {
     let server = TestServer::with_temp_vault().await;
 
     server.mkcol_ok("/olddir").await;
+    server.mkcol_ok("/olddir/nested").await;
     server.put_ok("/olddir/file.txt", b"inside".to_vec()).await;
+    server.put_ok("/olddir/nested/deep.txt", b"deep".to_vec()).await;
 
     let resp = server.move_("/olddir", "/newdir", false).await;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    eprintln!("DEBUG: Directory MOVE status: {}, body: {}", status, body);
+    eprintln!("DEBUG: Directory MOVE status: {status}, body: {body}");
     assert!(
         status.is_success() || status == StatusCode::CREATED,
-        "Directory MOVE failed with {}: {}",
-        status,
-        body
+        "Directory MOVE failed with {status}: {body}"
     );
 
     // Check old path is gone
@@ -184,6 +180,31 @@ async fn test_move_directory() {
 
     // Check new path has the file
     assert_file_content(&server, "/newdir/file.txt", b"inside").await;
+    assert_file_content(&server, "/newdir/nested/deep.txt", b"deep").await;
+}
+
+#[tokio::test]
+async fn test_move_directory_to_different_dir() {
+    let server = TestServer::with_temp_vault().await;
+
+    server.mkcol_ok("/src").await;
+    server.mkcol_ok("/dest").await;
+    server.mkcol_ok("/src/dir").await;
+    server.mkcol_ok("/src/dir/sub").await;
+    server.put_ok("/src/dir/sub/file.txt", b"cross dir".to_vec()).await;
+
+    let resp = server.move_("/src/dir", "/dest/dir", false).await;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    eprintln!("DEBUG: Cross-dir directory MOVE status: {status}, body: {body}");
+    assert!(
+        status.is_success() || status == StatusCode::CREATED,
+        "Cross-dir directory MOVE failed with {status}: {body}"
+    );
+
+    let resp = server.propfind("/src/dir", "0").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_file_content(&server, "/dest/dir/sub/file.txt", b"cross dir").await;
 }
 
 #[tokio::test]
@@ -322,24 +343,22 @@ async fn test_copy_directory() {
     let server = TestServer::with_temp_vault().await;
 
     server.mkcol_ok("/original_dir").await;
+    server.mkcol_ok("/original_dir/subdir").await;
     server.put_ok("/original_dir/file.txt", b"file content".to_vec()).await;
+    server.put_ok("/original_dir/subdir/deep.txt", b"deep content".to_vec()).await;
 
     let resp = server.copy("/original_dir", "/copied_dir", false).await;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        status.is_success() || status == StatusCode::CREATED,
+        "Directory COPY failed with {status}: {body}"
+    );
 
-    if resp.status().is_success() || resp.status() == StatusCode::CREATED {
-        // Directory copy is supported - verify contents
-        assert_file_content(&server, "/original_dir/file.txt", b"file content").await;
-        assert_file_content(&server, "/copied_dir/file.txt", b"file content").await;
-    } else {
-        // Directory copy not supported (403 or 501)
-        assert!(
-            resp.status() == StatusCode::FORBIDDEN
-                || resp.status() == StatusCode::NOT_IMPLEMENTED
-                || resp.status() == StatusCode::METHOD_NOT_ALLOWED,
-            "Unexpected status for directory COPY: {}",
-            resp.status()
-        );
-    }
+    assert_file_content(&server, "/original_dir/file.txt", b"file content").await;
+    assert_file_content(&server, "/original_dir/subdir/deep.txt", b"deep content").await;
+    assert_file_content(&server, "/copied_dir/file.txt", b"file content").await;
+    assert_file_content(&server, "/copied_dir/subdir/deep.txt", b"deep content").await;
 }
 
 // ============================================================================
@@ -430,12 +449,10 @@ async fn test_move_unicode_filename() {
     let resp = server.move_("/文件.txt", "/档案.txt", false).await;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    eprintln!("DEBUG: Unicode MOVE status: {}, body: {}", status, body);
+    eprintln!("DEBUG: Unicode MOVE status: {status}, body: {body}");
     assert!(
         status.is_success() || status == StatusCode::CREATED,
-        "Unicode MOVE failed with status {}: {}",
-        status,
-        body
+        "Unicode MOVE failed with status {status}: {body}"
     );
 
     assert_not_found(&server, "/文件.txt").await;

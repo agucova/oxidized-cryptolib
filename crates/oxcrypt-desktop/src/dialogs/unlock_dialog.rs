@@ -101,9 +101,15 @@ pub fn UnlockDialog(props: UnlockDialogProps) -> Element {
         // Backdrop
         div {
             class: "dialog-backdrop",
+            tabindex: "-1",
             onclick: move |_| {
                 if !is_unlocking {
                     props.on_cancel.call(())
+                }
+            },
+            onkeydown: move |e| {
+                if e.key() == Key::Escape && !is_unlocking {
+                    props.on_cancel.call(());
                 }
             },
 

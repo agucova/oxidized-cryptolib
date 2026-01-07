@@ -5,7 +5,7 @@
 //! [`VaultErrorCategory`](oxcrypt_mount::VaultErrorCategory) for
 //! consistent error mapping.
 
-use crate::executor::ExecutorError;
+use crate::async_bridge::BridgeError;
 use oxcrypt_core::error::{VaultOperationError, VaultWriteError};
 use oxcrypt_mount::{io_error_to_errno, VaultErrorCategory};
 use std::io;
@@ -26,9 +26,9 @@ pub enum FuseError {
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 
-    /// Executor error (timeout, shutdown, etc.).
-    #[error("Executor error: {0}")]
-    Executor(#[from] ExecutorError),
+    /// Async bridge error (timeout, cancelled, etc.).
+    #[error("Async bridge error: {0}")]
+    Bridge(#[from] BridgeError),
 
     /// Invalid inode.
     #[error("Invalid inode: {0}")]
@@ -66,11 +66,9 @@ impl FuseError {
             FuseError::Vault(e) => vault_error_to_errno(e.as_ref()),
             FuseError::Write(e) => write_error_to_errno(e.as_ref()),
             FuseError::Io(e) => io_error_to_errno(e),
-            FuseError::Executor(e) => e.to_errno(),
-            FuseError::InvalidInode(_) => libc::ENOENT,
-            FuseError::InvalidHandle(_) => libc::EBADF,
-            FuseError::WrongHandleType => libc::EBADF,
-            FuseError::PathResolution(_) => libc::ENOENT,
+            FuseError::Bridge(e) => e.to_errno(),
+            FuseError::InvalidInode(_) | FuseError::PathResolution(_) => libc::ENOENT,
+            FuseError::InvalidHandle(_) | FuseError::WrongHandleType => libc::EBADF,
             FuseError::AlreadyExists(_) => libc::EEXIST,
             FuseError::NotEmpty(_) => libc::ENOTEMPTY,
             FuseError::NotSupported => libc::ENOTSUP,
@@ -284,8 +282,7 @@ mod tests {
             assert_eq!(
                 io_error_to_errno(&e),
                 code,
-                "IO error code {} should map to same errno",
-                code
+                "IO error code {code} should map to same errno"
             );
         }
     }
@@ -333,20 +330,20 @@ mod tests {
         // FileAlreadyExists -> EEXIST
         let err = VaultWriteError::FileAlreadyExists {
             filename: "test.txt".to_string(),
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(write_error_to_errno(&err), libc::EEXIST);
 
         // DirectoryNotEmpty -> ENOTEMPTY
         let err = VaultWriteError::DirectoryNotEmpty {
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(write_error_to_errno(&err), libc::ENOTEMPTY);
 
         // DirectoryNotFound -> ENOENT
         let err = VaultWriteError::DirectoryNotFound {
             name: "test".to_string(),
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_eq!(write_error_to_errno(&err), libc::ENOENT);
     }

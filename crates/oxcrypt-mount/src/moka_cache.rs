@@ -128,8 +128,7 @@ impl fmt::Display for CacheWarning {
             CacheWarning::HighEvictionRate { rate, threshold } => {
                 write!(
                     f,
-                    "High eviction rate: {:.2} evictions/insert (threshold: {:.2})",
-                    rate, threshold
+                    "High eviction rate: {rate:.2} evictions/insert (threshold: {threshold:.2})"
                 )
             }
             CacheWarning::NegativeCacheHeavy { ratio, threshold } => {
@@ -145,7 +144,7 @@ impl fmt::Display for CacheWarning {
 }
 
 /// Thresholds for cache health warnings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct CacheHealthThresholds {
     /// Warn if hit rate is below this value (default: 0.5 = 50%).
     pub min_hit_rate: f64,
@@ -173,9 +172,9 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(60);
 
 /// Default time-to-live for negative cache entries.
 ///
-/// Set to 30 seconds by default, optimized for network filesystems.
+/// Set to 3 seconds by default, balancing responsiveness with cache efficiency.
 /// Use `LOCAL_NEGATIVE_TTL` for local vaults.
-pub const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(30);
+pub const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(3);
 
 /// TTL for local filesystem vaults (1 second).
 ///
@@ -183,8 +182,8 @@ pub const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(30);
 /// where fresh metadata is preferred over caching.
 pub const LOCAL_TTL: Duration = Duration::from_secs(1);
 
-/// Negative TTL for local filesystem vaults (500ms).
-pub const LOCAL_NEGATIVE_TTL: Duration = Duration::from_millis(500);
+/// Negative TTL for local filesystem vaults (300ms).
+pub const LOCAL_NEGATIVE_TTL: Duration = Duration::from_millis(300);
 
 /// Default maximum capacity for caches.
 const DEFAULT_MAX_CAPACITY: u64 = 50_000;
@@ -243,7 +242,7 @@ impl<K, V> Expiry<K, CachedEntry<V>> for PerEntryExpiry {
         &self,
         _key: &K,
         value: &CachedEntry<V>,
-        _created_at: std::time::Instant,
+        _created_at: Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }
@@ -252,7 +251,7 @@ impl<K, V> Expiry<K, CachedEntry<V>> for PerEntryExpiry {
         &self,
         _key: &K,
         value: &CachedEntry<V>,
-        _updated_at: std::time::Instant,
+        _updated_at: Instant,
         _duration_until_expiry: Option<Duration>,
     ) -> Option<Duration> {
         // Use the new entry's TTL
@@ -595,6 +594,8 @@ where
     /// This uses Moka's `Expiry` trait to support per-entry TTL.
     /// The TTL is stored in the `CachedEntry` and read by the `PerEntryExpiry` policy.
     pub fn insert_with_ttl(&self, key: K, value: V, ttl: Duration) {
+        // Safe cast: Duration values fit in u64 for reasonable TTLs
+        #[allow(clippy::cast_possible_truncation)]
         let _span = cache_span!("cache_insert_with_ttl", cache = "sync", ttl_ms = ttl.as_millis() as u64);
 
         // Remove from negative cache if enabled
@@ -632,7 +633,7 @@ where
     pub fn is_negative(&self, key: &K) -> bool {
         self.negative
             .as_ref()
-            .map_or(false, |neg| neg.contains_key(key))
+            .is_some_and(|neg| neg.contains_key(key))
     }
 
     /// Adds a key to the negative cache.
@@ -695,14 +696,24 @@ where
 
     /// Returns the approximate number of entries in the positive cache.
     pub fn len(&self) -> usize {
-        self.positive.entry_count() as usize
+        // Safe cast: entry_count() returns u64, which fits in usize on 64-bit systems
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.positive.entry_count() as usize
+        }
     }
 
     /// Returns the approximate number of entries in the negative cache.
     pub fn negative_len(&self) -> usize {
         self.negative
             .as_ref()
-            .map_or(0, |n| n.entry_count() as usize)
+            .map_or(0, |n| {
+                // Safe cast: entry_count() returns u64, which fits in usize on 64-bit systems
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    n.entry_count() as usize
+                }
+            })
     }
 
     /// Returns true if the positive cache is empty.
@@ -910,7 +921,7 @@ impl<V: Clone + Send + Sync + 'static> SyncTtlCache<String, V> {
 /// use oxcrypt_mount::moka_cache::AsyncTtlCache;
 /// use std::time::Duration;
 ///
-/// #[tokio::main]
+/// #[tokio::main(flavor = "current_thread")]
 /// async fn main() {
 ///     let cache: AsyncTtlCache<u64, String> = AsyncTtlCache::with_defaults();
 ///
@@ -1139,7 +1150,7 @@ where
         let _span = cache_span!("cache_get_or_insert", cache = "async");
 
         // Check negative cache first
-        if self.is_negative(key).await {
+        if self.is_negative(key) {
             cache_event!(debug, "negative cache hit, skipping computation");
             return None;
         }
@@ -1172,7 +1183,7 @@ where
         E: Send + Sync + 'static,
     {
         // Check negative cache first
-        if self.is_negative(key).await {
+        if self.is_negative(key) {
             return Ok(None);
         }
 
@@ -1221,6 +1232,8 @@ where
     ///
     /// This uses Moka's `Expiry` trait to support per-entry TTL.
     pub async fn insert_with_ttl(&self, key: K, value: V, ttl: Duration) {
+        // TTL values are practical durations (seconds to minutes), safe to cast for tracing
+        #[allow(clippy::cast_possible_truncation)]
         let _span = cache_span!("cache_insert_with_ttl", cache = "async", ttl_ms = ttl.as_millis() as u64);
 
         if let Some(ref neg) = self.negative {
@@ -1242,7 +1255,7 @@ where
     }
 
     /// Clears all cached entries (both positive and negative).
-    pub async fn clear(&self) {
+    pub fn clear(&self) {
         let _span = cache_span!("cache_clear", cache = "async");
         self.positive.invalidate_all();
         if let Some(ref neg) = self.negative {
@@ -1252,7 +1265,7 @@ where
     }
 
     /// Checks if a key is in the negative cache (known to not exist).
-    pub async fn is_negative(&self, key: &K) -> bool {
+    pub fn is_negative(&self, key: &K) -> bool {
         match &self.negative {
             Some(neg) => neg.contains_key(key),
             None => false,
@@ -1296,14 +1309,24 @@ where
 
     /// Returns the approximate number of entries in the positive cache.
     pub fn len(&self) -> usize {
-        self.positive.entry_count() as usize
+        // Safe cast: entry_count() returns u64, which fits in usize on 64-bit systems
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.positive.entry_count() as usize
+        }
     }
 
     /// Returns the approximate number of entries in the negative cache.
     pub fn negative_len(&self) -> usize {
         self.negative
             .as_ref()
-            .map_or(0, |n| n.entry_count() as usize)
+            .map_or(0, |n| {
+                // Safe cast: entry_count() returns u64, which fits in usize on 64-bit systems
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    n.entry_count() as usize
+                }
+            })
     }
 
     /// Returns true if the positive cache is empty.
@@ -1348,7 +1371,7 @@ where
     /// use oxcrypt_mount::stats::CacheStats;
     /// use std::sync::Arc;
     ///
-    /// #[tokio::main]
+    /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() {
     ///     let stats = Arc::new(CacheStats::new());
     ///     let cache: AsyncTtlCache<u64, String> = AsyncTtlCache::with_stats(stats);
@@ -1507,7 +1530,7 @@ mod tests {
         assert!(cache.get(&42).is_some());
 
         // Wait for expiry
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
         cache.cleanup_expired(); // Force cleanup
 
         assert!(cache.get(&42).is_none());
@@ -1630,7 +1653,7 @@ mod tests {
         for i in 0..10 {
             let cache = Arc::clone(&cache);
             handles.push(thread::spawn(move || {
-                cache.insert(i, format!("value-{}", i));
+                cache.insert(i, format!("value-{i}"));
                 cache.get(&i)
             }));
         }
@@ -1682,7 +1705,7 @@ mod tests {
                 cache.get_or_insert(&42, || {
                     compute_count.fetch_add(1, Ordering::SeqCst);
                     // Simulate slow computation
-                    std::thread::sleep(Duration::from_millis(10));
+                    thread::sleep(Duration::from_millis(10));
                     "computed".to_string()
                 })
             }));
@@ -1695,7 +1718,7 @@ mod tests {
 
         // Compute should only have been called once (or very few times due to Moka's design)
         let count = compute_count.load(Ordering::SeqCst);
-        assert!(count <= 2, "Expected 1-2 computes, got {}", count);
+        assert!(count <= 2, "Expected 1-2 computes, got {count}");
     }
 
     #[test]
@@ -1757,11 +1780,11 @@ mod tests {
             AsyncTtlCache::with_negative_cache(DEFAULT_TTL, DEFAULT_NEGATIVE_TTL);
 
         cache.insert_negative(42).await;
-        assert!(cache.is_negative(&42).await);
-        assert!(!cache.is_negative(&999).await);
+        assert!(cache.is_negative(&42));
+        assert!(!cache.is_negative(&999));
 
         cache.remove_negative(&42).await;
-        assert!(!cache.is_negative(&42).await);
+        assert!(!cache.is_negative(&42));
     }
 
     #[tokio::test]
@@ -1814,7 +1837,7 @@ mod tests {
 
         // Compute should only have been called once (or very few times)
         let count = compute_count.load(Ordering::SeqCst);
-        assert!(count <= 2, "Expected 1-2 computes, got {}", count);
+        assert!(count <= 2, "Expected 1-2 computes, got {count}");
     }
 
     #[tokio::test]
@@ -1941,7 +1964,7 @@ mod tests {
         assert!(cache.get(&2).is_some(), "Long TTL entry should exist");
 
         // Wait for short TTL to expire
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
         cache.cleanup_expired();
 
         assert!(
@@ -1961,18 +1984,21 @@ mod tests {
 
         // Insert 100 entries with distinct content
         for i in 0..100u64 {
+            // Test values are small (0..100), safe to cast
+            #[allow(clippy::cast_possible_truncation)]
             let content: Vec<u8> = (0..256).map(|b| ((b + i as usize) % 256) as u8).collect();
             cache.insert(i, content);
         }
 
         // Verify each entry has correct content
         for i in 0..100u64 {
+            // Test values are small (0..100), safe to cast
+            #[allow(clippy::cast_possible_truncation)]
             let expected: Vec<u8> = (0..256).map(|b| ((b + i as usize) % 256) as u8).collect();
-            let actual = cache.get(&i).expect(&format!("Key {} should exist", i));
+            let actual = cache.get(&i).unwrap_or_else(|| panic!("Key {i} should exist"));
             assert_eq!(
                 actual.value, expected,
-                "Value corruption at key {}",
-                i
+                "Value corruption at key {i}"
             );
         }
     }
@@ -2158,7 +2184,7 @@ mod tests {
 
         // Insert more entries than capacity to trigger evictions
         for i in 0..20 {
-            cache.insert(i, CachedEntry::new(format!("value-{}", i), Duration::from_secs(60)));
+            cache.insert(i, CachedEntry::new(format!("value-{i}"), Duration::from_secs(60)));
             stats.record_insert();
             // Run pending tasks to process evictions
             cache.run_pending_tasks();
@@ -2178,12 +2204,10 @@ mod tests {
         // If evictions happened, they should be recorded
         // Note: Moka's eviction is eventually consistent
         let evictions = stats.eviction_count();
-        let entries = cache.entry_count() as u64;
+        let entries = cache.entry_count();
         assert!(
             evictions > 0 || entries <= 5,
-            "Evictions should be tracked (evictions={}, entries={})",
-            evictions,
-            entries
+            "Evictions should be tracked (evictions={evictions}, entries={entries})"
         );
     }
 
@@ -2195,7 +2219,7 @@ mod tests {
         let health = cache.health_check(CacheHealthThresholds::default());
 
         // With no data, should assume healthy
-        assert_eq!(health.hit_rate, 1.0);
+        assert!((health.hit_rate - 1.0).abs() < f64::EPSILON);
         assert!(health.warnings.is_empty(), "No warnings with no data");
     }
 
@@ -2234,7 +2258,7 @@ mod tests {
 
         // Insert values first
         for i in 0..50 {
-            cache.insert(i, format!("value-{}", i));
+            cache.insert(i, format!("value-{i}"));
         }
 
         // Hit all cached values multiple times
@@ -2263,22 +2287,22 @@ mod tests {
             rate: 0.3,
             threshold: 0.5,
         };
-        let display = format!("{}", warning);
-        assert!(display.contains("30.0%"), "Should display percentage: {}", display);
+        let display = format!("{warning}");
+        assert!(display.contains("30.0%"), "Should display percentage: {display}");
 
         let warning = CacheWarning::HighEvictionRate {
             rate: 3.5,
             threshold: 2.0,
         };
-        let display = format!("{}", warning);
-        assert!(display.contains("3.50"), "Should display rate: {}", display);
+        let display = format!("{warning}");
+        assert!(display.contains("3.50"), "Should display rate: {display}");
 
         let warning = CacheWarning::NegativeCacheHeavy {
             ratio: 0.45,
             threshold: 0.3,
         };
-        let display = format!("{}", warning);
-        assert!(display.contains("45.0%"), "Should display percentage: {}", display);
+        let display = format!("{warning}");
+        assert!(display.contains("45.0%"), "Should display percentage: {display}");
     }
 
     #[test]
@@ -2322,7 +2346,7 @@ mod tests {
         // Insert more entries than capacity to trigger evictions
         for i in 0..20 {
             cache
-                .insert(i, CachedEntry::new(format!("value-{}", i), Duration::from_secs(60)))
+                .insert(i, CachedEntry::new(format!("value-{i}"), Duration::from_secs(60)))
                 .await;
             stats.record_insert();
             // Run pending tasks to process evictions
@@ -2343,12 +2367,10 @@ mod tests {
         // If evictions happened, they should be recorded
         // Note: Moka's eviction is eventually consistent
         let evictions = stats.eviction_count();
-        let entries = cache.entry_count() as u64;
+        let entries = cache.entry_count();
         assert!(
             evictions > 0 || entries <= 5,
-            "Evictions should be tracked (evictions={}, entries={})",
-            evictions,
-            entries
+            "Evictions should be tracked (evictions={evictions}, entries={entries})"
         );
     }
 
@@ -2359,7 +2381,7 @@ mod tests {
 
         // Insert and access values
         for i in 0..50 {
-            cache.insert(i, format!("value-{}", i)).await;
+            cache.insert(i, format!("value-{i}")).await;
         }
         for _ in 0..3 {
             for i in 0..50 {
@@ -2393,7 +2415,7 @@ mod tests {
         cache.insert_negative(2).await;
 
         assert!(cache.get(&1).await.is_some());
-        assert!(cache.is_negative(&2).await);
+        assert!(cache.is_negative(&2));
         assert_eq!(stats.entry_count(), 1);
         assert_eq!(stats.hit_count(), 1);
     }
@@ -2402,8 +2424,8 @@ mod tests {
     fn test_cache_health_thresholds_default() {
         let thresholds = CacheHealthThresholds::default();
 
-        assert_eq!(thresholds.min_hit_rate, 0.5);
-        assert_eq!(thresholds.max_eviction_rate, 2.0);
-        assert_eq!(thresholds.max_negative_ratio, 0.3);
+        assert!((thresholds.min_hit_rate - 0.5).abs() < f64::EPSILON);
+        assert!((thresholds.max_eviction_rate - 2.0).abs() < f64::EPSILON);
+        assert!((thresholds.max_negative_ratio - 0.3).abs() < f64::EPSILON);
     }
 }

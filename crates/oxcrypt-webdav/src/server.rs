@@ -6,10 +6,10 @@
 use crate::filesystem::CryptomatorWebDav;
 use dav_server::{fakels::FakeLs, DavHandler};
 use hyper::body::Incoming;
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::Request;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -71,7 +71,7 @@ impl WebDavServer {
         // Spawn the server task
         let server_handle = tokio::spawn(async move {
             tokio::select! {
-                _ = run_server(listener, dav_handler) => {
+                () = run_server(listener, dav_handler) => {
                     debug!("Server loop ended");
                 }
                 _ = shutdown_rx => {
@@ -136,11 +136,12 @@ async fn run_server(listener: TcpListener, handler: Arc<DavHandler>) {
                         }
                     });
 
-                    if let Err(e) = http1::Builder::new()
+                    if let Err(e) = auto::Builder::new(TokioExecutor::new())
                         .serve_connection(io, service)
                         .await
-                        && !e.is_incomplete_message()
                     {
+                        // Note: With auto protocol negotiation, we can't easily detect
+                        // incomplete messages. Log all connection errors at warn level.
                         warn!(peer = %peer_addr, error = %e, "HTTP connection error");
                     }
                 });
@@ -187,8 +188,7 @@ pub async fn auto_mount_macos(
                 "Auto-mount timed out"
             );
             return Err(std::io::Error::other(format!(
-                "mount_webdav timed out after {}s",
-                AUTO_MOUNT_TIMEOUT_SECS
+                "mount_webdav timed out after {AUTO_MOUNT_TIMEOUT_SECS}s"
             )));
         }
     };
@@ -208,100 +208,41 @@ pub async fn auto_mount_macos(
 /// Attempt to unmount a macOS WebDAV mount.
 #[cfg(target_os = "macos")]
 pub fn unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
-    use std::process::Command;
-
     debug!(mountpoint = %mountpoint.display(), "Unmounting on macOS");
 
-    // Try umount first
-    let status = Command::new("umount").arg(mountpoint).status()?;
-
-    if status.success() {
-        return Ok(());
-    }
-
-    // Try diskutil unmount as fallback
-    let status = Command::new("diskutil")
-        .arg("unmount")
-        .arg(mountpoint)
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("unmount failed"))
-    }
+    // Use shared force_unmount utility (has built-in timeouts and fallbacks)
+    oxcrypt_mount::force_unmount(mountpoint)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 /// Force unmount a macOS WebDAV mount, even if busy.
 #[cfg(target_os = "macos")]
 pub fn force_unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
-    use std::process::Command;
-
     debug!(mountpoint = %mountpoint.display(), "Force unmounting on macOS");
 
-    // Try diskutil unmount force first (most reliable)
-    let result = Command::new("diskutil")
-        .args(["unmount", "force"])
-        .arg(mountpoint)
-        .output()?;
-
-    if result.status.success() {
-        return Ok(());
-    }
-
-    debug!(
-        "diskutil unmount force failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-
-    // Fallback to umount -f
-    let status = Command::new("umount").arg("-f").arg(mountpoint).status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("force unmount failed"))
-    }
+    // Use shared force_unmount utility (has built-in timeouts and fallbacks)
+    oxcrypt_mount::force_unmount(mountpoint)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 /// Attempt to unmount on Linux (for manually mounted WebDAV shares).
 #[cfg(target_os = "linux")]
 pub fn unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
-    use std::process::Command;
-
     debug!(mountpoint = %mountpoint.display(), "Unmounting on Linux");
 
-    let status = Command::new("umount").arg(mountpoint).status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("unmount failed"))
-    }
+    // Use shared lazy_unmount utility (has built-in timeouts and fallbacks)
+    oxcrypt_mount::lazy_unmount(mountpoint)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 /// Force unmount on Linux.
 #[cfg(target_os = "linux")]
 pub fn force_unmount_macos(mountpoint: &std::path::Path) -> Result<(), std::io::Error> {
-    use std::process::Command;
-
     debug!(mountpoint = %mountpoint.display(), "Force unmounting on Linux");
 
-    // Try lazy unmount first (detaches immediately, cleanup happens later)
-    let status = Command::new("umount").arg("-l").arg(mountpoint).status()?;
-
-    if status.success() {
-        return Ok(());
-    }
-
-    // Fallback to force unmount
-    let status = Command::new("umount").arg("-f").arg(mountpoint).status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("force unmount failed"))
-    }
+    // Use shared lazy_unmount utility (has built-in timeouts and fallbacks)
+    oxcrypt_mount::lazy_unmount(mountpoint)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 #[cfg(target_os = "linux")]

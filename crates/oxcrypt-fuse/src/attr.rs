@@ -5,6 +5,7 @@
 //! cache from `oxcrypt-mount`.
 
 use fuser::FileAttr;
+use oxcrypt_core::vault::path::DirId;
 use oxcrypt_mount::moka_cache::{CachedEntry, SyncTtlCache, DEFAULT_NEGATIVE_TTL, DEFAULT_TTL};
 use oxcrypt_mount::CacheStats;
 use std::sync::Arc;
@@ -142,6 +143,8 @@ pub struct DirListingEntry {
     pub inode: u64,
     /// File type.
     pub file_type: fuser::FileType,
+    /// Directory ID for directory entries, when known.
+    pub dir_id: Option<DirId>,
     /// Filename.
     pub name: String,
 }
@@ -385,16 +388,19 @@ mod tests {
             DirListingEntry {
                 inode: 2,
                 file_type: fuser::FileType::Directory,
+                dir_id: None,
                 name: ".".to_string(),
             },
             DirListingEntry {
                 inode: 1,
                 file_type: fuser::FileType::Directory,
+                dir_id: None,
                 name: "..".to_string(),
             },
             DirListingEntry {
                 inode: 3,
                 file_type: fuser::FileType::RegularFile,
+                dir_id: None,
                 name: "file.txt".to_string(),
             },
         ];
@@ -411,6 +417,7 @@ mod tests {
         let entries = vec![DirListingEntry {
             inode: 3,
             file_type: fuser::FileType::RegularFile,
+            dir_id: None,
             name: "test".to_string(),
         }];
 
@@ -428,6 +435,7 @@ mod tests {
         let entries = vec![DirListingEntry {
             inode: 3,
             file_type: fuser::FileType::RegularFile,
+            dir_id: None,
             name: "test".to_string(),
         }];
 
@@ -447,6 +455,7 @@ mod tests {
             vec![DirListingEntry {
                 inode: 2,
                 file_type: fuser::FileType::RegularFile,
+                dir_id: None,
                 name: "a".to_string(),
             }],
         );
@@ -455,6 +464,7 @@ mod tests {
             vec![DirListingEntry {
                 inode: 3,
                 file_type: fuser::FileType::RegularFile,
+                dir_id: None,
                 name: "b".to_string(),
             }],
         );
@@ -527,6 +537,7 @@ mod tests {
         let entries = vec![DirListingEntry {
             inode: 1,
             file_type: fuser::FileType::RegularFile,
+            dir_id: None,
             name: "test".to_string(),
         }];
 

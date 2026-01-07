@@ -11,9 +11,10 @@
 //!
 //! # Solution
 //!
-//! Each operation spawns a thread and uses `mpsc::channel` with `recv_timeout`
-//! to enforce a deadline. If the operation doesn't complete in time, we return
-//! a timeout error.
+//! Each operation is run through a [`BoundedFsPool`](crate::bounded_pool::BoundedFsPool)
+//! which tracks potentially-leaked threads. When a syscall blocks on a ghost mount
+//! and the timeout expires, the thread leaks (stuck in kernel D-state). The bounded
+//! pool limits the total number of leaked threads to prevent resource exhaustion.
 //!
 //! # Example
 //!
@@ -28,6 +29,9 @@
 //!     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
 //!         println!("Operation timed out - path may be on stale mount");
 //!     }
+//!     Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
+//!         println!("Too many blocked threads - possible ghost mounts");
+//!     }
 //!     Err(e) => println!("Other error: {}", e),
 //! }
 //! ```
@@ -35,8 +39,11 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Duration;
+
+use crate::bounded_pool::BOUNDED_FS_POOL;
+
+// Note: We use BOUNDED_FS_POOL instead of raw mpsc to track thread leaks
 
 /// Default timeout for filesystem operations.
 pub const DEFAULT_FS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,28 +80,15 @@ impl TimeoutFs {
     }
 
     /// Run an operation with timeout, returning a timeout error if it doesn't complete.
+    ///
+    /// Uses the global [`BOUNDED_FS_POOL`] to track potentially-leaked threads.
+    /// If too many threads are blocked on ghost mounts, returns `ResourceBusy`.
     fn run_with_timeout<T, F>(&self, op: F) -> io::Result<T>
     where
         T: Send + 'static,
         F: FnOnce() -> io::Result<T> + Send + 'static,
     {
-        let (tx, rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let result = op();
-            let _ = tx.send(result);
-        });
-
-        match rx.recv_timeout(self.timeout) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Filesystem operation timed out - path may be on a stale mount",
-            )),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
-                "Filesystem operation thread terminated unexpectedly",
-            )),
-        }
+        BOUNDED_FS_POOL.run_with_timeout(self.timeout, op)
     }
 
     /// Read the entire contents of a file into a string.
@@ -302,7 +296,7 @@ mod tests {
     fn test_is_dir() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("file.txt");
-        std::fs::write(&file_path, "test").unwrap();
+        fs::write(&file_path, "test").unwrap();
 
         let fs = TimeoutFs::default();
         assert!(fs.is_dir(temp.path()));
@@ -331,8 +325,8 @@ mod tests {
     #[test]
     fn test_read_dir() {
         let temp = TempDir::new().unwrap();
-        std::fs::write(temp.path().join("a.txt"), "a").unwrap();
-        std::fs::write(temp.path().join("b.txt"), "b").unwrap();
+        fs::write(temp.path().join("a.txt"), "a").unwrap();
+        fs::write(temp.path().join("b.txt"), "b").unwrap();
 
         let fs = TimeoutFs::default();
         let entries = fs.read_dir(temp.path()).unwrap();

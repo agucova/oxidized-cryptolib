@@ -1,0 +1,42 @@
+
+[1m[36moxbench[39m[0m: test_vault (FUSE) - 3 iterations
+
+Mounting FUSE (this may take a few seconds)...
+[2m2026-01-05T02:18:34.893733Z[0m [33m WARN[0m Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling
+  Mount ready.
+[1mBenchmark[0m: [36mFUSE[39m / IDE Simulation
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m31.14 ms[39m ± [2m[36m2.18 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m29.10 ms[39m … [33m34.16 ms[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Working Set
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m45.81 ms[39m ± [2m[36m2.07 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m42.89 ms[39m … [33m47.49 ms[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Directory Tree
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m4.58 ms[39m ± [2m[36m183.17 us[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m4.34 ms[39m … [33m4.78 ms[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Concurrent Access
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m5.10 s[39m ± [2m[36m7.89 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m5.09 s[39m … [33m5.11 s[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Chinook Database
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m129.12 ms[39m ± [2m[36m267.95 us[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m128.75 ms[39m … [33m129.39 ms[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Media Streaming
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m840.78 ms[39m ± [2m[36m3.33 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m837.36 ms[39m … [33m845.30 ms[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Photo Library
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m528.27 ms[39m ± [2m[36m2.63 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m525.25 ms[39m … [33m531.67 ms[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Backup/Sync
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m1.08 s[39m ± [2m[36m72.31 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m986.79 ms[39m … [33m1.16 s[39m    3 runs
+
+[1mBenchmark[0m: [36mFUSE[39m / Cold Start
+  [1mTime[0m ([36mmean[39m ± [36mσ[39m):  [36m22.60 ms[39m ± [2m[36m4.97 ms[39m[0m    [2m[0m
+  [1mRange[0m ([32mmin[39m … [33mmax[39m):  [32m17.15 ms[39m … [33m29.16 ms[39m    3 runs
+

@@ -37,7 +37,6 @@
 //! );
 //! ```
 
-use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
 
 use crate::{
@@ -47,12 +46,15 @@ use crate::{
     fs::name::{create_c9s_filename, decrypt_filename, encrypt_filename},
     fs::streaming::{VaultFileReader, VaultFileWriter},
     fs::symlink::{decrypt_symlink_target, encrypt_symlink_target},
-    vault::config::{extract_master_key, validate_vault_claims, CipherCombo, VaultError},
+    vault::cache::VaultCache,
+    vault::config::{
+        extract_master_key, validate_vault_claims, CipherCombo, ClaimValidationError, VaultError,
+    },
     vault::handles::VaultHandleTable,
     vault::locks::{VaultLockManager, VaultLockRegistry},
     vault::ops::{
         calculate_directory_lookup_paths, calculate_file_lookup_paths,
-        calculate_symlink_lookup_paths, VaultCore,
+        calculate_symlink_lookup_paths, is_regular_entry, is_shortened_entry, VaultCore,
     },
     vault::path::{DirId, VaultPath},
 };
@@ -112,10 +114,7 @@ impl From<VaultOperationError> for AsyncVaultError {
 /// - Read operations (list, read): shared read locks
 /// - Write operations (write, delete): exclusive write locks
 /// - Multi-resource operations (move, rename): ordered locking to prevent deadlocks
-/// Cache for encrypted filenames: (dir_id, plaintext_name) -> encrypted_name.
-/// AES-SIV encryption is deterministic, so results can be cached indefinitely.
-type EncryptedNameCache = DashMap<(String, String), String>;
-
+///
 pub struct VaultOperationsAsync {
     /// Core vault state and pure operations (shared with sync implementation).
     core: VaultCore,
@@ -125,8 +124,10 @@ pub struct VaultOperationsAsync {
     lock_manager: Arc<VaultLockManager>,
     /// Handle table for tracking open files (shared across instances).
     handle_table: Arc<VaultHandleTable>,
-    /// Cache for encrypted filenames to avoid repeated AES-SIV encryption.
-    encrypted_name_cache: Arc<EncryptedNameCache>,
+    /// Shared cache for expensive operations (encrypted filenames, etc.).
+    cache: Arc<VaultCache>,
+    /// Lock contention metrics for profiling (shared across instances).
+    lock_metrics: Arc<crate::vault::lock_metrics::LockMetrics>,
 }
 
 impl VaultOperationsAsync {
@@ -164,7 +165,11 @@ impl VaultOperationsAsync {
         let vault_config_jwt = std::fs::read_to_string(&vault_config_path)?;
         let claims = validate_vault_claims(&vault_config_jwt, &master_key)?;
 
-        let cipher_combo = claims.cipher_combo().expect("cipher combo already validated");
+        let cipher_combo = claims.cipher_combo().ok_or_else(|| {
+            VaultError::ClaimValidation(ClaimValidationError::UnsupportedCipherCombo(
+                claims.cipher_combo_str().to_string(),
+            ))
+        })?;
         let shortening_threshold = claims.shortening_threshold();
 
         info!(
@@ -210,7 +215,7 @@ impl VaultOperationsAsync {
     /// let ops = VaultOperationsAsync::from_validated(validated);
     /// ```
     #[instrument(level = "info", skip(validated), fields(vault_path = %validated.vault_path().display()))]
-    pub fn from_validated(validated: super::password::ValidatedPassword) -> Self {
+    pub fn from_validated(validated: &super::password::ValidatedPassword) -> Self {
         info!(
             cipher_combo = ?validated.cipher_combo(),
             shortening_threshold = validated.shortening_threshold(),
@@ -294,7 +299,8 @@ impl VaultOperationsAsync {
             master_key,
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
-            encrypted_name_cache: Arc::new(DashMap::new()),
+            cache: Arc::new(VaultCache::new()),
+            lock_metrics: Arc::new(crate::vault::lock_metrics::LockMetrics::new()),
         }
     }
 
@@ -327,7 +333,8 @@ impl VaultOperationsAsync {
             master_key: cloned_key,
             lock_manager,
             handle_table: Arc::new(VaultHandleTable::new()),
-            encrypted_name_cache: Arc::new(DashMap::new()),
+            cache: Arc::new(VaultCache::new()),
+            lock_metrics: Arc::new(crate::vault::lock_metrics::LockMetrics::new()),
         })
     }
 
@@ -389,6 +396,88 @@ impl VaultOperationsAsync {
         self.core.shortening_threshold()
     }
 
+    /// Returns a reference to the shared cache.
+    pub fn cache(&self) -> &Arc<VaultCache> {
+        &self.cache
+    }
+
+    /// Returns a reference to the lock metrics for profiling.
+    pub fn lock_metrics(&self) -> &Arc<crate::vault::lock_metrics::LockMetrics> {
+        &self.lock_metrics
+    }
+
+    /// Create a sync operations handle sharing the same vault state.
+    ///
+    /// This method creates a `VaultOperations` instance that shares the same
+    /// vault configuration and master key as this async instance. Useful for
+    /// implementing sync fast paths that avoid async task spawning overhead.
+    ///
+    /// The master key is cloned (one-time cost), but the vault configuration
+    /// is shared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the master key cannot be cloned due to memory
+    /// protection issues.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let async_ops = VaultOperationsAsync::open(&vault_path, "password")?;
+    /// let sync_ops = async_ops.as_sync()?;
+    ///
+    /// // Both can perform the same operations, sync_ops uses std::fs
+    /// let async_result = async_ops.find_file(&root, "test.txt").await?;
+    /// let sync_result = sync_ops.find_file(&root, "test.txt")?;
+    /// ```
+    pub fn as_sync(&self) -> Result<VaultOperations, crate::crypto::keys::KeyAccessError> {
+        let key_clone = self.master_key.as_ref().try_clone()?;
+        Ok(VaultOperations::with_cache(
+            self.vault_path(),
+            key_clone,
+            self.shortening_threshold(),
+            self.cipher_combo(),
+            Arc::clone(&self.cache),
+        ))
+    }
+
+    /// Try to acquire a non-blocking directory read lock.
+    ///
+    /// This method attempts to acquire a read lock on a directory without
+    /// blocking. Returns `Some(guard)` if the lock is available immediately,
+    /// or `None` if it's currently held by a writer.
+    ///
+    /// Useful for implementing optimistic sync fast paths that fall back to
+    /// async when locks are contended.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir_id` - The directory ID to lock
+    ///
+    /// # Returns
+    ///
+    /// * `Some(guard)` - Lock acquired successfully (non-blocking)
+    /// * `None` - Lock is contended, should fall back to async path
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(_guard) = ops.try_directory_read_sync(&dir_id) {
+    ///     // Fast path: lock acquired, use sync operations
+    ///     let sync_ops = ops.as_sync()?;
+    ///     sync_ops.find_file(&dir_id, "file.txt")?
+    /// } else {
+    ///     // Slow path: lock contended, use async operations
+    ///     ops.find_file(&dir_id, "file.txt").await?
+    /// }
+    /// ```
+    pub fn try_directory_read_sync(&self, dir_id: &DirId)
+        -> Option<tokio::sync::OwnedRwLockReadGuard<()>>
+    {
+        let lock = self.lock_manager.directory_lock(dir_id);
+        lock.try_read_owned().ok()
+    }
+
     /// Encrypt a filename with caching.
     ///
     /// AES-SIV encryption is deterministic, so (dir_id, name) always produces
@@ -400,18 +489,16 @@ impl VaultOperationsAsync {
         name: &str,
         dir_id: &str,
     ) -> Result<String, VaultOperationError> {
-        let cache_key = (dir_id.to_string(), name.to_string());
-
         // Check cache first
-        if let Some(cached) = self.encrypted_name_cache.get(&cache_key) {
-            trace!(name = %name, "encrypted filename cache hit");
-            return Ok(cached.value().clone());
+        if let Some(cached) = self.cache.get_encrypted_name(dir_id, name) {
+            trace!(name = %name, dir_id = %dir_id, "encrypted filename cache hit");
+            return Ok(cached);
         }
 
         // Cache miss - encrypt and store
         let encrypted = encrypt_filename(name, dir_id, &self.master_key)?;
-        self.encrypted_name_cache.insert(cache_key, encrypted.clone());
-        trace!(name = %name, "encrypted filename cache miss");
+        self.cache.insert_encrypted_name(dir_id, name, encrypted.clone());
+        trace!(name = %name, dir_id = %dir_id, "encrypted filename cache miss");
         Ok(encrypted)
     }
 
@@ -449,9 +536,16 @@ impl VaultOperationsAsync {
         &self,
         directory_id: &DirId,
     ) -> Result<Vec<VaultFileInfo>, VaultOperationError> {
-        // Acquire directory read lock
+        // Try sync fast path first
+        if let Some(_guard) = self.try_directory_read_sync(directory_id) {
+            trace!("Using sync fast path for list_files");
+            let sync_ops = self.as_sync().map_err(|e| VaultOperationError::KeyAccess { source: e })?;
+            return Ok(sync_ops.list_files(directory_id)?);
+        }
+
+        // Fall back to async path
         let _guard = self.lock_manager.directory_read(directory_id).await;
-        trace!("Acquired directory read lock for list_files");
+        trace!("Using async path for list_files");
         self.list_files_unlocked(directory_id).await
     }
 
@@ -490,8 +584,10 @@ impl VaultOperationsAsync {
         }
 
         // Phase 1: Collect all entries (async I/O only, no crypto)
-        let mut regular_files: Vec<(PathBuf, String, u64)> = Vec::new(); // (path, encrypted_name, size)
-        let mut shortened_paths: Vec<PathBuf> = Vec::new();
+        // Pre-allocate with typical directory size to avoid reallocations.
+        // Most directories have fewer than 64 entries; shortened names are rare.
+        let mut regular_files: Vec<(PathBuf, String, u64)> = Vec::with_capacity(64); // (path, encrypted_name, size)
+        let mut shortened_paths: Vec<PathBuf> = Vec::with_capacity(4);
         let mut entries = fs::read_dir(&dir_path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -506,19 +602,19 @@ impl VaultOperationsAsync {
             let file_type = entry.file_type().await?;
 
             // Skip .c9r directories (these are handled by list_directories)
-            if file_type.is_dir() && file_name.ends_with(".c9r") {
+            if file_type.is_dir() && is_regular_entry(&file_name) {
                 continue;
             }
 
             // Skip other directories that aren't .c9s
-            if file_type.is_dir() && !file_name.ends_with(".c9s") {
+            if file_type.is_dir() && !is_shortened_entry(&file_name) {
                 continue;
             }
 
-            if file_name.ends_with(".c9r") {
+            if is_regular_entry(&file_name) {
                 let metadata = fs::metadata(&path).await?;
                 regular_files.push((path, file_name, metadata.len()));
-            } else if file_name.ends_with(".c9s") && file_type.is_dir() {
+            } else if is_shortened_entry(&file_name) && file_type.is_dir() {
                 shortened_paths.push(path);
             }
         }
@@ -588,9 +684,16 @@ impl VaultOperationsAsync {
         &self,
         directory_id: &DirId,
     ) -> Result<Vec<VaultDirectoryInfo>, VaultOperationError> {
-        // Acquire directory read lock
+        // Try sync fast path first
+        if let Some(_guard) = self.try_directory_read_sync(directory_id) {
+            trace!("Using sync fast path for list_directories");
+            let sync_ops = self.as_sync().map_err(|e| VaultOperationError::KeyAccess { source: e })?;
+            return Ok(sync_ops.list_directories(directory_id)?);
+        }
+
+        // Fall back to async path
         let _guard = self.lock_manager.directory_read(directory_id).await;
-        trace!("Acquired directory read lock for list_directories");
+        trace!("Using async path for list_directories");
         self.list_directories_unlocked(directory_id).await
     }
 
@@ -629,9 +732,10 @@ impl VaultOperationsAsync {
         }
 
         // Phase 1: Collect all directory entries and read their dir.c9r content (async I/O)
+        // Pre-allocate with typical directory size to avoid reallocations.
         // Regular directories: (path, encrypted_name, dir_id_content)
-        let mut regular_dirs: Vec<(PathBuf, String, String)> = Vec::new();
-        let mut shortened_paths: Vec<PathBuf> = Vec::new();
+        let mut regular_dirs: Vec<(PathBuf, String, String)> = Vec::with_capacity(32);
+        let mut shortened_paths: Vec<PathBuf> = Vec::with_capacity(4);
         let mut entries = fs::read_dir(&dir_path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -639,14 +743,14 @@ impl VaultOperationsAsync {
             let file_name = entry.file_name().to_string_lossy().to_string();
             let file_type = entry.file_type().await?;
 
-            if file_type.is_dir() && file_name.ends_with(".c9r") {
+            if file_type.is_dir() && is_regular_entry(&file_name) {
                 // This is a regular directory - read dir.c9r content
                 trace!(encrypted_name = %file_name, "Processing directory entry");
                 let dir_id_file = path.join("dir.c9r");
                 if let Ok(dir_id_content) = fs::read_to_string(&dir_id_file).await {
                     regular_dirs.push((path, file_name, dir_id_content));
                 }
-            } else if file_type.is_dir() && file_name.ends_with(".c9s") {
+            } else if file_type.is_dir() && is_shortened_entry(&file_name) {
                 // This might be a shortened directory - check for dir.c9r marker
                 trace!(shortened_name = %file_name, "Processing shortened directory entry");
                 let dir_c9r_path = path.join("dir.c9r");
@@ -725,8 +829,16 @@ impl VaultOperationsAsync {
         directory_id: &DirId,
         filename: &str,
     ) -> Result<Option<VaultFileInfo>, VaultOperationError> {
+        // Try sync fast path first
+        if let Some(_guard) = self.try_directory_read_sync(directory_id) {
+            trace!("Using sync fast path for find_file");
+            let sync_ops = self.as_sync().map_err(|e| VaultOperationError::KeyAccess { source: e })?;
+            return Ok(sync_ops.find_file(directory_id, filename)?);
+        }
+
+        // Fall back to async path
         let _guard = self.lock_manager.directory_read(directory_id).await;
-        trace!("Acquired directory read lock for find_file");
+        trace!("Using async path for find_file");
         self.find_file_unlocked(directory_id, filename).await
     }
 
@@ -798,8 +910,16 @@ impl VaultOperationsAsync {
         parent_directory_id: &DirId,
         dir_name: &str,
     ) -> Result<Option<VaultDirectoryInfo>, VaultOperationError> {
+        // Try sync fast path first
+        if let Some(_guard) = self.try_directory_read_sync(parent_directory_id) {
+            trace!("Using sync fast path for find_directory");
+            let sync_ops = self.as_sync().map_err(|e| VaultOperationError::KeyAccess { source: e })?;
+            return Ok(sync_ops.find_directory(parent_directory_id, dir_name)?);
+        }
+
+        // Fall back to async path
         let _guard = self.lock_manager.directory_read(parent_directory_id).await;
-        trace!("Acquired directory read lock for find_directory");
+        trace!("Using async path for find_directory");
         self.find_directory_unlocked(parent_directory_id, dir_name).await
     }
 
@@ -866,8 +986,16 @@ impl VaultOperationsAsync {
         directory_id: &DirId,
         symlink_name: &str,
     ) -> Result<Option<VaultSymlinkInfo>, VaultOperationError> {
+        // Try sync fast path first
+        if let Some(_guard) = self.try_directory_read_sync(directory_id) {
+            trace!("Using sync fast path for find_symlink");
+            let sync_ops = self.as_sync().map_err(|e| VaultOperationError::KeyAccess { source: e })?;
+            return Ok(sync_ops.find_symlink(directory_id, symlink_name)?);
+        }
+
+        // Fall back to async path
         let _guard = self.lock_manager.directory_read(directory_id).await;
-        trace!("Acquired directory read lock for find_symlink");
+        trace!("Using async path for find_symlink");
         self.find_symlink_unlocked(directory_id, symlink_name).await
     }
 
@@ -1110,10 +1238,10 @@ impl VaultOperationsAsync {
             .await
             .map_err(|e| VaultOperationError::Streaming {
                 source: Box::new(e),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(filename)
                     .with_dir_id(directory_id.as_str())
-                    .with_encrypted_path(&file_info.encrypted_path),
+                    .with_encrypted_path(&file_info.encrypted_path)),
             })?;
 
         // Transfer the lock guards to the reader so they're held for its lifetime
@@ -1124,6 +1252,85 @@ impl VaultOperationsAsync {
             plaintext_size = reader.plaintext_size(),
             has_locks = reader.has_locks(),
             "File opened for streaming with locks"
+        );
+        Ok(reader)
+    }
+
+    /// Open a file for streaming reads without holding vault locks.
+    ///
+    /// Unlike [`open_file()`], this method does NOT transfer locks to the reader.
+    /// Locks are only held during the initial file lookup, then released.
+    ///
+    /// This is the preferred method for FUSE where files may remain open for
+    /// extended periods. The underlying OS file handle keeps the file accessible
+    /// even if it's unlinked at the vault level (POSIX semantics).
+    ///
+    /// # Safety
+    ///
+    /// This relies on OS file handle semantics - once the file is opened,
+    /// reads will succeed even if the file is deleted. However, there's no
+    /// protection against concurrent vault-level modifications to the same file.
+    /// This is acceptable because:
+    /// - FUSE writes use a separate WriteBuffer path that flushes on release
+    /// - No concurrent writes to the same open file handle are possible
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let reader = ops.open_file_unlocked(&dir_id, "data.txt").await?;
+    /// // No vault locks held - directory operations won't block
+    /// let data = reader.read_range(0, 1024).await?;
+    /// ```
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str(), filename = %filename))]
+    pub async fn open_file_unlocked(
+        &self,
+        directory_id: &DirId,
+        filename: &str,
+    ) -> Result<VaultFileReader, VaultOperationError> {
+        debug!("Opening file for streaming read (unlocked)");
+
+        // Acquire locks ONLY for the duration of file lookup
+        // These will be dropped when this function returns
+        let _dir_guard = self.lock_manager.directory_read(directory_id).await;
+        let _file_guard = self.lock_manager.file_read(directory_id, filename).await;
+        trace!("Acquired temporary locks for file lookup");
+
+        // Find the encrypted file path
+        let file_info = self.find_file_unlocked(directory_id, filename).await?.ok_or_else(|| {
+            warn!("File not found in directory");
+            VaultOperationError::FileNotFound {
+                filename: filename.to_string(),
+                context: VaultOpContext::new()
+                    .with_filename(filename)
+                    .with_dir_id(directory_id.as_str()),
+            }
+        })?;
+
+        debug!(encrypted_path = %file_info.encrypted_path.display(), cipher_combo = ?self.core.cipher_combo(), "Found file, opening for streaming (unlocked)");
+
+        // Open the file - this opens the underlying OS file handle
+        let reader = VaultFileReader::open_with_cipher(
+            &file_info.encrypted_path,
+            &self.master_key,
+            self.core.cipher_combo(),
+        )
+            .await
+            .map_err(|e| VaultOperationError::Streaming {
+                source: Box::new(e),
+                context: Box::new(VaultOpContext::new()
+                    .with_filename(filename)
+                    .with_dir_id(directory_id.as_str())
+                    .with_encrypted_path(&file_info.encrypted_path)),
+            })?;
+
+        // NOTE: We intentionally DO NOT call reader.with_locks() here.
+        // The locks (_dir_guard, _file_guard) will be dropped when this function returns.
+        // The reader keeps the OS file handle open, which is sufficient for reads.
+
+        info!(
+            filename = %filename,
+            plaintext_size = reader.plaintext_size(),
+            "File opened for streaming without locks"
         );
         Ok(reader)
     }
@@ -1199,7 +1406,7 @@ impl VaultOperationsAsync {
         // Ensure storage directory exists
         fs::create_dir_all(&storage_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&storage_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&storage_path)),
         })?;
 
         // Encrypt the filename
@@ -1216,7 +1423,7 @@ impl VaultOperationsAsync {
             // Create the .c9s directory and write name.c9s
             fs::create_dir_all(&short_dir).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&short_dir),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&short_dir)),
             })?;
             self.safe_write(&short_dir.join("name.c9s"), encrypted_name.as_bytes()).await?;
 
@@ -1233,7 +1440,8 @@ impl VaultOperationsAsync {
                 context: VaultOpContext::new()
                     .with_filename(filename)
                     .with_dir_id(directory_id.as_str())
-                    .with_encrypted_path(&dest_path),
+                    .with_encrypted_path(&dest_path)
+                    .into_box(),
             })?;
 
         // Transfer the lock guards to the writer so they're held for its lifetime
@@ -1312,7 +1520,7 @@ impl VaultOperationsAsync {
         // 2. Ensure storage directory exists
         fs::create_dir_all(&storage_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&storage_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&storage_path)),
         })?;
 
         // 3. Encrypt the filename
@@ -1350,7 +1558,7 @@ impl VaultOperationsAsync {
         let short_dir = storage_path.join(format!("{hash}.c9s"));
         fs::create_dir_all(&short_dir).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&short_dir),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&short_dir)),
         })?;
 
         // Write name.c9s (contains the original encrypted name)
@@ -1377,7 +1585,7 @@ impl VaultOperationsAsync {
             // Overwrite: use atomic pattern to protect existing data
             let parent = path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory".to_string(),
-                context: VaultOpContext::new().with_encrypted_path(path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(path)),
             })?;
 
             let temp_path = parent.join(format!(".tmp.{}", uuid::Uuid::new_v4()));
@@ -1385,7 +1593,7 @@ impl VaultOperationsAsync {
             // Write to temp file
             fs::write(&temp_path, data).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&temp_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&temp_path)),
             })?;
 
             // Atomic rename (if this fails, original file is still intact)
@@ -1398,14 +1606,53 @@ impl VaultOperationsAsync {
                 });
                 return Err(VaultWriteError::Io {
                     source: e,
-                    context: VaultOpContext::new().with_encrypted_path(path),
+                    context: Box::new(VaultOpContext::new().with_encrypted_path(path)),
                 });
             }
         } else {
             // New file: direct write (no existing data at risk)
             fs::write(path, data).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(path)),
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Sync an encrypted file to disk.
+    ///
+    /// This ensures data written via `write_file()` or `safe_write()` is actually
+    /// persisted to stable storage, not just in the OS page cache.
+    ///
+    /// # Arguments
+    /// * `encrypted_path` - Path to the encrypted file to sync
+    /// * `datasync` - If true, only sync data (fdatasync semantics). If false,
+    ///   sync data and metadata (fsync semantics).
+    ///
+    /// # POSIX Semantics
+    /// - `fsync` (datasync=false): Syncs file data and all metadata (size, timestamps, etc.)
+    /// - `fdatasync` (datasync=true): Syncs file data and only metadata needed for retrieval
+    ///   (e.g., file size, but not access time)
+    pub async fn sync_encrypted_file(
+        &self,
+        encrypted_path: &Path,
+        datasync: bool,
+    ) -> Result<(), VaultWriteError> {
+        let file = fs::File::open(encrypted_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: Box::new(VaultOpContext::new().with_encrypted_path(encrypted_path)),
+        })?;
+
+        if datasync {
+            file.sync_data().await.map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: Box::new(VaultOpContext::new().with_encrypted_path(encrypted_path)),
+            })?;
+        } else {
+            file.sync_all().await.map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: Box::new(VaultOpContext::new().with_encrypted_path(encrypted_path)),
             })?;
         }
 
@@ -1624,7 +1871,7 @@ impl VaultOperationsAsync {
         trace!(parent_storage_path = %parent_storage_path.display(), "Calculated parent storage path");
         fs::create_dir_all(&parent_storage_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&parent_storage_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&parent_storage_path)),
         })?;
 
         // Generate a new directory ID (UUID)
@@ -1642,7 +1889,7 @@ impl VaultOperationsAsync {
             let encrypted_dir_path = parent_storage_path.join(format!("{encrypted_name}.c9r"));
             fs::create_dir_all(&encrypted_dir_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&encrypted_dir_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&encrypted_dir_path)),
             })?;
             self.safe_write(&encrypted_dir_path.join("dir.c9r"), dir_id.as_str().as_bytes()).await?;
         }
@@ -1651,7 +1898,7 @@ impl VaultOperationsAsync {
         let new_storage_path = self.calculate_directory_storage_path(&dir_id)?;
         fs::create_dir_all(&new_storage_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&new_storage_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&new_storage_path)),
         })?;
 
         // Write dirid.c9r backup file (using cipher combo for proper cipher selection)
@@ -1673,7 +1920,7 @@ impl VaultOperationsAsync {
         let short_dir = parent_storage_path.join(format!("{hash}.c9s"));
         fs::create_dir_all(&short_dir).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&short_dir),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&short_dir)),
         })?;
 
         self.safe_write(&short_dir.join("name.c9s"), encrypted_name.as_bytes()).await?;
@@ -1701,14 +1948,14 @@ impl VaultOperationsAsync {
 
         // Use optimized lookup instead of listing all files
         let file_info = self.find_file_unlocked(dir_id, filename).await.map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
             other => VaultWriteError::Io {
                 source: std::io::Error::other(other.to_string()),
-                context: ctx.clone(),
+                context: Box::new(ctx.clone()),
             },
         })?.ok_or_else(|| VaultWriteError::FileNotFound {
             filename: filename.to_string(),
-            context: ctx.clone(),
+            context: Box::new(ctx.clone()),
         })?;
 
         debug!(is_shortened = file_info.is_shortened, encrypted_path = %file_info.encrypted_path.display(), "Removing encrypted file");
@@ -1717,16 +1964,16 @@ impl VaultOperationsAsync {
             // Remove the entire .c9s directory
             let parent = file_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory".to_string(),
-                context: ctx.clone().with_encrypted_path(&file_info.encrypted_path),
+                context: Box::new(ctx.clone().with_encrypted_path(&file_info.encrypted_path)),
             })?;
             fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(parent),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(parent)),
             })?;
         } else {
             fs::remove_file(&file_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&file_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&file_info.encrypted_path)),
             })?;
         }
 
@@ -1753,14 +2000,14 @@ impl VaultOperationsAsync {
 
         // Use optimized lookup instead of listing all directories
         let dir_info = self.find_directory_unlocked(parent_dir_id, dir_name).await.map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
             other => VaultWriteError::Io {
                 source: std::io::Error::other(other.to_string()),
-                context: ctx.clone(),
+                context: Box::new(ctx.clone()),
             },
         })?.ok_or_else(|| VaultWriteError::DirectoryNotFound {
             name: dir_name.to_string(),
-            context: ctx.clone(),
+            context: Box::new(ctx.clone()),
         })?;
 
         trace!(target_dir_id = %dir_info.directory_id.as_str(), "Found directory to delete");
@@ -1772,24 +2019,24 @@ impl VaultOperationsAsync {
         // Check directory is empty (use unlocked versions since we hold both locks)
         let target_ctx = ctx.clone().with_dir_id(dir_info.directory_id.as_str());
         let files = self.list_files_unlocked(&dir_info.directory_id).await.map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
             other => VaultWriteError::Io {
                 source: std::io::Error::other(other.to_string()),
-                context: target_ctx.clone(),
+                context: Box::new(target_ctx.clone()),
             },
         })?;
         let subdirs = self.list_directories_unlocked(&dir_info.directory_id).await.map_err(|e| match e {
-            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+            VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
             other => VaultWriteError::Io {
                 source: std::io::Error::other(other.to_string()),
-                context: target_ctx.clone(),
+                context: Box::new(target_ctx.clone()),
             },
         })?;
 
         if !files.is_empty() || !subdirs.is_empty() {
             debug!(file_count = files.len(), subdir_count = subdirs.len(), "Cannot delete non-empty directory");
             return Err(VaultWriteError::DirectoryNotEmpty {
-                context: target_ctx.with_encrypted_path(&dir_info.encrypted_path),
+                context: Box::new(target_ctx.with_encrypted_path(&dir_info.encrypted_path)),
             });
         }
 
@@ -1798,7 +2045,7 @@ impl VaultOperationsAsync {
         if fs::metadata(&storage_path).await.is_ok() {
             fs::remove_dir_all(&storage_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&storage_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&storage_path)),
             })?;
         }
 
@@ -1806,7 +2053,7 @@ impl VaultOperationsAsync {
         if fs::metadata(&dir_info.encrypted_path).await.is_ok() {
             fs::remove_dir_all(&dir_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&dir_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&dir_info.encrypted_path)),
             })?;
         }
 
@@ -1834,7 +2081,7 @@ impl VaultOperationsAsync {
 
         if old_name == new_name {
             debug!("Source and destination names are identical");
-            return Err(VaultWriteError::SameSourceAndDestination { context: ctx });
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(ctx) });
         }
 
         // Acquire directory write lock and file write locks in order
@@ -1850,7 +2097,7 @@ impl VaultOperationsAsync {
         let source_info = self.find_file_unlocked(dir_id, old_name).await?.ok_or_else(|| {
             VaultWriteError::FileNotFound {
                 filename: old_name.to_string(),
-                context: ctx.clone(),
+                context: Box::new(ctx.clone()),
             }
         })?;
 
@@ -1858,7 +2105,7 @@ impl VaultOperationsAsync {
         if self.find_file_unlocked(dir_id, new_name).await?.is_some() {
             return Err(VaultWriteError::FileAlreadyExists {
                 filename: new_name.to_string(),
-                context: ctx.clone().with_filename(new_name),
+                context: Box::new(ctx.clone().with_filename(new_name)),
             });
         }
 
@@ -1872,7 +2119,7 @@ impl VaultOperationsAsync {
             // Shortened destination requires special directory structure
             let file_data = fs::read(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
             })?;
             self.write_shortened_file(&storage_path, &new_encrypted_name, &file_data).await?;
         } else {
@@ -1880,7 +2127,7 @@ impl VaultOperationsAsync {
             // Use fs::copy for efficient file copying (no memory allocation for large files)
             fs::copy(&source_info.encrypted_path, &new_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: ctx.clone().with_encrypted_path(&new_path),
+                context: Box::new(ctx.clone().with_encrypted_path(&new_path)),
             })?;
         }
 
@@ -1888,16 +2135,16 @@ impl VaultOperationsAsync {
         if source_info.is_shortened {
             let parent = source_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory".to_string(),
-                context: ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
             })?;
             fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(parent),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(parent)),
             })?;
         } else {
             fs::remove_file(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
             })?;
         }
 
@@ -1937,7 +2184,7 @@ impl VaultOperationsAsync {
 
         // Fast path: no-op if names are identical
         if old_name == new_name {
-            return Err(VaultWriteError::SameSourceAndDestination { context: ctx });
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(ctx) });
         }
 
         // Acquire parent directory write lock
@@ -1949,15 +2196,15 @@ impl VaultOperationsAsync {
             .find_directory_unlocked(parent_dir_id, old_name)
             .await
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
                 other => VaultWriteError::Io {
                     source: std::io::Error::other(other.to_string()),
-                    context: ctx.clone(),
+                    context: Box::new(ctx.clone()),
                 },
             })?
             .ok_or_else(|| VaultWriteError::DirectoryNotFound {
                 name: old_name.to_string(),
-                context: ctx.clone(),
+                context: Box::new(ctx.clone()),
             })?;
 
         // Check that target doesn't exist using optimized lookup
@@ -1968,7 +2215,7 @@ impl VaultOperationsAsync {
         {
             return Err(VaultWriteError::DirectoryAlreadyExists {
                 name: new_name.to_string(),
-                context: ctx.clone().with_filename(new_name),
+                context: Box::new(ctx.clone().with_filename(new_name)),
             });
         }
 
@@ -1989,7 +2236,7 @@ impl VaultOperationsAsync {
             let new_path = parent_storage_path.join(format!("{new_encrypted_name}.c9r"));
             fs::create_dir_all(&new_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&new_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&new_path)),
             })?;
             self.safe_write(&new_path.join("dir.c9r"), dir_id.as_str().as_bytes())
                 .await?;
@@ -2000,10 +2247,121 @@ impl VaultOperationsAsync {
             .await
             .map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
             })?;
 
         info!("Directory renamed successfully");
+        Ok(())
+    }
+
+    /// Move and rename a directory across parents.
+    ///
+    /// This preserves the directory ID and only updates the directory entry
+    /// in the source and destination parent directories.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_parent_dir_id` - Source parent directory ID
+    /// * `src_name` - Source directory name
+    /// * `dest_parent_dir_id` - Destination parent directory ID
+    /// * `dest_name` - Destination directory name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The source directory doesn't exist
+    /// - A directory with the destination name already exists
+    /// - Source and destination are identical
+    #[instrument(level = "info", skip(self), fields(src_parent_dir_id = %src_parent_dir_id.as_str(), src_name = %src_name, dest_parent_dir_id = %dest_parent_dir_id.as_str(), dest_name = %dest_name))]
+    pub async fn move_and_rename_directory(
+        &self,
+        src_parent_dir_id: &DirId,
+        src_name: &str,
+        dest_parent_dir_id: &DirId,
+        dest_name: &str,
+    ) -> Result<(), VaultWriteError> {
+        info!("Moving and renaming directory in vault");
+
+        let src_ctx = VaultOpContext::new()
+            .with_filename(src_name)
+            .with_dir_id(src_parent_dir_id.as_str());
+
+        // Same directory and same name is a no-op
+        if src_parent_dir_id == dest_parent_dir_id && src_name == dest_name {
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(src_ctx) });
+        }
+
+        if src_parent_dir_id == dest_parent_dir_id {
+            return self.rename_directory(src_parent_dir_id, src_name, dest_name).await;
+        }
+
+        // Acquire parent directory write locks in consistent order to prevent deadlocks
+        let _dir_guards = self
+            .lock_manager
+            .lock_directories_write_ordered(&[src_parent_dir_id, dest_parent_dir_id])
+            .await;
+        trace!("Acquired parent directory write locks for move_and_rename_directory");
+
+        let source_info = self
+            .find_directory_unlocked(src_parent_dir_id, src_name)
+            .await
+            .map_err(|e| match e {
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+                other => VaultWriteError::Io {
+                    source: std::io::Error::other(other.to_string()),
+                    context: Box::new(src_ctx.clone()),
+                },
+            })?
+            .ok_or_else(|| VaultWriteError::DirectoryNotFound {
+                name: src_name.to_string(),
+                context: Box::new(src_ctx.clone()),
+            })?;
+
+        if self
+            .find_directory_unlocked(dest_parent_dir_id, dest_name)
+            .await?
+            .is_some()
+        {
+            return Err(VaultWriteError::DirectoryAlreadyExists {
+                name: dest_name.to_string(),
+                context: Box::new(VaultOpContext::new()
+                    .with_filename(dest_name)
+                    .with_dir_id(dest_parent_dir_id.as_str())),
+            });
+        }
+
+        let dest_storage_path = self.calculate_directory_storage_path(dest_parent_dir_id)?;
+        fs::create_dir_all(&dest_storage_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&dest_storage_path)),
+        })?;
+
+        let new_encrypted_name = encrypt_filename(dest_name, dest_parent_dir_id.as_str(), &self.master_key)?;
+        let new_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
+        let dir_id = &source_info.directory_id;
+
+        if new_is_long {
+            self.create_shortened_directory(&dest_storage_path, &new_encrypted_name, dir_id)
+                .await?;
+        } else {
+            let new_path = dest_storage_path.join(format!("{new_encrypted_name}.c9r"));
+            fs::create_dir_all(&new_path).await.map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&new_path)),
+            })?;
+            self.safe_write(&new_path.join("dir.c9r"), dir_id.as_str().as_bytes())
+                .await?;
+        }
+
+        // Remove the old directory entry (not the storage directory - that stays!)
+        fs::remove_dir_all(&source_info.encrypted_path)
+            .await
+            .map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
+            })?;
+
+        info!("Directory moved successfully");
         Ok(())
     }
 
@@ -2025,7 +2383,7 @@ impl VaultOperationsAsync {
             .with_dir_id(src_dir_id.as_str());
 
         if src_dir_id == dest_dir_id {
-            return Err(VaultWriteError::SameSourceAndDestination { context: src_ctx });
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(src_ctx) });
         }
 
         // Acquire directory write locks in consistent order to prevent deadlocks
@@ -2042,7 +2400,7 @@ impl VaultOperationsAsync {
         let source_info = self.find_file_unlocked(src_dir_id, filename).await?.ok_or_else(|| {
             VaultWriteError::FileNotFound {
                 filename: filename.to_string(),
-                context: src_ctx.clone(),
+                context: Box::new(src_ctx.clone()),
             }
         })?;
 
@@ -2050,9 +2408,9 @@ impl VaultOperationsAsync {
         if self.find_file_unlocked(dest_dir_id, filename).await?.is_some() {
             return Err(VaultWriteError::FileAlreadyExists {
                 filename: filename.to_string(),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(filename)
-                    .with_dir_id(dest_dir_id.as_str()),
+                    .with_dir_id(dest_dir_id.as_str())),
             });
         }
 
@@ -2060,13 +2418,13 @@ impl VaultOperationsAsync {
         let dest_storage_path = self.calculate_directory_storage_path(dest_dir_id)?;
         fs::create_dir_all(&dest_storage_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&dest_storage_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&dest_storage_path)),
         })?;
 
         // Read raw encrypted file data
         let file_data = fs::read(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: src_ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+            context: Box::new(src_ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
         })?;
 
         // Encrypt filename with NEW directory ID
@@ -2085,16 +2443,16 @@ impl VaultOperationsAsync {
         if source_info.is_shortened {
             let parent = source_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory".to_string(),
-                context: src_ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(src_ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
             })?;
             fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(parent),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(parent)),
             })?;
         } else {
             fs::remove_file(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
             })?;
         }
 
@@ -2137,7 +2495,7 @@ impl VaultOperationsAsync {
 
         // Same directory and same name is a no-op
         if src_dir_id == dest_dir_id && src_name == dest_name {
-            return Err(VaultWriteError::SameSourceAndDestination { context: src_ctx });
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(src_ctx) });
         }
 
         // Acquire directory write locks in consistent order to prevent deadlocks
@@ -2155,7 +2513,7 @@ impl VaultOperationsAsync {
         let source_info = self.find_file_unlocked(src_dir_id, src_name).await?.ok_or_else(|| {
             VaultWriteError::FileNotFound {
                 filename: src_name.to_string(),
-                context: src_ctx.clone(),
+                context: Box::new(src_ctx.clone()),
             }
         })?;
 
@@ -2163,9 +2521,9 @@ impl VaultOperationsAsync {
         if self.find_file_unlocked(dest_dir_id, dest_name).await?.is_some() {
             return Err(VaultWriteError::FileAlreadyExists {
                 filename: dest_name.to_string(),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(dest_name)
-                    .with_dir_id(dest_dir_id.as_str()),
+                    .with_dir_id(dest_dir_id.as_str())),
             });
         }
 
@@ -2173,13 +2531,13 @@ impl VaultOperationsAsync {
         let dest_storage_path = self.calculate_directory_storage_path(dest_dir_id)?;
         fs::create_dir_all(&dest_storage_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&dest_storage_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&dest_storage_path)),
         })?;
 
         // Read raw encrypted file data
         let file_data = fs::read(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: src_ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+            context: Box::new(src_ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
         })?;
 
         // Encrypt filename with NEW directory ID and NEW name
@@ -2198,16 +2556,16 @@ impl VaultOperationsAsync {
         if source_info.is_shortened {
             let parent = source_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory".to_string(),
-                context: src_ctx.clone().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(src_ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
             })?;
             fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(parent),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(parent)),
             })?;
         } else {
             fs::remove_file(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
             })?;
         }
 
@@ -2266,7 +2624,7 @@ impl VaultOperationsAsync {
 
         // Same file is a no-op
         if dir_id_a == dir_id_b && name_a == name_b {
-            return Err(VaultWriteError::SameSourceAndDestination { context: ctx });
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(ctx) });
         }
 
         // Acquire directory write locks in consistent order to prevent deadlocks
@@ -2284,16 +2642,16 @@ impl VaultOperationsAsync {
         let file_a_info = self.find_file_unlocked(dir_id_a, name_a).await?.ok_or_else(|| {
             VaultWriteError::FileNotFound {
                 filename: name_a.to_string(),
-                context: ctx.clone(),
+                context: Box::new(ctx.clone()),
             }
         })?;
 
         let file_b_info = self.find_file_unlocked(dir_id_b, name_b).await?.ok_or_else(|| {
             VaultWriteError::FileNotFound {
                 filename: name_b.to_string(),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(name_b)
-                    .with_dir_id(dir_id_b.as_str()),
+                    .with_dir_id(dir_id_b.as_str())),
             }
         })?;
 
@@ -2307,15 +2665,15 @@ impl VaultOperationsAsync {
         // Read raw encrypted file data for both files
         let data_a = fs::read(&file_a_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: ctx.clone().with_encrypted_path(&file_a_info.encrypted_path),
+            context: Box::new(ctx.clone().with_encrypted_path(&file_a_info.encrypted_path)),
         })?;
 
         let data_b = fs::read(&file_b_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new()
+            context: Box::new(VaultOpContext::new()
                 .with_filename(name_b)
                 .with_dir_id(dir_id_b.as_str())
-                .with_encrypted_path(&file_b_info.encrypted_path),
+                .with_encrypted_path(&file_b_info.encrypted_path)),
         })?;
 
         // Phase 1: Write A's data to temp location (in A's directory)
@@ -2393,16 +2751,16 @@ impl VaultOperationsAsync {
         if file_a_info.is_shortened {
             let parent = file_a_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory for file A".to_string(),
-                context: ctx.clone().with_encrypted_path(&file_a_info.encrypted_path),
+                context: Box::new(ctx.clone().with_encrypted_path(&file_a_info.encrypted_path)),
             })?;
             fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(parent),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(parent)),
             })?;
         } else {
             fs::remove_file(&file_a_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&file_a_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&file_a_info.encrypted_path)),
             })?;
         }
 
@@ -2410,18 +2768,18 @@ impl VaultOperationsAsync {
         if file_b_info.is_shortened {
             let parent = file_b_info.encrypted_path.parent().ok_or_else(|| VaultWriteError::AtomicWriteFailed {
                 reason: "No parent directory for file B".to_string(),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(name_b)
-                    .with_encrypted_path(&file_b_info.encrypted_path),
+                    .with_encrypted_path(&file_b_info.encrypted_path)),
             })?;
             fs::remove_dir_all(parent).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(parent),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(parent)),
             })?;
         } else {
             fs::remove_file(&file_b_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&file_b_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&file_b_info.encrypted_path)),
             })?;
         }
 
@@ -2429,12 +2787,12 @@ impl VaultOperationsAsync {
         if temp_is_long {
             fs::remove_dir_all(&temp_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&temp_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&temp_path)),
             })?;
         } else {
             fs::remove_file(&temp_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&temp_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&temp_path)),
             })?;
         }
 
@@ -2479,7 +2837,7 @@ impl VaultOperationsAsync {
 
         // Same directory is a no-op
         if name_a == name_b {
-            return Err(VaultWriteError::SameSourceAndDestination { context: ctx });
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(ctx) });
         }
 
         // Acquire parent directory write lock
@@ -2491,34 +2849,34 @@ impl VaultOperationsAsync {
             .find_directory_unlocked(parent_dir_id, name_a)
             .await
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
                 other => VaultWriteError::Io {
                     source: std::io::Error::other(other.to_string()),
-                    context: ctx.clone(),
+                    context: Box::new(ctx.clone()),
                 },
             })?
             .ok_or_else(|| VaultWriteError::DirectoryNotFound {
                 name: name_a.to_string(),
-                context: ctx.clone(),
+                context: Box::new(ctx.clone()),
             })?;
 
         let dir_b_info = self
             .find_directory_unlocked(parent_dir_id, name_b)
             .await
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
                 other => VaultWriteError::Io {
                     source: std::io::Error::other(other.to_string()),
-                    context: VaultOpContext::new()
+                    context: Box::new(VaultOpContext::new()
                         .with_filename(name_b)
-                        .with_dir_id(parent_dir_id.as_str()),
+                        .with_dir_id(parent_dir_id.as_str())),
                 },
             })?
             .ok_or_else(|| VaultWriteError::DirectoryNotFound {
                 name: name_b.to_string(),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(name_b)
-                    .with_dir_id(parent_dir_id.as_str()),
+                    .with_dir_id(parent_dir_id.as_str())),
             })?;
 
         let parent_storage_path = self.calculate_directory_storage_path(parent_dir_id)?;
@@ -2539,7 +2897,7 @@ impl VaultOperationsAsync {
             let temp_path = parent_storage_path.join(format!("{temp_encrypted_name}.c9r"));
             fs::create_dir_all(&temp_path).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&temp_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&temp_path)),
             })?;
             self.safe_write(&temp_path.join("dir.c9r"), dir_a_info.directory_id.as_str().as_bytes())
                 .await?;
@@ -2556,7 +2914,7 @@ impl VaultOperationsAsync {
             let new_path_a = parent_storage_path.join(format!("{name_a_encrypted}.c9r"));
             fs::create_dir_all(&new_path_a).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&new_path_a),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&new_path_a)),
             })?;
             self.safe_write(&new_path_a.join("dir.c9r"), dir_b_info.directory_id.as_str().as_bytes())
                 .await?;
@@ -2573,7 +2931,7 @@ impl VaultOperationsAsync {
             let new_path_b = parent_storage_path.join(format!("{name_b_encrypted}.c9r"));
             fs::create_dir_all(&new_path_b).await.map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&new_path_b),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&new_path_b)),
             })?;
             self.safe_write(&new_path_b.join("dir.c9r"), dir_a_info.directory_id.as_str().as_bytes())
                 .await?;
@@ -2584,14 +2942,14 @@ impl VaultOperationsAsync {
             .await
             .map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&dir_a_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&dir_a_info.encrypted_path)),
             })?;
 
         fs::remove_dir_all(&dir_b_info.encrypted_path)
             .await
             .map_err(|e| VaultWriteError::Io {
                 source: e,
-                context: VaultOpContext::new().with_encrypted_path(&dir_b_info.encrypted_path),
+                context: Box::new(VaultOpContext::new().with_encrypted_path(&dir_b_info.encrypted_path)),
             })?;
 
         // Remove temp
@@ -2603,7 +2961,7 @@ impl VaultOperationsAsync {
         };
         fs::remove_dir_all(&temp_path).await.map_err(|e| VaultWriteError::Io {
             source: e,
-            context: VaultOpContext::new().with_encrypted_path(&temp_path),
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&temp_path)),
         })?;
 
         info!("Directories swapped successfully");
@@ -2632,9 +2990,16 @@ impl VaultOperationsAsync {
         &self,
         directory_id: &DirId,
     ) -> Result<Vec<VaultSymlinkInfo>, VaultOperationError> {
-        // Acquire directory read lock
+        // Try sync fast path first
+        if let Some(_guard) = self.try_directory_read_sync(directory_id) {
+            trace!("Using sync fast path for list_symlinks");
+            let sync_ops = self.as_sync().map_err(|e| VaultOperationError::KeyAccess { source: e })?;
+            return Ok(sync_ops.list_symlinks(directory_id)?);
+        }
+
+        // Fall back to async path
         let _guard = self.lock_manager.directory_read(directory_id).await;
-        trace!("Acquired directory read lock for list_symlinks");
+        trace!("Using async path for list_symlinks");
         self.list_symlinks_unlocked(directory_id).await
     }
 
@@ -2655,22 +3020,16 @@ impl VaultOperationsAsync {
         &self,
         directory_id: &DirId,
     ) -> Result<Vec<DirEntry>, VaultOperationError> {
-        let mut entries = Vec::new();
+        // Collect files first (usually the largest collection), then reserve for total.
+        let files = self.list_files(directory_id).await?;
+        let dirs = self.list_directories(directory_id).await?;
+        let symlinks = self.list_symlinks(directory_id).await?;
 
-        // Collect files
-        for file in self.list_files(directory_id).await? {
-            entries.push(DirEntry::File(file));
-        }
-
-        // Collect directories
-        for dir in self.list_directories(directory_id).await? {
-            entries.push(DirEntry::Directory(dir));
-        }
-
-        // Collect symlinks
-        for symlink in self.list_symlinks(directory_id).await? {
-            entries.push(DirEntry::Symlink(symlink));
-        }
+        // Pre-allocate with exact capacity now that we know the total count.
+        let mut entries = Vec::with_capacity(files.len() + dirs.len() + symlinks.len());
+        entries.extend(files.into_iter().map(DirEntry::File));
+        entries.extend(dirs.into_iter().map(DirEntry::Directory));
+        entries.extend(symlinks.into_iter().map(DirEntry::Symlink));
 
         debug!(entry_count = entries.len(), "Listed all entries in directory");
         Ok(entries)
@@ -2691,23 +3050,21 @@ impl VaultOperationsAsync {
 
         // Phase 1: Collect all potential symlink entries (path, encrypted_name, is_shortened)
         // We only do metadata checks here, deferring the actual symlink.c9r check to parallel phase
-        let mut regular_symlinks: Vec<(PathBuf, String)> = Vec::new(); // (path, encrypted_name)
-        let mut shortened_symlinks: Vec<PathBuf> = Vec::new();
+        // Pre-allocate with modest capacity - symlinks are typically rare in vaults.
+        let mut regular_symlinks: Vec<(PathBuf, String)> = Vec::with_capacity(16); // (path, encrypted_name)
+        let mut shortened_symlinks: Vec<PathBuf> = Vec::with_capacity(4);
 
         let mut entries = fs::read_dir(&dir_path).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
 
-            let metadata = match fs::metadata(&path).await {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
+            let Ok(metadata) = fs::metadata(&path).await else { continue };
 
-            if metadata.is_dir() && file_name.ends_with(".c9r") {
+            if metadata.is_dir() && is_regular_entry(&file_name) {
                 // Potential regular symlink - will verify symlink.c9r exists in parallel phase
                 regular_symlinks.push((path, file_name));
-            } else if metadata.is_dir() && file_name.ends_with(".c9s") {
+            } else if metadata.is_dir() && is_shortened_entry(&file_name) {
                 // Potential shortened symlink - will verify symlink.c9r exists in parallel phase
                 shortened_symlinks.push(path);
             }
@@ -2909,17 +3266,17 @@ impl VaultOperationsAsync {
         // Calculate the directory storage path
         let dir_path = self.calculate_directory_storage_path(directory_id)
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
                 VaultOperationError::Filename(e) => VaultWriteError::Filename(e),
                 VaultOperationError::InvalidVaultStructure { reason, context } => {
                     VaultWriteError::DirectoryNotFound {
                         name: reason,
-                        context,
+                        context: Box::new(context),
                     }
                 }
                 _ => VaultWriteError::DirectoryNotFound {
                     name: directory_id.as_str().to_string(),
-                    context: VaultOpContext::new().with_dir_id(directory_id.as_str()),
+                    context: Box::new(VaultOpContext::new().with_dir_id(directory_id.as_str())),
                 },
             })?;
 
@@ -2941,9 +3298,9 @@ impl VaultOperationsAsync {
         if fs::try_exists(&symlink_dir).await.unwrap_or(false) {
             return Err(VaultWriteError::SymlinkAlreadyExists {
                 name: name.to_string(),
-                context: VaultOpContext::new()
+                context: Box::new(VaultOpContext::new()
                     .with_filename(name)
-                    .with_dir_id(directory_id.as_str()),
+                    .with_dir_id(directory_id.as_str())),
             });
         }
 
@@ -2987,11 +3344,11 @@ impl VaultOperationsAsync {
 
         let dir_path = self.calculate_directory_storage_path(directory_id)
             .map_err(|e| match e {
-                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context },
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
                 VaultOperationError::Filename(e) => VaultWriteError::Filename(e),
                 _ => VaultWriteError::DirectoryNotFound {
                     name: directory_id.as_str().to_string(),
-                    context: VaultOpContext::new().with_dir_id(directory_id.as_str()),
+                    context: Box::new(VaultOpContext::new().with_dir_id(directory_id.as_str())),
                 },
             })?;
 
@@ -3021,10 +3378,230 @@ impl VaultOperationsAsync {
 
         Err(VaultWriteError::FileNotFound {
             filename: name.to_string(),
-            context: VaultOpContext::new()
+            context: Box::new(VaultOpContext::new()
                 .with_filename(name)
-                .with_dir_id(directory_id.as_str()),
+                .with_dir_id(directory_id.as_str())),
         })
+    }
+
+    /// Rename a symlink within the same directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The directory ID containing the symlink
+    /// * `old_name` - Current name of the symlink
+    /// * `new_name` - New name for the symlink
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The source symlink doesn't exist
+    /// - A symlink with the new name already exists
+    /// - IO error during rename
+    #[instrument(level = "info", skip(self), fields(dir_id = %directory_id.as_str(), old_name = %old_name, new_name = %new_name))]
+    pub async fn rename_symlink(
+        &self,
+        directory_id: &DirId,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), VaultWriteError> {
+        info!("Renaming symlink in vault");
+
+        let ctx = VaultOpContext::new()
+            .with_filename(old_name)
+            .with_dir_id(directory_id.as_str());
+
+        // Same name is a no-op
+        if old_name == new_name {
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(ctx) });
+        }
+
+        // Acquire directory write lock
+        let _guard = self.lock_manager.directory_write(directory_id).await;
+        trace!("Acquired directory write lock for rename_symlink");
+
+        // Find source symlink
+        let source_info = self
+            .find_symlink_unlocked(directory_id, old_name)
+            .await
+            .map_err(|e| match e {
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+                other => VaultWriteError::Io {
+                    source: std::io::Error::other(other.to_string()),
+                    context: Box::new(ctx.clone()),
+                },
+            })?
+            .ok_or_else(|| VaultWriteError::FileNotFound {
+                filename: old_name.to_string(),
+                context: Box::new(ctx.clone()),
+            })?;
+
+        // Check that target doesn't exist
+        if self.find_symlink_unlocked(directory_id, new_name).await?.is_some() {
+            return Err(VaultWriteError::SymlinkAlreadyExists {
+                name: new_name.to_string(),
+                context: Box::new(VaultOpContext::new()
+                    .with_filename(new_name)
+                    .with_dir_id(directory_id.as_str())),
+            });
+        }
+
+        let dir_path = self.calculate_directory_storage_path(directory_id)?;
+
+        // Read the symlink target data (encrypted, can be copied as-is)
+        let symlink_data = fs::read(source_info.encrypted_path.join("symlink.c9r"))
+            .await
+            .map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: Box::new(ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
+            })?;
+
+        // Encrypt new filename
+        let new_encrypted_name = encrypt_filename(new_name, directory_id.as_str(), &self.master_key)?;
+        let new_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
+
+        // Create destination (before delete for crash safety)
+        let new_symlink_dir = if new_is_long {
+            let shortened_hash = create_c9s_filename(&new_encrypted_name);
+            let new_dir = dir_path.join(format!("{shortened_hash}.c9s"));
+            fs::create_dir_all(&new_dir).await?;
+            fs::write(new_dir.join("name.c9s"), &new_encrypted_name).await?;
+            new_dir
+        } else {
+            let new_dir = dir_path.join(format!("{new_encrypted_name}.c9r"));
+            fs::create_dir_all(&new_dir).await?;
+            new_dir
+        };
+
+        // Write symlink target
+        fs::write(new_symlink_dir.join("symlink.c9r"), &symlink_data).await?;
+
+        // Delete source
+        fs::remove_dir_all(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
+        })?;
+
+        info!("Symlink renamed successfully");
+        Ok(())
+    }
+
+    /// Move and rename a symlink to a different directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_dir_id` - Source directory ID
+    /// * `src_name` - Source symlink name
+    /// * `dest_dir_id` - Destination directory ID
+    /// * `dest_name` - Destination symlink name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Source symlink not found
+    /// - Destination symlink already exists
+    /// - IO error during move
+    #[instrument(level = "info", skip(self), fields(src_dir_id = %src_dir_id.as_str(), src_name = %src_name, dest_dir_id = %dest_dir_id.as_str(), dest_name = %dest_name))]
+    pub async fn move_and_rename_symlink(
+        &self,
+        src_dir_id: &DirId,
+        src_name: &str,
+        dest_dir_id: &DirId,
+        dest_name: &str,
+    ) -> Result<(), VaultWriteError> {
+        info!("Moving and renaming symlink in vault");
+
+        let src_ctx = VaultOpContext::new()
+            .with_filename(src_name)
+            .with_dir_id(src_dir_id.as_str());
+
+        // Same directory and same name is a no-op
+        if src_dir_id == dest_dir_id && src_name == dest_name {
+            return Err(VaultWriteError::SameSourceAndDestination { context: Box::new(src_ctx) });
+        }
+
+        // Same directory? Use rename instead
+        if src_dir_id == dest_dir_id {
+            return self.rename_symlink(src_dir_id, src_name, dest_name).await;
+        }
+
+        // Acquire directory write locks in consistent order to prevent deadlocks
+        let _dir_guards = self
+            .lock_manager
+            .lock_directories_write_ordered(&[src_dir_id, dest_dir_id])
+            .await;
+        trace!("Acquired directory write locks for move_and_rename_symlink");
+
+        // Find source symlink
+        let source_info = self
+            .find_symlink_unlocked(src_dir_id, src_name)
+            .await
+            .map_err(|e| match e {
+                VaultOperationError::Io { source, context } => VaultWriteError::Io { source, context: Box::new(context) },
+                other => VaultWriteError::Io {
+                    source: std::io::Error::other(other.to_string()),
+                    context: Box::new(src_ctx.clone()),
+                },
+            })?
+            .ok_or_else(|| VaultWriteError::FileNotFound {
+                filename: src_name.to_string(),
+                context: Box::new(src_ctx.clone()),
+            })?;
+
+        // Check that target doesn't exist
+        if self.find_symlink_unlocked(dest_dir_id, dest_name).await?.is_some() {
+            return Err(VaultWriteError::SymlinkAlreadyExists {
+                name: dest_name.to_string(),
+                context: Box::new(VaultOpContext::new()
+                    .with_filename(dest_name)
+                    .with_dir_id(dest_dir_id.as_str())),
+            });
+        }
+
+        // Ensure destination directory exists
+        let dest_storage_path = self.calculate_directory_storage_path(dest_dir_id)?;
+        fs::create_dir_all(&dest_storage_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&dest_storage_path)),
+        })?;
+
+        // Read the symlink target data (encrypted, can be copied as-is since it's not
+        // encrypted with the parent dir ID)
+        let symlink_data = fs::read(source_info.encrypted_path.join("symlink.c9r"))
+            .await
+            .map_err(|e| VaultWriteError::Io {
+                source: e,
+                context: Box::new(src_ctx.clone().with_encrypted_path(&source_info.encrypted_path)),
+            })?;
+
+        // Encrypt filename with NEW directory ID
+        let new_encrypted_name = encrypt_filename(dest_name, dest_dir_id.as_str(), &self.master_key)?;
+        let dest_is_long = new_encrypted_name.len() > self.core.shortening_threshold();
+
+        // Create destination (before delete for crash safety)
+        let new_symlink_dir = if dest_is_long {
+            let shortened_hash = create_c9s_filename(&new_encrypted_name);
+            let new_dir = dest_storage_path.join(format!("{shortened_hash}.c9s"));
+            fs::create_dir_all(&new_dir).await?;
+            fs::write(new_dir.join("name.c9s"), &new_encrypted_name).await?;
+            new_dir
+        } else {
+            let new_dir = dest_storage_path.join(format!("{new_encrypted_name}.c9r"));
+            fs::create_dir_all(&new_dir).await?;
+            new_dir
+        };
+
+        // Write symlink target
+        fs::write(new_symlink_dir.join("symlink.c9r"), &symlink_data).await?;
+
+        // Delete source
+        fs::remove_dir_all(&source_info.encrypted_path).await.map_err(|e| VaultWriteError::Io {
+            source: e,
+            context: Box::new(VaultOpContext::new().with_encrypted_path(&source_info.encrypted_path)),
+        })?;
+
+        info!("Symlink moved and renamed successfully");
+        Ok(())
     }
 
     // ==================== Path-Based Operations ====================

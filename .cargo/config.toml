@@ -1,4 +1,25 @@
-# Enable tokio_unstable for tokio-console task introspection
-# This is required for console-subscriber to collect task data
-[build]
-rustflags = ["--cfg", "tokio_unstable"]
+# Build configuration for optimized compile times
+# See docs/COMPILE_TIMES.md or plan file for details
+
+# macOS ARM (Apple Silicon)
+[target.aarch64-apple-darwin]
+rustflags = [
+  "--cfg", "tokio_unstable"  # Enable tokio-console task introspection
+]
+# Note: macOS clang doesn't support -fuse-ld flag
+# Using Apple's default linker (ld64) which is already quite fast on macOS 15+
+# Main speedups come from sccache + reduced debug info
+
+# macOS Intel
+[target.x86_64-apple-darwin]
+rustflags = [
+  "--cfg", "tokio_unstable"  # Enable tokio-console task introspection
+]
+
+# Linux x86_64 - mold works great here
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Linux ARM64 - mold works great here
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

@@ -1,0 +1,61 @@
+[
+  {
+    "typeName": "OxVaultFSExtension.OxVaultFSExtension",
+    "mangledTypeName": "18OxVaultFSExtensionAAV",
+    "kind": "struct",
+    "file": "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Sources/OxVaultFilesystem.swift",
+    "line": 30,
+    "conformances": [
+      "FSKit.UnaryFileSystemExtension",
+      "ExtensionFoundation.AppExtension",
+      "Swift.Sendable",
+      "Swift.BitwiseCopyable"
+    ],
+    "allConformances": [
+      {
+        "protocolName": "FSKit.UnaryFileSystemExtension",
+        "conformanceDefiningModule": "OxVaultFSExtension"
+      },
+      {
+        "protocolName": "ExtensionFoundation.AppExtension",
+        "conformanceDefiningModule": "OxVaultFSExtension"
+      },
+      {
+        "protocolName": "Swift.Sendable",
+        "conformanceDefiningModule": "OxVaultFSExtension"
+      },
+      {
+        "protocolName": "Swift.BitwiseCopyable",
+        "conformanceDefiningModule": "OxVaultFSExtension"
+      }
+    ],
+    "associatedTypeAliases": [
+      {
+        "typeAliasName": "FileSystem",
+        "substitutedTypeName": "any FSKit.FSUnaryFileSystem & FSKit.FSUnaryFileSystemOperations",
+        "substitutedMangledTypeName": "So27FSUnaryFileSystemOperations_So0abC0CXc"
+      },
+      {
+        "typeAliasName": "Configuration",
+        "substitutedTypeName": "some ExtensionFoundation.AppExtensionConfiguration",
+        "substitutedMangledTypeName": "5FSKit24UnaryFileSystemExtensionPAAE13configurationQrvpQOy18OxVaultFSExtensionAEV_Qo_",
+        "opaqueTypeProtocolRequirements": [
+          "ExtensionFoundation.AppExtensionConfiguration"
+        ],
+        "opaqueTypeSameTypeRequirements": []
+      }
+    ],
+    "properties": [
+      {
+        "label": "fileSystem",
+        "type": "any FSKit.FSUnaryFileSystem & FSKit.FSUnaryFileSystemOperations",
+        "mangledTypeName": "n/a - deprecated",
+        "isStatic": "false",
+        "isComputed": "true",
+        "file": "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Sources/OxVaultFilesystem.swift",
+        "line": 35,
+        "valueKind": "Runtime"
+      }
+    ]
+  }
+]

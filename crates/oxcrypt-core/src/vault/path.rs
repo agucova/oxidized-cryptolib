@@ -200,6 +200,7 @@ impl VaultPath {
     /// let file = docs.join("report.txt");
     /// assert_eq!(file.as_str(), "Documents/report.txt");
     /// ```
+    #[must_use]
     pub fn join(&self, component: impl AsRef<str>) -> Self {
         VaultPath(self.0.join(component.as_ref()))
     }
@@ -230,7 +231,7 @@ impl VaultPath {
     /// assert_eq!(components, vec!["Documents", "Photos", "vacation.jpg"]);
     /// ```
     pub fn components(&self) -> impl Iterator<Item = &str> {
-        self.0.components().map(|c| c.as_str())
+        self.0.components().map(relative_path::Component::as_str)
     }
 
     /// Split this path into parent directory path and filename.
@@ -404,10 +405,10 @@ mod tests {
     #[test]
     fn test_vault_path_display() {
         let root = VaultPath::root();
-        assert_eq!(format!("{}", root), "/");
+        assert_eq!(format!("{root}"), "/");
 
         let path = VaultPath::new("Documents/file.txt");
-        assert_eq!(format!("{}", path), "/Documents/file.txt");
+        assert_eq!(format!("{path}"), "/Documents/file.txt");
     }
 
     #[test]

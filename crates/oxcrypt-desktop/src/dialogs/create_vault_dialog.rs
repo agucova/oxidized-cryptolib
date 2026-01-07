@@ -213,7 +213,17 @@ pub fn CreateVaultDialog(
         // Modal overlay
         div {
             class: "dialog-backdrop",
+            tabindex: "-1",
+            autofocus: true,
             onclick: move |e| e.stop_propagation(),
+            onkeydown: move |e| {
+                // Allow ESC to close dialog unless actively creating
+                let is_busy = matches!(current_step(), WizardStep::Creating)
+                    && matches!(creation_state(), CreationState::Creating | CreationState::Idle);
+                if e.key() == Key::Escape && !is_busy {
+                    on_cancel.call(());
+                }
+            },
 
             // Dialog
             div {

@@ -135,7 +135,7 @@ fn test_write_and_read_random_content() {
     // Test several different sizes
     for size in [100, 1000, 10000, CHUNK_SIZE / 2, CHUNK_SIZE + 500] {
         let content = random_bytes(size);
-        let filename = format!("random_{}.bin", size);
+        let filename = format!("random_{size}.bin");
 
         let item_id = fs.write_new_file(root, &filename, &content).unwrap();
         let read_content = fs.read_entire_file(item_id).unwrap();
@@ -143,8 +143,7 @@ fn test_write_and_read_random_content() {
         assert_eq!(
             sha256(&read_content),
             sha256(&content),
-            "Content mismatch for size {}",
-            size
+            "Content mismatch for size {size}"
         );
     }
 }

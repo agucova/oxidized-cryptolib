@@ -321,20 +321,16 @@ async fn test_range_content_integrity() {
                 assert_eq!(
                     data.len(),
                     end - start,
-                    "Range {}-{} returned wrong length",
-                    start,
-                    end
+                    "Range {start}-{end} returned wrong length"
                 );
                 assert_eq!(
                     &data[..],
                     &content[start..end],
-                    "Range {}-{} content mismatch",
-                    start,
-                    end
+                    "Range {start}-{end} content mismatch"
                 );
             }
             Err((status, _)) => {
-                panic!("Range {}-{} failed with status {}", start, end, status);
+                panic!("Range {start}-{end} failed with status {status}");
             }
         }
     }

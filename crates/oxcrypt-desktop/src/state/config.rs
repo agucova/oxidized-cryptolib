@@ -3,7 +3,7 @@
 #![allow(dead_code)] // Config APIs for future use
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 // Re-export BackendType from mount-common for convenience
@@ -33,7 +33,7 @@ impl ThemePreference {
     }
 
     /// Get a user-friendly display name
-    pub fn display_name(&self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
             ThemePreference::System => "System",
             ThemePreference::Light => "Light",
@@ -42,7 +42,7 @@ impl ThemePreference {
     }
 
     /// Get description for the UI
-    pub fn description(&self) -> &'static str {
+    pub fn description(self) -> &'static str {
         match self {
             ThemePreference::System => "Match your system settings",
             ThemePreference::Light => "Always use light mode",
@@ -52,7 +52,7 @@ impl ThemePreference {
 
     /// Get the CSS class to apply to the root element
     /// Returns None for System (let the browser handle it)
-    pub fn css_class(&self) -> Option<&'static str> {
+    pub fn css_class(self) -> Option<&'static str> {
         match self {
             ThemePreference::System => None,
             ThemePreference::Light => Some("theme-light"),
@@ -70,6 +70,60 @@ pub enum ConfigError {
     Parse(#[from] serde_json::Error),
     #[error("Failed to find config directory")]
     NoConfigDir,
+}
+
+/// Status of config load operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigLoadStatus {
+    /// Config loaded successfully from disk
+    Loaded,
+    /// No config file existed, using fresh defaults
+    Fresh,
+    /// Config file was corrupted, using defaults (backup created)
+    Corrupted {
+        /// Path to the backup of the corrupted config
+        backup_path: PathBuf,
+        /// Error message describing the corruption
+        error: String,
+    },
+    /// Config file couldn't be read, using defaults
+    ReadError {
+        /// Error message
+        error: String,
+    },
+}
+
+impl ConfigLoadStatus {
+    /// Returns true if the config was loaded successfully
+    pub fn is_ok(&self) -> bool {
+        matches!(self, ConfigLoadStatus::Loaded | ConfigLoadStatus::Fresh)
+    }
+
+    /// Returns true if there was an error that the user should be warned about
+    pub fn needs_warning(&self) -> bool {
+        matches!(
+            self,
+            ConfigLoadStatus::Corrupted { .. } | ConfigLoadStatus::ReadError { .. }
+        )
+    }
+
+    /// Get a user-friendly warning message, if applicable
+    pub fn warning_message(&self) -> Option<String> {
+        match self {
+            ConfigLoadStatus::Corrupted { backup_path, error } => Some(format!(
+                "Your configuration file was corrupted and could not be loaded. \
+                 A backup has been saved to:\n{}\n\nError: {}\n\n\
+                 Your vault list has been reset. You may need to re-add your vaults.",
+                backup_path.display(),
+                error
+            )),
+            ConfigLoadStatus::ReadError { error } => Some(format!(
+                "Could not read your configuration file: {error}\n\n\
+                 Your vault list has been reset. You may need to re-add your vaults."
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// Configuration for a single vault
@@ -149,9 +203,6 @@ pub struct AppConfig {
     /// Start application minimized to tray
     #[serde(default)]
     pub start_minimized: bool,
-    /// User dismissed the FSKit setup wizard (don't show again)
-    #[serde(default)]
-    pub fskit_setup_dismissed: bool,
     /// Theme preference (system, light, or dark)
     #[serde(default)]
     pub theme: ThemePreference,
@@ -167,36 +218,100 @@ impl AppConfig {
     }
 
     /// Load configuration from disk, or return default if not found
+    ///
+    /// This is a convenience wrapper around `load_with_status()` that discards
+    /// the status. Use `load_with_status()` if you need to warn the user about
+    /// config corruption.
     pub fn load() -> Self {
+        Self::load_with_status().0
+    }
+
+    /// Load configuration from disk with status information.
+    ///
+    /// Returns a tuple of (config, status) where status indicates whether the
+    /// config was loaded successfully, or if there was an error that the user
+    /// should be warned about.
+    ///
+    /// If the config file is corrupted, a backup is created before returning
+    /// defaults.
+    pub fn load_with_status() -> (Self, ConfigLoadStatus) {
         let config_path = match Self::config_path() {
             Ok(path) => path,
             Err(e) => {
                 tracing::warn!("Could not determine config path: {}", e);
-                return Self::default();
+                return (
+                    Self::default(),
+                    ConfigLoadStatus::ReadError {
+                        error: e.to_string(),
+                    },
+                );
             }
         };
 
         if !config_path.exists() {
             tracing::info!("No config file found, using defaults");
-            return Self::default();
+            return (Self::default(), ConfigLoadStatus::Fresh);
         }
 
         match std::fs::read_to_string(&config_path) {
             Ok(contents) => match serde_json::from_str(&contents) {
                 Ok(config) => {
                     tracing::info!("Loaded config from {}", config_path.display());
-                    config
+                    (config, ConfigLoadStatus::Loaded)
                 }
                 Err(e) => {
                     tracing::error!("Failed to parse config: {}", e);
-                    Self::default()
+
+                    // Create a backup of the corrupted config
+                    let backup_path = Self::backup_corrupted_config(&config_path, &contents);
+
+                    (
+                        Self::default(),
+                        ConfigLoadStatus::Corrupted {
+                            backup_path,
+                            error: e.to_string(),
+                        },
+                    )
                 }
             },
             Err(e) => {
                 tracing::error!("Failed to read config: {}", e);
-                Self::default()
+                (
+                    Self::default(),
+                    ConfigLoadStatus::ReadError {
+                        error: e.to_string(),
+                    },
+                )
             }
         }
+    }
+
+    /// Create a backup of a corrupted config file.
+    ///
+    /// Returns the path to the backup file.
+    fn backup_corrupted_config(config_path: &Path, contents: &str) -> PathBuf {
+        // Generate backup filename with timestamp
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let backup_name = format!("config.corrupted.{timestamp}.json");
+        let backup_path = config_path.with_file_name(backup_name);
+
+        // Write backup
+        if let Err(e) = std::fs::write(&backup_path, contents) {
+            tracing::error!(
+                "Failed to create backup of corrupted config at {}: {}",
+                backup_path.display(),
+                e
+            );
+            // Return the intended path even if write failed, so the user knows
+            // where we tried to save it
+        } else {
+            tracing::info!(
+                "Created backup of corrupted config at {}",
+                backup_path.display()
+            );
+        }
+
+        backup_path
     }
 
     /// Save configuration to disk
@@ -244,7 +359,6 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_vault_config_new() {
@@ -270,6 +384,5 @@ mod tests {
     #[test]
     fn test_backend_type_display() {
         assert_eq!(BackendType::Fuse.display_name(), "FUSE");
-        assert_eq!(BackendType::FSKit.display_name(), "FSKit");
     }
 }

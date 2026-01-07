@@ -47,8 +47,7 @@ impl From<NfsError> for nfsstat3 {
             NfsError::NotDirectory => nfsstat3::NFS3ERR_NOTDIR,
             NfsError::NotFile => nfsstat3::NFS3ERR_ISDIR,
             NfsError::Io(_) => nfsstat3::NFS3ERR_IO,
-            NfsError::Vault(_) => nfsstat3::NFS3ERR_SERVERFAULT,
-            NfsError::Server(_) => nfsstat3::NFS3ERR_SERVERFAULT,
+            NfsError::Vault(_) | NfsError::Server(_) => nfsstat3::NFS3ERR_SERVERFAULT,
         }
     }
 }
@@ -66,8 +65,8 @@ pub fn category_to_nfsstat(cat: VaultErrorCategory) -> nfsstat3 {
         VaultErrorCategory::IsDirectory => nfsstat3::NFS3ERR_ISDIR,
         VaultErrorCategory::NotDirectory => nfsstat3::NFS3ERR_NOTDIR,
         VaultErrorCategory::InvalidArgument => nfsstat3::NFS3ERR_INVAL,
-        VaultErrorCategory::IoError => nfsstat3::NFS3ERR_IO,
         VaultErrorCategory::PermissionDenied => nfsstat3::NFS3ERR_ACCES,
+        VaultErrorCategory::IoError => nfsstat3::NFS3ERR_IO,
         VaultErrorCategory::NotSupported => nfsstat3::NFS3ERR_NOTSUPP,
     }
 }
@@ -160,12 +159,12 @@ mod tests {
     fn test_vault_write_error_to_nfsstat() {
         let err = VaultWriteError::FileAlreadyExists {
             filename: "test.txt".to_string(),
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_nfsstat_eq!(vault_error_to_nfsstat(&err), nfsstat3::NFS3ERR_EXIST);
 
         let err = VaultWriteError::DirectoryNotEmpty {
-            context: VaultOpContext::new(),
+            context: Box::new(VaultOpContext::new()),
         };
         assert_nfsstat_eq!(vault_error_to_nfsstat(&err), nfsstat3::NFS3ERR_NOTEMPTY);
     }

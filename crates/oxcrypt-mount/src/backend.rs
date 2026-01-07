@@ -214,7 +214,7 @@ pub enum MountError {
 
     /// OS-level mount operation failed
     #[error("Failed to mount: {0}")]
-    Mount(#[from] std::io::Error),
+    Mount(#[from] io::Error),
 
     /// The specified mount point doesn't exist
     #[error("Mount point does not exist: {0}")]
@@ -287,6 +287,22 @@ pub trait MountHandle: Send {
     ///
     /// Returns `None` if the backend doesn't support statistics.
     fn stats(&self) -> Option<Arc<VaultStats>> {
+        None
+    }
+
+    /// Get lock contention metrics for profiling (optional).
+    ///
+    /// Returns lock metrics tracking sync fast path performance and async lock acquisitions.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `None` if the backend doesn't support lock metrics.
+    fn lock_metrics(&self) -> Option<Arc<oxcrypt_core::vault::lock_metrics::LockMetrics>> {
+        None
+    }
+
+    /// Get a display-friendly mount location (e.g., URL for WebDAV).
+    fn display_location(&self) -> Option<String> {
         None
     }
 }
@@ -438,6 +454,18 @@ pub enum BackendType {
     /// - Native async support for better concurrency
     /// - Stateless protocol (simpler than FUSE)
     Nfs,
+
+    /// File Provider-based mounting (macOS only)
+    ///
+    /// Uses Apple's File Provider API (NSFileProviderReplicatedExtension)
+    /// to expose vaults as cloud storage volumes in `~/Library/CloudStorage/`.
+    ///
+    /// Benefits:
+    /// - No kernel extension required
+    /// - Native integration alongside iCloud, Google Drive, Dropbox
+    /// - Survives sleep/wake cycles reliably
+    /// - Works on macOS 13+ (Ventura)
+    FileProvider,
 }
 
 impl BackendType {
@@ -448,6 +476,7 @@ impl BackendType {
             BackendType::FSKit => "FSKit",
             BackendType::WebDav => "WebDAV",
             BackendType::Nfs => "NFS",
+            BackendType::FileProvider => "File Provider",
         }
     }
 
@@ -458,12 +487,13 @@ impl BackendType {
             BackendType::FSKit => "Uses Apple's native FSKit framework (macOS 15.4+)",
             BackendType::WebDav => "Starts a local WebDAV server (no kernel extensions required)",
             BackendType::Nfs => "Uses local NFSv3 server with system NFS client (no kernel extensions required)",
+            BackendType::FileProvider => "Uses Apple File Provider API for cloud storage integration (macOS 13+)",
         }
     }
 
     /// Get all backend types
     pub fn all() -> &'static [BackendType] {
-        &[BackendType::Fuse, BackendType::FSKit, BackendType::WebDav, BackendType::Nfs]
+        &[BackendType::Fuse, BackendType::FSKit, BackendType::WebDav, BackendType::Nfs, BackendType::FileProvider]
     }
 
     /// Check if this backend supports fsync/F_FULLFSYNC operations.
@@ -478,10 +508,10 @@ impl BackendType {
     /// - `false`: Backend may return ENOTTY for fsync operations
     pub fn supports_fsync(&self) -> bool {
         match self {
-            BackendType::Fuse => true,
-            BackendType::FSKit => true,
             BackendType::WebDav => false, // macOS WebDAV driver returns ENOTTY
-            BackendType::Nfs => true,
+            BackendType::Fuse | BackendType::FSKit | BackendType::Nfs | BackendType::FileProvider => {
+                true // File Provider manages sync internally
+            }
         }
     }
 }
@@ -586,12 +616,13 @@ pub fn select_backend(
         BackendType::FSKit => "fskit",
         BackendType::WebDav => "webdav",
         BackendType::Nfs => "nfs",
+        BackendType::FileProvider => "fileprovider",
     };
 
     backends
         .iter()
         .find(|b| b.id() == id)
-        .map(|b| b.as_ref())
+        .map(AsRef::as_ref)
         .filter(|b| b.is_available())
         .ok_or_else(|| {
             let reason = backends
@@ -617,7 +648,7 @@ pub fn first_available_backend(
     backends
         .iter()
         .find(|b| b.is_available())
-        .map(|b| b.as_ref())
+        .map(AsRef::as_ref)
         .ok_or_else(|| {
             let reasons: Vec<String> = backends
                 .iter()
@@ -670,6 +701,10 @@ mod tests {
             serde_json::to_string(&BackendType::Nfs).unwrap(),
             "\"nfs\""
         );
+        assert_eq!(
+            serde_json::to_string(&BackendType::FileProvider).unwrap(),
+            "\"fileprovider\""
+        );
     }
 
     #[test]
@@ -689,6 +724,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<BackendType>("\"nfs\"").unwrap(),
             BackendType::Nfs
+        );
+        assert_eq!(
+            serde_json::from_str::<BackendType>("\"fileprovider\"").unwrap(),
+            BackendType::FileProvider
         );
     }
 

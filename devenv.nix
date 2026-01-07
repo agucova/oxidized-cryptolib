@@ -111,6 +111,9 @@ in
     install.enable = true;
   };
 
+  # Auto-load .env file for Apple credentials (notarization, etc.)
+  dotenv.enable = true;
+
   packages = with pkgs; [
     cargo-edit
     cargo-outdated
@@ -120,6 +123,9 @@ in
     dioxus-cli
     openssl
     pkg-config
+    mold      # Fast linker for improved compile times (Linux)
+    sccache   # Shared compilation cache
+    llvm      # Provides lld linker for macOS
   ]
   # Add pjdfstest and fsstress on Linux (requires FUSE which is native there)
   ++ lib.optionals stdenv.isLinux [
@@ -132,12 +138,17 @@ in
     pjdfstest   # Can still build pjdfstest, just needs macFUSE at runtime
     protobuf    # Required for fskit-rs (FSKit filesystem support)
     fskitbridge # FSKitBridge.app for FSKit-based vault mounting (macOS 15.4+)
+    xcodegen    # Generate Xcode projects from YAML (for File Provider extension)
   ];
 
   env = {
     RUST_BACKTRACE = "1";
+    RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";  # Enable sccache for faster rebuilds
   } // lib.optionalAttrs pkgs.stdenv.isDarwin {
     PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig";
+    # Use Xcode SDK for Swift builds (FSKit requires macOS 26.0+ SDK)
+    SDKROOT = xcodeSdk;
+    DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer";
   };
 
   enterShell = ''
@@ -250,6 +261,126 @@ EOF
       rm -rf crates/oxidized-fskit-legacy-ffi/swift/.build
       rm -rf crates/oxidized-fskit-ffi/extension/.build
       echo "Clean complete"
+    '';
+
+    # Build FSKit extension via xcodebuild with clean environment
+    # Nix environment variables (NIX_LDFLAGS, NIX_CFLAGS_COMPILE, etc.) confuse
+    # Xcode's linker driver, causing it to invoke ld directly instead of clang.
+    # This script runs xcodebuild with a minimal, clean environment.
+    fskit-xcodebuild.exec = ''
+      set -e
+      cd crates/oxcrypt-fskit/extension
+
+      # Regenerate project if needed
+      if [[ ! -f OxVaultFS.xcodeproj/project.pbxproj ]] || [[ project.yml -nt OxVaultFS.xcodeproj/project.pbxproj ]]; then
+        echo "Regenerating Xcode project from project.yml..."
+        xcodegen generate
+      fi
+
+      echo "Building FSKit extension with clean environment..."
+      # Use env -i to start with empty environment, then add only essential paths
+      # This bypasses all nix-injected variables that confuse Xcode's linker
+      env -i \
+        HOME="$HOME" \
+        PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin" \
+        DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer" \
+        /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
+          -project OxVaultFS.xcodeproj \
+          -scheme OxVaultFSExtension \
+          -configuration Release \
+          build
+
+      echo "FSKit extension built successfully!"
+      echo "Extension location: ~/Library/Developer/Xcode/DerivedData/OxVaultFS-*/Build/Products/Release/"
+    '';
+
+    # Build FSKit extension with code signing
+    fskit-xcodebuild-signed.exec = ''
+      set -e
+      cd crates/oxcrypt-fskit/extension
+
+      # Regenerate project if needed
+      if [[ ! -f OxVaultFS.xcodeproj/project.pbxproj ]] || [[ project.yml -nt OxVaultFS.xcodeproj/project.pbxproj ]]; then
+        echo "Regenerating Xcode project from project.yml..."
+        xcodegen generate
+      fi
+
+      echo "Building signed FSKit extension with clean environment..."
+      env -i \
+        HOME="$HOME" \
+        PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin" \
+        DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer" \
+        /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
+          -project OxVaultFS.xcodeproj \
+          -scheme OxVaultFSExtension \
+          -configuration Release \
+          -allowProvisioningUpdates \
+          build
+
+      echo "Signed FSKit extension built successfully!"
+    '';
+
+    # Build File Provider extension (Rust + Swift via build.sh)
+    fileprovider-build.exec = ''
+      set -e
+      echo "=== Building File Provider Extension ==="
+      cd crates/oxcrypt-fileprovider/extension
+      ./build.sh
+      echo "=== Build complete ==="
+    '';
+
+    # Clean File Provider build artifacts
+    fileprovider-clean.exec = ''
+      echo "Cleaning File Provider build artifacts..."
+      rm -rf crates/oxcrypt-fileprovider/extension/build
+      rm -rf crates/oxcrypt-fileprovider/extension/OxCryptFileProvider.xcodeproj
+      echo "Clean complete"
+    '';
+
+    # Open File Provider project in Xcode (for debugging)
+    fileprovider-xcode.exec = ''
+      cd crates/oxcrypt-fileprovider/extension
+      if [[ ! -f OxCryptFileProvider.xcodeproj/project.pbxproj ]]; then
+        echo "Generating Xcode project..."
+        xcodegen generate
+      fi
+      open OxCryptFileProvider.xcodeproj
+    '';
+
+    # Install FileProvider extension to ~/Applications
+    fileprovider-install.exec = ''
+      set -e
+      APP_SRC="crates/oxcrypt-fileprovider/extension/build/OxCryptFileProvider.app"
+      INSTALL_DIR="$HOME/Library/Application Support/com.oxidized.oxcrypt/FileProvider"
+
+      if [[ ! -d "$APP_SRC" ]]; then
+        echo "Error: OxCryptFileProvider.app not found."
+        echo "Run 'fileprovider-build' first."
+        exit 1
+      fi
+
+      echo "Installing OxCryptFileProvider.app to $INSTALL_DIR..."
+      mkdir -p "$INSTALL_DIR"
+      rm -rf "$INSTALL_DIR/OxCryptFileProvider.app"
+      cp -R "$APP_SRC" "$INSTALL_DIR/"
+
+      echo "Installed to $INSTALL_DIR/OxCryptFileProvider.app"
+      echo "Use 'fileprovider-register' to register a vault domain."
+    '';
+
+    # Register a vault as a FileProvider domain
+    fileprovider-register.exec = ''
+      if [[ $# -lt 2 ]]; then
+        echo "Usage: fileprovider-register <vault_path> <display_name>"
+        echo "Example: fileprovider-register /path/to/my_vault 'My Vault'"
+        exit 1
+      fi
+      ~/Applications/OxCryptFileProvider.app/Contents/MacOS/OxCryptFileProvider register "$1" "$2"
+    '';
+
+    # List registered FileProvider domains
+    fileprovider-list.exec = ''
+      ~/Applications/OxCryptFileProvider.app/Contents/MacOS/OxCryptFileProvider list
     '';
   };
 }

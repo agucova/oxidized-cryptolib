@@ -4,9 +4,8 @@ pub mod assertions;
 pub mod generators;
 pub mod harness;
 
-pub use assertions::*;
 pub use generators::*;
-pub use harness::{TestMount, TEST_PASSWORD};
+pub use harness::TestMount;
 
 /// Skip test if mounting failed (e.g., no permissions).
 #[macro_export]

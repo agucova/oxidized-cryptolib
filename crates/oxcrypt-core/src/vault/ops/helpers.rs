@@ -186,19 +186,20 @@ pub fn calculate_directory_storage_path(
     master_key: &MasterKey,
 ) -> Result<PathBuf, StoragePathError> {
     let hashed = hash_dir_id(dir_id.as_str(), master_key)?;
-    let hash_chars: Vec<char> = hashed.chars().collect();
 
-    if hash_chars.len() < 32 {
+    if hashed.len() < 32 {
         return Err(StoragePathError::HashTooShort {
-            length: hash_chars.len(),
+            length: hashed.len(),
             dir_id: dir_id.as_str().to_string(),
         });
     }
 
-    let first_two: String = hash_chars[0..2].iter().collect();
-    let remaining: String = hash_chars[2..32].iter().collect();
+    // Base32 output is ASCII-only (A-Z, 2-7), so direct byte slicing is safe.
+    // This avoids allocating Vec<char> and two intermediate Strings.
+    let first_two = &hashed[0..2];
+    let remaining = &hashed[2..32];
 
-    Ok(vault_path.join("d").join(&first_two).join(&remaining))
+    Ok(vault_path.join("d").join(first_two).join(remaining))
 }
 
 /// Parse a vault path into its components.
@@ -241,13 +242,17 @@ pub fn extract_encrypted_base_name(filename: &str) -> Option<&str> {
 /// Check if a path represents a shortened entry (`.c9s` format).
 #[inline]
 pub fn is_shortened_entry(filename: &str) -> bool {
-    filename.ends_with(".c9s")
+    Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s"))
 }
 
 /// Check if a path represents a regular encrypted entry (`.c9r` format).
 #[inline]
 pub fn is_regular_entry(filename: &str) -> bool {
-    filename.ends_with(".c9r")
+    Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r"))
 }
 
 /// Determine the entry type from a `.c9r` directory's contents.
@@ -365,9 +370,13 @@ mod tests {
         assert!(paths.is_shortened);
         assert_eq!(paths.encrypted_name, long_name);
         // Entry path should be a .c9s directory
-        assert!(paths.entry_path.to_string_lossy().ends_with(".c9s"));
+        assert!(Path::new(paths.entry_path.to_string_lossy().as_ref())
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s")));
         // Content path should be contents.c9r inside
-        assert!(paths.content_path.to_string_lossy().ends_with("contents.c9r"));
+        assert!(Path::new(paths.content_path.to_string_lossy().as_ref())
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")));
         assert!(paths.content_path.starts_with(&paths.entry_path));
     }
 
@@ -413,9 +422,13 @@ mod tests {
         assert!(paths.is_shortened);
         assert_eq!(paths.encrypted_name, long_name);
         // Entry path should be a .c9s directory
-        assert!(paths.entry_path.to_string_lossy().ends_with(".c9s"));
+        assert!(Path::new(paths.entry_path.to_string_lossy().as_ref())
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9s")));
         // Content path should be dir.c9r inside
-        assert!(paths.content_path.to_string_lossy().ends_with("dir.c9r"));
+        assert!(Path::new(paths.content_path.to_string_lossy().as_ref())
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")));
         assert!(paths.content_path.starts_with(&paths.entry_path));
     }
 

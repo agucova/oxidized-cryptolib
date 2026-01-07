@@ -86,6 +86,7 @@ impl VaultCreator {
     /// Set a custom vault ID (defaults to random UUID)
     ///
     /// This is primarily useful for testing or migrating vaults.
+    #[must_use]
     pub fn with_vault_id(mut self, id: &str) -> Self {
         self.vault_id = id.to_string();
         self
@@ -99,6 +100,7 @@ impl VaultCreator {
     ///
     /// Lower thresholds may be useful for cloud storage providers with strict
     /// path length limits.
+    #[must_use]
     pub fn with_shortening_threshold(mut self, threshold: usize) -> Self {
         self.shortening_threshold = threshold;
         self
@@ -140,6 +142,8 @@ impl VaultCreator {
         let config = VaultConfig {
             jti: self.vault_id,
             format: 8,
+            // Safe cast: shortening_threshold is typically 220-1024, well within i32 range
+            #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
             shortening_threshold: self.shortening_threshold as i32,
             ciphertext_dir: Some(CiphertextDir("d".to_string())),
             payload: None,

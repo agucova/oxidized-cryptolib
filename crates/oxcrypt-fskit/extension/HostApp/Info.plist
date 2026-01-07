@@ -41,5 +41,33 @@
     <!-- Required for hosting system extensions -->
     <key>NSSystemExtensionUsageDescription</key>
     <string>OxVaultFS provides native file system access to Cryptomator vaults.</string>
+
+    <!-- XPC Mach Service declaration for CLI/Desktop communication -->
+    <!-- This allows launchd to start the app on-demand when clients connect -->
+    <key>MachServices</key>
+    <dict>
+        <key>com.agucova.oxcrypt.desktop.xpc</key>
+        <true/>
+    </dict>
+
+    <!-- URL scheme for triggering FSKit mounts -->
+    <!-- oxcrypt:///path/to/vault triggers the FSKit extension via FSGenericURLResource -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>OxCrypt Vault</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>oxcrypt</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+    </array>
+
+    <!-- Run as background app (no dock icon) when handling URLs -->
+    <key>LSUIElement</key>
+    <false/>
 </dict>
 </plist>

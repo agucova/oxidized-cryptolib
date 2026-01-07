@@ -7,6 +7,7 @@
 //! - Edge cases (empty files, large files, unicode filenames)
 
 #![cfg(feature = "async")]
+#![allow(clippy::cast_possible_truncation)] // Test code with safe type conversions
 
 mod common;
 
@@ -121,6 +122,7 @@ async fn test_async_write_read_large_file() {
     let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
 
     // Create content larger than one chunk (32KB = 32768 bytes)
+    #[allow(clippy::cast_possible_truncation)]
     let content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
 
     ops.write_file(&DirId::root(), "large.bin", &content).await
@@ -223,11 +225,11 @@ async fn test_safe_write_new_file_no_temp_files_left() {
     let d_dir = vault_path.join("d");
     let temp_files: Vec<_> = walkdir::WalkDir::new(&d_dir)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp."))
         .collect();
 
-    assert!(temp_files.is_empty(), "Temp files should not exist after successful write: {:?}", temp_files);
+    assert!(temp_files.is_empty(), "Temp files should not exist after successful write: {temp_files:?}");
 }
 
 #[tokio::test]
@@ -246,11 +248,11 @@ async fn test_safe_write_overwrite_no_temp_files_left() {
     let d_dir = vault_path.join("d");
     let temp_files: Vec<_> = walkdir::WalkDir::new(&d_dir)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp."))
         .collect();
 
-    assert!(temp_files.is_empty(), "Temp files should be cleaned up after overwrite: {:?}", temp_files);
+    assert!(temp_files.is_empty(), "Temp files should be cleaned up after overwrite: {temp_files:?}");
 
     // Verify content was updated
     let decrypted = ops.read_file(&DirId::root(), "existing.txt").await
@@ -288,7 +290,7 @@ async fn test_safe_write_multiple_overwrites() {
     let d_dir = vault_path.join("d");
     let temp_files: Vec<_> = walkdir::WalkDir::new(&d_dir)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp."))
         .collect();
     assert!(temp_files.is_empty());
@@ -412,7 +414,7 @@ async fn test_safe_write_long_filename_overwrite() {
     let d_dir = vault_path.join("d");
     let temp_files: Vec<_> = walkdir::WalkDir::new(&d_dir)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp."))
         .collect();
     assert!(temp_files.is_empty());
@@ -609,7 +611,7 @@ async fn test_many_sequential_reads() {
     // Perform many sequential reads
     for i in 0..20 {
         let content = ops.read_file(&root, "shared.txt").await
-            .expect(&format!("Read {} failed", i));
+            .unwrap_or_else(|_| panic!("Read {i} failed"));
         assert_eq!(content.content, b"shared content for many readers");
     }
 }
@@ -694,10 +696,10 @@ async fn test_async_multiple_files_same_directory() {
 
     // Write multiple files
     for i in 0..10 {
-        let filename = format!("file_{}.txt", i);
-        let content = format!("Content of file {}", i);
+        let filename = format!("file_{i}.txt");
+        let content = format!("Content of file {i}");
         ops.write_file(&DirId::root(), &filename, content.as_bytes()).await
-            .expect(&format!("Failed to write {}", filename));
+            .unwrap_or_else(|_| panic!("Failed to write {filename}"));
     }
 
     // List and verify
@@ -707,10 +709,10 @@ async fn test_async_multiple_files_same_directory() {
 
     // Read back and verify each
     for i in 0..10 {
-        let filename = format!("file_{}.txt", i);
-        let expected = format!("Content of file {}", i);
+        let filename = format!("file_{i}.txt");
+        let expected = format!("Content of file {i}");
         let decrypted = ops.read_file(&DirId::root(), &filename).await
-            .expect(&format!("Failed to read {}", filename));
+            .unwrap_or_else(|_| panic!("Failed to read {filename}"));
         assert_eq!(decrypted.content, expected.as_bytes());
     }
 }
@@ -730,12 +732,12 @@ async fn test_async_special_characters_in_filename() {
     ];
 
     for name in special_names {
-        let content = format!("Content for {}", name);
+        let content = format!("Content for {name}");
         ops.write_file(&DirId::root(), name, content.as_bytes()).await
-            .expect(&format!("Failed to write {}", name));
+            .unwrap_or_else(|_| panic!("Failed to write {name}"));
 
         let decrypted = ops.read_file(&DirId::root(), name).await
-            .expect(&format!("Failed to read {}", name));
+            .unwrap_or_else(|_| panic!("Failed to read {name}"));
         assert_eq!(decrypted.content, content.as_bytes());
     }
 }
@@ -1434,7 +1436,7 @@ async fn test_async_rename_file_same_name() {
     // Check error message contains relevant info
     let err = result.unwrap_err();
     assert!(err.to_string().contains("same") || err.to_string().contains("Same"),
-        "Error should mention same source and destination: {}", err);
+        "Error should mention same source and destination: {err}");
 }
 
 #[tokio::test]
@@ -1452,7 +1454,7 @@ async fn test_async_move_file_same_directory() {
 
     let err = result.unwrap_err();
     assert!(err.to_string().contains("same") || err.to_string().contains("Same"),
-        "Error should mention same source and destination: {}", err);
+        "Error should mention same source and destination: {err}");
 }
 
 #[tokio::test]
@@ -1471,7 +1473,7 @@ async fn test_async_rename_file_target_exists() {
 
     let err = result.unwrap_err();
     assert!(err.to_string().contains("exists") || err.to_string().contains("already"),
-        "Error should mention file already exists: {}", err);
+        "Error should mention file already exists: {err}");
 
     // Verify both files still exist with original content
     let source = ops.read_file(&DirId::root(), "source.txt").await.unwrap();
@@ -1502,7 +1504,7 @@ async fn test_async_move_file_target_exists() {
 
     let err = result.unwrap_err();
     assert!(err.to_string().contains("exists") || err.to_string().contains("already"),
-        "Error should mention file already exists: {}", err);
+        "Error should mention file already exists: {err}");
 }
 
 #[tokio::test]
@@ -1526,7 +1528,7 @@ async fn test_async_delete_directory_not_empty_files() {
 
     let err = result.unwrap_err();
     assert!(err.to_string().contains("empty") || err.to_string().contains("Empty"),
-        "Error should mention directory not empty: {}", err);
+        "Error should mention directory not empty: {err}");
 }
 
 #[tokio::test]
@@ -1560,7 +1562,7 @@ async fn test_async_delete_nonexistent_directory() {
 
     let err = result.unwrap_err();
     assert!(err.to_string().contains("not found") || err.to_string().contains("NotFound"),
-        "Error should mention directory not found: {}", err);
+        "Error should mention directory not found: {err}");
 }
 
 #[tokio::test]
@@ -1574,7 +1576,7 @@ async fn test_async_rename_nonexistent_file() {
 
     let err = result.unwrap_err();
     assert!(err.to_string().contains("not found") || err.to_string().contains("NotFound"),
-        "Error should mention file not found: {}", err);
+        "Error should mention file not found: {err}");
 }
 
 #[tokio::test]
@@ -2090,7 +2092,7 @@ async fn test_async_error_contains_context() {
 
     let err_string = err.to_string();
     assert!(err_string.contains("context_test.txt"),
-        "Error should contain filename: {}", err_string);
+        "Error should contain filename: {err_string}");
 }
 
 #[tokio::test]
@@ -2103,7 +2105,7 @@ async fn test_async_error_delete_dir_contains_context() {
 
     let err_string = err.to_string();
     assert!(err_string.contains("nonexistent_dir") || err_string.contains("not found"),
-        "Error should contain directory name or 'not found': {}", err_string);
+        "Error should contain directory name or 'not found': {err_string}");
 }
 
 // ==================== Optimized Lookup Tests ====================
@@ -2221,7 +2223,7 @@ async fn test_find_file_vs_list_files_consistency() {
 
     // Create several files
     for i in 0..5 {
-        let name = format!("consistency_test_{}.txt", i);
+        let name = format!("consistency_test_{i}.txt");
         ops.write_file(&DirId::root(), &name, b"test").await
             .expect("Failed to write file");
     }
@@ -2307,7 +2309,7 @@ async fn test_find_file_performance_vs_list() {
 
     // Create many files
     for i in 0..20 {
-        let name = format!("perf_test_{:03}.txt", i);
+        let name = format!("perf_test_{i:03}.txt");
         ops.write_file(&DirId::root(), &name, b"x").await
             .expect("Failed to write file");
     }
@@ -2330,7 +2332,7 @@ async fn test_find_file_performance_vs_list() {
 
     // find_file should be faster (or at least not significantly slower)
     // We allow some variance since both are fast operations
-    println!("find_file: {:?}, list_files: {:?}", find_duration, list_duration);
+    println!("find_file: {find_duration:?}, list_files: {list_duration:?}");
     // Note: We don't assert strict timing as it can vary, but we log for visibility
 }
 
@@ -2405,7 +2407,7 @@ async fn test_change_password_wrong_old_password() {
     assert!(result.is_err(), "Should fail with wrong old password");
 
     // Verify original password still works
-    let original_key = oxcrypt_core::vault::config::extract_master_key(
+    let original_key = extract_master_key(
         &vault_path,
         common::TEST_PASSPHRASE
     ).expect("Original password should still work");
@@ -2476,15 +2478,15 @@ async fn test_change_password_multiple_times() {
     // Change password multiple times
     for i in 0..passwords.len() - 1 {
         change_password_async(&vault_path, passwords[i], passwords[i + 1]).await
-            .expect(&format!("Password change {} should succeed", i + 1));
+            .unwrap_or_else(|_| panic!("Password change {} should succeed", i + 1));
 
         // Verify old password no longer works
         let old_result = extract_master_key(&vault_path, passwords[i]);
-        assert!(old_result.is_err(), "Password {} should no longer work", i);
+        assert!(old_result.is_err(), "Password {i} should no longer work");
 
         // Verify new password works and data is intact
         let new_key = extract_master_key(&vault_path, passwords[i + 1])
-            .expect(&format!("Password {} should work", i + 1));
+            .unwrap_or_else(|_| panic!("Password {} should work", i + 1));
         let ops = VaultOperationsAsync::new(&vault_path, Arc::new(new_key));
         let content = ops.read_file(&DirId::root(), "persistent.txt").await
             .expect("Data should persist through password changes");
@@ -2556,7 +2558,7 @@ async fn test_change_password_with_unicode_filenames() {
 
     for (filename, expected) in test_cases {
         let content = ops.read_file(&DirId::root(), filename).await
-            .expect(&format!("Should read {}", filename));
+            .unwrap_or_else(|_| panic!("Should read {filename}"));
         assert_eq!(content.content, expected);
     }
 }

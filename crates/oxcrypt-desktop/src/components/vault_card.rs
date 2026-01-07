@@ -2,10 +2,10 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{Icon, IconName, IconSize};
+use crate::icons::{Icon, IconColor, IconName, IconSize};
 use crate::state::ManagedVault;
 
-/// A card component displaying a vault's name, path, and status
+/// A card component displaying a vault's name and status
 #[component]
 pub fn VaultCard(vault: ManagedVault, is_selected: bool, on_click: EventHandler<()>) -> Element {
     let is_mounted = vault.state.is_mounted();
@@ -30,36 +30,33 @@ pub fn VaultCard(vault: ManagedVault, is_selected: bool, on_click: EventHandler<
     } else {
         IconName::Lock
     };
-
-    // Truncate path for display, using ~/ for home directory
-    let path_str = vault.config.path.to_string_lossy();
-    let display_path = if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if path_str.starts_with(home_str.as_ref()) {
-            format!("~{}", &path_str[home_str.len()..])
-        } else {
-            path_str.to_string()
-        }
+    let icon_color = if is_mounted {
+        IconColor::Success
     } else {
-        path_str.to_string()
+        IconColor::Secondary
     };
-    let display_path = if display_path.len() > 35 {
-        format!("...{}", &display_path[display_path.len() - 32..])
+
+    // Backend display name
+    let backend_name = vault.config.preferred_backend.display_name();
+
+    // Status text
+    let status_text = if is_mounted {
+        "Mounted"
     } else {
-        display_path
+        backend_name
     };
 
     rsx! {
         div {
             class: "{card_class}",
-            onclick: move |_| on_click.call(()),
+            onclick: move |_| { on_click.call(()); },
 
             // Icon
             div {
                 class: "{icon_class}",
                 span {
-                    class: "icon-container w-full h-full",
-                    Icon { name: icon_name, size: IconSize(20) }
+                class: "icon-container w-full h-full",
+                    Icon { name: icon_name, size: IconSize(20), color: icon_color }
                 }
             }
 
@@ -73,10 +70,10 @@ pub fn VaultCard(vault: ManagedVault, is_selected: bool, on_click: EventHandler<
                     "{vault.config.name}"
                 }
 
-                // Path
+                // Status/Backend
                 p {
-                    class: "text-[11px] text-gray-500 dark:text-gray-400 truncate mt-0.5",
-                    "{display_path}"
+                    class: "text-[11px] text-gray-500 dark:text-gray-400 mt-0.5",
+                    "{status_text}"
                 }
             }
 

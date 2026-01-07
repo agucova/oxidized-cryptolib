@@ -1,7 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::name::{decrypt_filename, encrypt_filename, hash_dir_id};
 use std::collections::HashMap;
+use std::hint::black_box;
 
 fn setup_master_key() -> MasterKey {
     MasterKey::random().unwrap()
@@ -91,7 +92,7 @@ fn bench_path_resolution(c: &mut Criterion) {
     
     // Build a directory tree structure
     let mut dir_map: HashMap<String, String> = HashMap::new();
-    dir_map.insert("".to_string(), String::new()); // root
+    dir_map.insert(String::new(), String::new()); // root
     
     // Add some nested directories
     let paths = [

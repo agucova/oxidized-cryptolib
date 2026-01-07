@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Swift FFI bindings for Cryptomator vault FSKit integration"
+readme = "README.md"
+keywords = ["cryptomator", "fskit", "encryption", "macos"]
+categories = ["filesystem", "cryptography"]
 
 [lib]
 crate-type = ["staticlib", "lib"]
@@ -19,8 +22,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 dashmap = "6"
 tracing = { workspace = true }
 libc = "0.2.178"
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+block2 = "0.6.2"
+secrecy = "0.10.3"
+thiserror.workspace = true
+parking_lot = "0.12.5"
 
 [build-dependencies]
+cc = "1.2.51"
 swift-bridge-build = "0.1.58"
 
 [dev-dependencies]
@@ -31,3 +41,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 default = []
 # Enable tokio-console for async debugging
 tokio-console = []
+
+[lints]
+workspace = true

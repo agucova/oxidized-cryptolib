@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/oxcrypt-core", "crates/oxcrypt", "crates/oxcrypt-fuse", "crates/oxcrypt-fskit", "crates/oxcrypt-webdav", "crates/oxcrypt-nfs", "crates/oxcrypt-desktop", "crates/oxbench", "crates/oxcrypt-mount"]
+members = ["crates/oxcrypt-core", "crates/oxcrypt-cli", "crates/oxcrypt-fuse", "crates/oxcrypt-fskit", "crates/oxcrypt-fileprovider", "crates/oxcrypt-webdav", "crates/oxcrypt-nfs", "crates/oxcrypt-desktop", "crates/oxcrypt-bench", "crates/oxcrypt-mount"]
 # Note: oxcrypt-fuse requires macFUSE (macOS) or libfuse (Linux) to be installed
 # Note: oxcrypt-fskit requires macOS 15.4+ and the Swift extension enabled
 # Note: oxcrypt-webdav provides WebDAV mounting (no kernel extensions required)
@@ -22,21 +22,69 @@ thiserror = "2"
 tracing = "0.1"
 console-subscriber = { version = "0.5" }
 
+[workspace.lints.clippy]
+# Lint groups
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Allow noisy/subjective pedantic lints
+doc_markdown = "allow"
+similar_names = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+items_after_statements = "allow"
+too_many_lines = "allow"
+single_match_else = "allow"
+if_not_else = "allow"
+redundant_else = "allow"
+ptr_as_ptr = "allow"              # Common in FFI code
+cast_precision_loss = "allow"     # Intentional in stats/timing code
+unreadable_literal = "allow"      # Hex constants are clearer without separators
+
+# Cargo group exception - often unavoidable with transitive deps
+multiple_crate_versions = "allow"
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
 [profile.release]
-lto = true
+lto = "fat"
 codegen-units = 1
-strip = true
+strip = false
 opt-level = 3
 
 [profile.dev]
 opt-level = 0
+# Reduce debug info for faster compilation (30-70% speedup)
+debug = "line-tables-only"      # Fast codegen, still useful for backtraces
+split-debuginfo = "unpacked"    # macOS-specific optimization (70% faster incremental builds)
+
+# Disable debug info for dependencies (rarely debug into them)
+# This significantly reduces compile time and target directory size
+[profile.dev.package."*"]
+debug = false
+
+# Optional: Full debug profile for when you need detailed debugger info
+# Use with: cargo build --profile debugging
+[profile.debugging]
+inherits = "dev"
+debug = true  # Full debug info for detailed debugging
 
 [profile.test]
 opt-level = 2
 
-# Patch fuser to fix macOS rename bug (truncated source filename)
+# Faster release-like profile for development testing
+# Use with: cargo build --profile release-dev
+[profile.release-dev]
+inherits = "release"
+lto = "thin"         # Faster than "fat", still good optimization
+codegen-units = 16   # Faster compilation than 1
+strip = "debuginfo"  # Remove debug info but keep symbols
+
+# macOS rename fix: Use fuser 0.16+ with macfuse-4-compat feature
 # See: https://github.com/cberner/fuser/pull/342
-# This patches fuser globally to 0.15.1 with the fix. Linux stays on 0.15.1 too.
-# TODO: Remove this patch when fuser 0.17+ is released with the fix
-[patch.crates-io]
-fuser = { git = "https://github.com/nicolaspapp/fuser.git", rev = "f4b1ba26c340c45a6c205c471333b806302d6acf" }
+# The macfuse-4-compat feature adds flags/padding to fuse_rename_in for macFUSE 5.x compatibility

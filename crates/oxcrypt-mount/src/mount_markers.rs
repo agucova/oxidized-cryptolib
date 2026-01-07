@@ -96,7 +96,7 @@ pub fn is_fuse_fstype(fstype: &str) -> bool {
     let fstype_lower = fstype.to_lowercase();
     FUSE_FSTYPES
         .iter()
-        .any(|ft| fstype_lower == *ft || fstype_lower.starts_with(&format!("{}.", ft)))
+        .any(|ft| fstype_lower == *ft || fstype_lower.starts_with(&format!("{ft}.")))
 }
 
 /// Get all system mounts with detailed metadata.
@@ -142,26 +142,78 @@ pub fn find_fuse_mounts() -> Result<Vec<SystemMount>> {
 // Platform-specific implementations
 // ============================================================================
 
+/// Timeout for mount command execution.
+/// Ghost mounts can cause the mount command to block indefinitely.
+/// Keep this short (1s) since the mount command should respond instantly on healthy systems.
+#[cfg(target_os = "macos")]
+const MOUNT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Parse macOS mount output.
 ///
 /// Format: `{fsname} on {mountpoint} ({fstype}, {options...})`
 /// Example: `cryptomator:myvault on /Users/me/vault (macfuse, nodev, nosuid)`
+///
+/// Uses timeout protection because the `mount` command can block indefinitely
+/// when ghost FUSE mounts exist in the system. Note that `mount` uses stdio
+/// buffering, so when it blocks on a ghost mount, buffered output isn't flushed
+/// even though some lines have been written. We kill the process on timeout
+/// and return an empty list with a warning.
 #[cfg(target_os = "macos")]
 fn get_system_mounts_macos() -> Result<Vec<SystemMount>> {
-    let output = std::process::Command::new("mount")
-        .output()
-        .context("Failed to run mount command")?;
+    use std::sync::mpsc;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut mounts = Vec::new();
+    // Spawn the mount command with stdin from /dev/null
+    let child = std::process::Command::new("mount")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn mount command")?;
 
-    for line in stdout.lines() {
-        if let Some(mount) = parse_macos_mount_line(line) {
-            mounts.push(mount);
+    // Use a channel to wait for the command with a timeout
+    let (tx, rx) = mpsc::channel();
+    let child_id = child.id();
+
+    std::thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(MOUNT_COMMAND_TIMEOUT) {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut mounts = Vec::new();
+
+            for line in stdout.lines() {
+                if let Some(mount) = parse_macos_mount_line(line) {
+                    mounts.push(mount);
+                }
+            }
+
+            Ok(mounts)
+        }
+        Ok(Err(e)) => Err(anyhow::anyhow!("Mount command failed: {e}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Kill the process - unlike threads, subprocesses can be killed
+            #[cfg(unix)]
+            unsafe {
+                // child_id is u32 (from Child::id()), cast to i32 for libc::kill
+                libc::kill(i32::try_from(child_id).unwrap_or(-1), libc::SIGKILL);
+            }
+            // Return empty list with warning - allows cleanup operations to continue
+            // even when ghost mounts are blocking the mount command
+            tracing::warn!(
+                "Mount command timed out after {:?} - possible ghost mounts blocking. \
+                 Returning empty mount list.",
+                MOUNT_COMMAND_TIMEOUT
+            );
+            Ok(Vec::new())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            tracing::warn!("Mount command thread terminated unexpectedly. Returning empty mount list.");
+            Ok(Vec::new())
         }
     }
-
-    Ok(mounts)
 }
 
 #[cfg(target_os = "macos")]

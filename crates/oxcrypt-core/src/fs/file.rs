@@ -26,25 +26,30 @@ pub struct FileContext {
 }
 
 impl FileContext {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
         self.filename = Some(filename.into());
         self
     }
 
+    #[must_use]
     pub fn with_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.encrypted_path = Some(path.into());
         self
     }
 
+    #[must_use]
     pub fn with_dir_id(mut self, dir_id: impl Into<String>) -> Self {
         self.dir_id = Some(dir_id.into());
         self
     }
 
+    #[must_use]
     pub fn with_chunk(mut self, chunk_number: usize) -> Self {
         self.chunk_number = Some(chunk_number);
         self
@@ -108,6 +113,7 @@ impl From<io::Error> for FileError {
 
 impl FileError {
     /// Create an IO error with context
+    #[must_use]
     pub fn io_with_context(source: io::Error, context: FileContext) -> Self {
         FileError::Io { source, context }
     }
@@ -169,11 +175,13 @@ impl From<io::Error> for FileDecryptionError {
 
 impl FileDecryptionError {
     /// Create an IO error with context
+    #[must_use]
     pub fn io_with_context(source: io::Error, context: FileContext) -> Self {
         FileDecryptionError::Io { source, context }
     }
 
     /// Add or update context on an existing error
+    #[must_use]
     pub fn with_context(self, context: FileContext) -> Self {
         match self {
             FileDecryptionError::HeaderDecryption { .. } => {
@@ -236,6 +244,7 @@ impl From<io::Error> for FileEncryptionError {
 
 impl FileEncryptionError {
     /// Create an IO error with context
+    #[must_use]
     pub fn io_with_context(source: io::Error, context: FileContext) -> Self {
         FileEncryptionError::Io { source, context }
     }
@@ -277,7 +286,7 @@ pub fn decrypt_file_header(
     encrypted_header: &[u8],
     master_key: &MasterKey,
 ) -> Result<FileHeader, FileDecryptionError> {
-    decrypt_file_header_with_context(encrypted_header, master_key, FileContext::new())
+    decrypt_file_header_with_context(encrypted_header, master_key, &FileContext::new())
 }
 
 /// Decrypt a file header with contextual error information.
@@ -288,7 +297,7 @@ pub fn decrypt_file_header(
 pub fn decrypt_file_header_with_context(
     encrypted_header: &[u8],
     master_key: &MasterKey,
-    context: FileContext,
+    context: &FileContext,
 ) -> Result<FileHeader, FileDecryptionError> {
     trace!("Decrypting file header");
 
@@ -299,7 +308,7 @@ pub fn decrypt_file_header_with_context(
                 "expected 68 bytes, got {} bytes",
                 encrypted_header.len()
             ),
-            context,
+            context: context.clone(),
         });
     }
 
@@ -327,7 +336,7 @@ pub fn decrypt_file_header_with_context(
             warn!("Invalid header format after decryption");
             return Err(FileDecryptionError::InvalidHeader {
                 reason: format!("decrypted header has incorrect size: expected 40 bytes, got {}", decrypted.len()),
-                context,
+                context: context.clone(),
             });
         }
 
@@ -360,7 +369,7 @@ pub fn decrypt_file_content(
     content_key: &[u8; 32],
     header_nonce: &[u8],
 ) -> Result<Vec<u8>, FileDecryptionError> {
-    decrypt_file_content_with_context(encrypted_content, content_key, header_nonce, FileContext::new())
+    decrypt_file_content_with_context(encrypted_content, content_key, header_nonce, &FileContext::new())
 }
 
 /// Decrypt file content with contextual error information.
@@ -372,7 +381,7 @@ pub fn decrypt_file_content_with_context(
     encrypted_content: &[u8],
     content_key: &[u8; 32],
     header_nonce: &[u8],
-    base_context: FileContext,
+    base_context: &FileContext,
 ) -> Result<Vec<u8>, FileDecryptionError> {
     let key = Key::<Aes256Gcm>::from_slice(content_key);
     let cipher = Aes256Gcm::new(key);
@@ -437,14 +446,14 @@ pub fn encrypt_file_header(
     content_key: &[u8; 32],
     master_key: &MasterKey,
 ) -> Result<Vec<u8>, FileEncryptionError> {
-    encrypt_file_header_with_context(content_key, master_key, FileContext::new())
+    encrypt_file_header_with_context(content_key, master_key, &FileContext::new())
 }
 
 /// Encrypt a file header with contextual error information.
 pub fn encrypt_file_header_with_context(
     content_key: &[u8; 32],
     master_key: &MasterKey,
-    context: FileContext,
+    context: &FileContext,
 ) -> Result<Vec<u8>, FileEncryptionError> {
     let mut header_nonce = [0u8; 12];
     rand::rng().fill_bytes(&mut header_nonce);
@@ -480,7 +489,7 @@ pub fn encrypt_file_content(
     content_key: &[u8; 32],
     header_nonce: &[u8; 12],
 ) -> Result<Vec<u8>, FileEncryptionError> {
-    encrypt_file_content_with_context(content, content_key, header_nonce, FileContext::new())
+    encrypt_file_content_with_context(content, content_key, header_nonce, &FileContext::new())
 }
 
 /// Encrypt file content with contextual error information.
@@ -488,7 +497,7 @@ pub fn encrypt_file_content_with_context(
     content: &[u8],
     content_key: &[u8; 32],
     header_nonce: &[u8; 12],
-    base_context: FileContext,
+    base_context: &FileContext,
 ) -> Result<Vec<u8>, FileEncryptionError> {
     let key = Key::<Aes256Gcm>::from_slice(content_key);
     let cipher = Aes256Gcm::new(key);
@@ -587,14 +596,14 @@ pub fn decrypt_file(path: &Path, master_key: &MasterKey) -> Result<DecryptedFile
     }
 
     debug!("Decrypting header");
-    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, context.clone())?;
+    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, &context)?;
 
     debug!("Decrypting content");
     let content = decrypt_file_content_with_context(
         &encrypted[68..],
         &header.content_key,
         &encrypted[0..12],
-        context,
+        &context,
     )?;
 
     Ok(DecryptedFile { header, content })
@@ -631,12 +640,12 @@ pub fn decrypt_file_with_context(
         }));
     }
 
-    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, context.clone())?;
+    let header = decrypt_file_header_with_context(&encrypted[0..68], master_key, &context)?;
     let content = decrypt_file_content_with_context(
         &encrypted[68..],
         &header.content_key,
         &encrypted[0..12],
-        context,
+        &context,
     )?;
 
     Ok(DecryptedFile { header, content })
@@ -723,7 +732,7 @@ pub fn decrypt_dir_id_backup(
     }
 
     // Decrypt the header to get the content key
-    let header = decrypt_file_header_with_context(&encrypted_data[..68], master_key, context.clone())?;
+    let header = decrypt_file_header_with_context(&encrypted_data[..68], master_key, &context)?;
 
     // Decrypt the content (if any - empty for root directory)
     let content = if encrypted_data.len() > 68 {
@@ -731,7 +740,7 @@ pub fn decrypt_dir_id_backup(
             &encrypted_data[68..],
             &header.content_key,
             &encrypted_data[..12],
-            context.clone(),
+            &context,
         )?
     } else {
         Vec::new()
@@ -739,7 +748,7 @@ pub fn decrypt_dir_id_backup(
 
     // Convert to string (directory IDs are US-ASCII in Java, valid UTF-8)
     String::from_utf8(content).map_err(|e| FileDecryptionError::InvalidHeader {
-        reason: format!("dirid.c9r contains invalid UTF-8: {}", e),
+        reason: format!("dirid.c9r contains invalid UTF-8: {e}"),
         context,
     })
 }

@@ -83,10 +83,9 @@ impl Platform {
     /// Returns "Settings" on macOS, "Preferences" on Linux, "Options" on Windows
     pub const fn settings_label(&self) -> &'static str {
         match self {
-            Platform::MacOS => "Settings",
             Platform::Linux => "Preferences",
             Platform::Windows => "Options",
-            Platform::Unknown => "Settings",
+            Platform::MacOS | Platform::Unknown => "Settings",
         }
     }
 

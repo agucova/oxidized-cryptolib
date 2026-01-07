@@ -474,7 +474,7 @@ async fn test_sequential_numbers() {
 
     // Sequential 32-bit numbers (catches endianness issues)
     let content: Vec<u8> = (0u32..10000)
-        .flat_map(|n| n.to_le_bytes())
+        .flat_map(u32::to_le_bytes)
         .collect();
 
     let expected_hash = sha256(&content);

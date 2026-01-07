@@ -1,5 +1,7 @@
 //! Integration tests for vault write operations
 
+#![allow(clippy::cast_possible_truncation)] // Test code with safe type conversions
+
 mod common;
 
 use common::vault_builder::VaultBuilder;
@@ -1092,7 +1094,7 @@ fn test_delete_directory_recursive_many_files() {
     // Create directory with many files
     let mut builder = VaultBuilder::new();
     for i in 0..50 {
-        builder = builder.add_file(&format!("many_files/file_{i}.txt"), format!("content {i}").as_bytes());
+        builder = builder.add_file(format!("many_files/file_{i}.txt"), format!("content {i}").as_bytes());
     }
     let (vault_path, master_key) = builder.build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
@@ -1110,7 +1112,7 @@ fn test_rename_directory_with_many_children() {
     // Verify renaming a directory with many children works correctly
     let mut builder = VaultBuilder::new();
     for i in 0..20 {
-        builder = builder.add_file(&format!("parent/file_{i}.txt"), format!("content {i}").as_bytes());
+        builder = builder.add_file(format!("parent/file_{i}.txt"), format!("content {i}").as_bytes());
     }
     let (vault_path, master_key) = builder.build();
     let vault_ops = VaultOperations::new(&vault_path, master_key);
@@ -1202,7 +1204,7 @@ fn test_rename_file_special_filesystem_characters() {
     for special_name in special_names {
         vault_ops
             .rename_file(&DirId::root(),&current_name, special_name)
-            .expect(&format!("Failed to rename to '{}'", special_name));
+            .unwrap_or_else(|_| panic!("Failed to rename to '{special_name}'"));
 
         let decrypted = vault_ops.read_file(&DirId::root(),special_name).unwrap();
         assert_eq!(decrypted.content, b"content");
@@ -1958,12 +1960,12 @@ fn test_create_symlink_roundtrip() {
     for (name, target) in test_cases {
         vault_ops
             .create_symlink(&DirId::root(), name, target)
-            .expect(&format!("Failed to create symlink '{}'", name));
+            .unwrap_or_else(|_| panic!("Failed to create symlink '{name}'"));
 
         let read_target = vault_ops
             .read_symlink(&DirId::root(), name)
-            .expect(&format!("Failed to read symlink '{}'", name));
-        assert_eq!(read_target, target, "Target mismatch for symlink '{}'", name);
+            .unwrap_or_else(|_| panic!("Failed to read symlink '{name}'"));
+        assert_eq!(read_target, target, "Target mismatch for symlink '{name}'");
     }
 }
 
@@ -2176,20 +2178,20 @@ fn test_symlink_path_extension_correct() {
 
     let entries: Vec<_> = fs::read_dir(&storage_path)
         .expect("Failed to read storage directory")
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .collect();
 
     // Find the symlink directory
     let symlink_entry = entries.iter().find(|e| {
         let name = e.file_name().to_string_lossy().to_string();
         // Should end with .c9r, not have double extension
-        name.ends_with(".c9r") && !name.ends_with(".c9r.c9r") && e.path().is_dir()
+        std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9r")) && !name.ends_with(".c9r.c9r") && e.path().is_dir()
     });
 
     assert!(
         symlink_entry.is_some(),
         "Symlink directory should exist with single .c9r extension. Found entries: {:?}",
-        entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        entries.iter().map(fs::DirEntry::file_name).collect::<Vec<_>>()
     );
 
     let symlink_dir = symlink_entry.unwrap().path();
@@ -2358,21 +2360,20 @@ fn test_recover_directory_tree_basic() {
     for (dir_id, name) in [(&docs_id, "Documents"), (&photos_id, "Photos"), (&vacation_id, "Vacation")] {
         let content_dir = vault_ops
             .calculate_directory_storage_path(dir_id)
-            .expect(&format!("Failed to get content dir for {}", name));
+            .unwrap_or_else(|_| panic!("Failed to get content dir for {name}"));
 
         let dirid_path = content_dir.join("dirid.c9r");
-        assert!(dirid_path.exists(), "dirid.c9r should exist in {} content directory", name);
+        assert!(dirid_path.exists(), "dirid.c9r should exist in {name} content directory");
 
         // Verify the backup contains the directory's own ID
         let recovered_id = vault_ops
             .recover_dir_id_from_backup(&content_dir)
-            .expect(&format!("Failed to recover ID for {}", name));
+            .unwrap_or_else(|_| panic!("Failed to recover ID for {name}"));
 
         assert_eq!(
             recovered_id.as_str(),
             dir_id.as_str(),
-            "{} backup should contain its own ID",
-            name
+            "{name} backup should contain its own ID"
         );
     }
 }
@@ -2412,20 +2413,19 @@ fn test_dir_id_backup_deeply_nested() {
     ] {
         let content_dir = vault_ops
             .calculate_directory_storage_path(dir_id)
-            .expect(&format!("Failed to get content dir for {}", name));
+            .unwrap_or_else(|_| panic!("Failed to get content dir for {name}"));
 
         let dirid_path = content_dir.join("dirid.c9r");
-        assert!(dirid_path.exists(), "dirid.c9r should exist for {}", name);
+        assert!(dirid_path.exists(), "dirid.c9r should exist for {name}");
 
         let recovered_id = vault_ops
             .recover_dir_id_from_backup(&content_dir)
-            .expect(&format!("Failed to recover ID for {}", name));
+            .unwrap_or_else(|_| panic!("Failed to recover ID for {name}"));
 
         assert_eq!(
             recovered_id.as_str(),
             dir_id.as_str(),
-            "{} backup should contain its own ID, not parent's",
-            name
+            "{name} backup should contain its own ID, not parent's"
         );
     }
 }
@@ -2476,7 +2476,7 @@ fn test_encrypt_decrypt_parent_dir_id_roundtrip() {
 
     // Test various parent IDs
     let test_cases = vec![
-        ("".to_string(), "child-uuid-12345".to_string()),           // Root parent
+        (String::new(), "child-uuid-12345".to_string()),           // Root parent
         ("parent-uuid-abcdef".to_string(), "child-uuid-12345".to_string()),
         ("a".repeat(36), "b".repeat(36)),
     ];
@@ -2490,8 +2490,7 @@ fn test_encrypt_decrypt_parent_dir_id_roundtrip() {
 
         assert_eq!(
             decrypted, parent_id,
-            "Roundtrip failed for parent='{}' child='{}'",
-            parent_id, child_id
+            "Roundtrip failed for parent='{parent_id}' child='{child_id}'"
         );
     }
 }
@@ -2552,7 +2551,7 @@ fn test_shortened_directory_has_dirid_backup() {
         let path = entry.path();
         let path_str = path.to_string_lossy();
 
-        if path.is_dir() && path_str.ends_with(".c9s") {
+        if path.is_dir() && std::path::Path::new(path_str.as_ref()).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("c9s")) {
             let dir_c9r = path.join("dir.c9r");
             if dir_c9r.exists() {
                 let stored_id = fs::read_to_string(&dir_c9r).expect("Failed to read dir.c9r");

@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use oxcrypt_core::vault::master_key::MasterKeyFile;
+use std::hint::black_box;
 
 fn bench_vault_unlock(c: &mut Criterion) {
     let mut group = c.benchmark_group("vault_unlock");
@@ -11,8 +12,8 @@ fn bench_vault_unlock(c: &mut Criterion) {
         b.iter(|| {
             // Parse and unlock master key file (includes scrypt key derivation)
             let master_key_file: MasterKeyFile = serde_json::from_str(masterkey_contents).unwrap();
-            let master_key = master_key_file.unlock("123456789");
-            
+            let master_key = master_key_file.unlock("123456789").unwrap();
+
             black_box(master_key);
         });
     });
@@ -36,7 +37,7 @@ fn bench_key_derivation(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.iter(|| {
                 let password_str = std::str::from_utf8(password).unwrap();
-                let master_key = master_key_file.unlock(password_str);
+                let master_key = master_key_file.unlock(password_str).unwrap();
                 black_box(master_key);
             });
         });
@@ -77,12 +78,12 @@ fn bench_complete_vault_unlock(c: &mut Criterion) {
     group.bench_function("parse_and_unlock", |b| {
         b.iter(|| {
             // Parse vault config (would validate JWT in real implementation)
-            let _vault_config_parsed = vault_config;
-            
+            black_box(vault_config);
+
             // Unlock master key
             let master_key_file: MasterKeyFile = serde_json::from_str(masterkey_contents).unwrap();
-            let master_key = master_key_file.unlock("123456789");
-            
+            let master_key = master_key_file.unlock("123456789").unwrap();
+
             black_box(master_key);
         });
     });

@@ -99,8 +99,7 @@ fn test_list_file_as_directory() {
     let kind = result.unwrap_err().kind();
     assert!(
         kind == ErrorKind::NotADirectory || kind == ErrorKind::NotFound || kind == ErrorKind::Other,
-        "Expected NotADirectory or NotFound, got {:?}",
-        kind
+        "Expected NotADirectory or NotFound, got {kind:?}"
     );
 }
 
@@ -156,8 +155,7 @@ fn test_delete_directory_as_file() {
         kind == ErrorKind::IsADirectory
             || kind == ErrorKind::PermissionDenied
             || kind == ErrorKind::Other,
-        "Expected IsADirectory or PermissionDenied, got {:?}",
-        kind
+        "Expected IsADirectory or PermissionDenied, got {kind:?}"
     );
 }
 
@@ -173,8 +171,7 @@ fn test_read_directory() {
     let kind = result.unwrap_err().kind();
     assert!(
         kind == ErrorKind::IsADirectory || kind == ErrorKind::Other,
-        "Expected IsADirectory, got {:?}",
-        kind
+        "Expected IsADirectory, got {kind:?}"
     );
 }
 
@@ -207,8 +204,7 @@ fn test_rmdir_nonempty() {
     let kind = result.unwrap_err().kind();
     assert!(
         kind == ErrorKind::DirectoryNotEmpty || kind == ErrorKind::Other,
-        "Expected DirectoryNotEmpty, got {:?}",
-        kind
+        "Expected DirectoryNotEmpty, got {kind:?}"
     );
 }
 
@@ -240,8 +236,7 @@ fn test_mkdir_existing_directory() {
     let kind = result.unwrap_err().kind();
     assert!(
         kind == ErrorKind::AlreadyExists || kind == ErrorKind::Other,
-        "Expected AlreadyExists, got {:?}",
-        kind
+        "Expected AlreadyExists, got {kind:?}"
     );
 }
 
@@ -318,7 +313,7 @@ fn test_write_path_traversal_blocked() {
     // We can't easily verify this without checking the real filesystem
     // But the path should be rejected or normalized
     match result {
-        Ok(_) => {
+        Ok(()) => {
             // If it succeeded, it should have written within the vault
             // The file should exist somewhere in the mount
         }

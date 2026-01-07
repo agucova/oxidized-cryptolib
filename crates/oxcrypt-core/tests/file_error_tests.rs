@@ -36,14 +36,14 @@ fn generate_nonce() -> [u8; 12] {
 #[test]
 fn test_file_context_display_empty() {
     let context = FileContext::new();
-    let display = format!("{}", context);
+    let display = format!("{context}");
     assert_eq!(display, "(no context)");
 }
 
 #[test]
 fn test_file_context_display_with_filename() {
     let context = FileContext::new().with_filename("test.txt");
-    let display = format!("{}", context);
+    let display = format!("{context}");
     assert!(display.contains("file 'test.txt'"));
 }
 
@@ -51,38 +51,38 @@ fn test_file_context_display_with_filename() {
 fn test_file_context_display_with_empty_dir_id() {
     // Empty dir_id (root) should display as <root>
     let context = FileContext::new().with_dir_id("");
-    let display = format!("{}", context);
-    assert!(display.contains("<root>"), "Expected '<root>', got: {}", display);
+    let display = format!("{context}");
+    assert!(display.contains("<root>"), "Expected '<root>', got: {display}");
 }
 
 #[test]
 fn test_file_context_display_with_short_dir_id() {
     // Short dir_id (8 or fewer chars) should be shown in full
     let context = FileContext::new().with_dir_id("12345678");
-    let display = format!("{}", context);
-    assert!(display.contains("12345678"), "Expected full dir_id, got: {}", display);
+    let display = format!("{context}");
+    assert!(display.contains("12345678"), "Expected full dir_id, got: {display}");
 }
 
 #[test]
 fn test_file_context_display_with_long_dir_id() {
     // Long dir_id (> 8 chars) should be truncated with "..."
     let context = FileContext::new().with_dir_id("123456789abcdef");
-    let display = format!("{}", context);
-    assert!(display.contains("12345678..."), "Expected truncated dir_id, got: {}", display);
+    let display = format!("{context}");
+    assert!(display.contains("12345678..."), "Expected truncated dir_id, got: {display}");
 }
 
 #[test]
 fn test_file_context_display_with_chunk() {
     let context = FileContext::new().with_chunk(5);
-    let display = format!("{}", context);
-    assert!(display.contains("chunk 5"), "Expected 'chunk 5', got: {}", display);
+    let display = format!("{context}");
+    assert!(display.contains("chunk 5"), "Expected 'chunk 5', got: {display}");
 }
 
 #[test]
 fn test_file_context_display_with_path() {
     let context = FileContext::new().with_path("/some/encrypted/path");
-    let display = format!("{}", context);
-    assert!(display.contains("/some/encrypted/path"), "Expected path, got: {}", display);
+    let display = format!("{context}");
+    assert!(display.contains("/some/encrypted/path"), "Expected path, got: {display}");
 }
 
 #[test]
@@ -93,12 +93,12 @@ fn test_file_context_display_combined() {
         .with_chunk(3)
         .with_path("/vault/d/AB/XYZ");
 
-    let display = format!("{}", context);
+    let display = format!("{context}");
 
-    assert!(display.contains("file 'secret.txt'"), "Missing filename in: {}", display);
-    assert!(display.contains("abcdefgh..."), "Missing truncated dir_id in: {}", display);
-    assert!(display.contains("chunk 3"), "Missing chunk in: {}", display);
-    assert!(display.contains("AB/XYZ"), "Missing path in: {}", display);
+    assert!(display.contains("file 'secret.txt'"), "Missing filename in: {display}");
+    assert!(display.contains("abcdefgh..."), "Missing truncated dir_id in: {display}");
+    assert!(display.contains("chunk 3"), "Missing chunk in: {display}");
+    assert!(display.contains("AB/XYZ"), "Missing path in: {display}");
 }
 
 // =============================================================================
@@ -117,7 +117,7 @@ fn test_header_too_short() {
             assert!(reason.contains("expected 68 bytes"));
             assert!(reason.contains("50"));
         }
-        other => panic!("Expected InvalidHeader error, got: {:?}", other),
+        other => panic!("Expected InvalidHeader error, got: {other:?}"),
     }
 }
 
@@ -133,7 +133,7 @@ fn test_header_too_long() {
             assert!(reason.contains("expected 68 bytes"));
             assert!(reason.contains("100"));
         }
-        other => panic!("Expected InvalidHeader error, got: {:?}", other),
+        other => panic!("Expected InvalidHeader error, got: {other:?}"),
     }
 }
 
@@ -150,7 +150,7 @@ fn test_header_wrong_key() {
         Err(FileDecryptionError::HeaderDecryption { .. }) => {
             // Expected - authentication tag mismatch
         }
-        other => panic!("Expected HeaderDecryption error, got: {:?}", other),
+        other => panic!("Expected HeaderDecryption error, got: {other:?}"),
     }
 }
 
@@ -163,14 +163,14 @@ fn test_header_decryption_with_context() {
         .with_filename("important.txt")
         .with_dir_id("test-dir-id");
 
-    let result = decrypt_file_header_with_context(&corrupted_header, &master_key, context);
+    let result = decrypt_file_header_with_context(&corrupted_header, &master_key, &context);
 
     match result {
         Err(FileDecryptionError::HeaderDecryption { context }) => {
             assert!(context.filename.as_deref() == Some("important.txt"));
             assert!(context.dir_id.as_deref() == Some("test-dir-id"));
         }
-        other => panic!("Expected HeaderDecryption error with context, got: {:?}", other),
+        other => panic!("Expected HeaderDecryption error with context, got: {other:?}"),
     }
 }
 
@@ -192,7 +192,7 @@ fn test_incomplete_chunk_error() {
         Err(FileDecryptionError::IncompleteChunk { actual_size, .. }) => {
             assert_eq!(actual_size, 20);
         }
-        other => panic!("Expected IncompleteChunk error, got: {:?}", other),
+        other => panic!("Expected IncompleteChunk error, got: {other:?}"),
     }
 }
 
@@ -208,7 +208,7 @@ fn test_incomplete_chunk_with_context() {
         &incomplete_chunk,
         &content_key,
         &header_nonce,
-        context,
+        &context,
     );
 
     match result {
@@ -218,7 +218,7 @@ fn test_incomplete_chunk_with_context() {
             // The chunk number should be set to 0 (first chunk)
             assert_eq!(context.chunk_number, Some(0));
         }
-        other => panic!("Expected IncompleteChunk error with context, got: {:?}", other),
+        other => panic!("Expected IncompleteChunk error with context, got: {other:?}"),
     }
 }
 
@@ -239,7 +239,7 @@ fn test_content_tampered_first_chunk() {
         Err(FileDecryptionError::ContentDecryption { context }) => {
             assert_eq!(context.chunk_number, Some(0));
         }
-        other => panic!("Expected ContentDecryption error, got: {:?}", other),
+        other => panic!("Expected ContentDecryption error, got: {other:?}"),
     }
 }
 
@@ -267,7 +267,7 @@ fn test_content_tampered_second_chunk() {
         Err(FileDecryptionError::ContentDecryption { context }) => {
             assert_eq!(context.chunk_number, Some(1), "Expected chunk 1, got: {:?}", context.chunk_number);
         }
-        other => panic!("Expected ContentDecryption error for chunk 1, got: {:?}", other),
+        other => panic!("Expected ContentDecryption error for chunk 1, got: {other:?}"),
     }
 }
 
@@ -302,7 +302,7 @@ fn test_decrypt_file_not_found() {
             assert_eq!(source.kind(), io::ErrorKind::NotFound);
             assert!(context.encrypted_path.is_some());
         }
-        other => panic!("Expected IO error, got: {:?}", other),
+        other => panic!("Expected IO error, got: {other:?}"),
     }
 }
 
@@ -319,9 +319,9 @@ fn test_decrypt_dir_marker_file() {
 
     match result {
         Err(FileError::Decryption(FileDecryptionError::InvalidHeader { reason, .. })) => {
-            assert!(reason.contains("dir.c9r"), "Error should mention dir.c9r: {}", reason);
+            assert!(reason.contains("dir.c9r"), "Error should mention dir.c9r: {reason}");
         }
-        other => panic!("Expected InvalidHeader error about dir.c9r, got: {:?}", other),
+        other => panic!("Expected InvalidHeader error about dir.c9r, got: {other:?}"),
     }
 }
 
@@ -338,10 +338,10 @@ fn test_decrypt_file_too_small() {
 
     match result {
         Err(FileError::Decryption(FileDecryptionError::InvalidHeader { reason, .. })) => {
-            assert!(reason.contains("too small"), "Error should mention size: {}", reason);
-            assert!(reason.contains("50"), "Error should mention actual size: {}", reason);
+            assert!(reason.contains("too small"), "Error should mention size: {reason}");
+            assert!(reason.contains("50"), "Error should mention actual size: {reason}");
         }
-        other => panic!("Expected InvalidHeader error about size, got: {:?}", other),
+        other => panic!("Expected InvalidHeader error about size, got: {other:?}"),
     }
 }
 
@@ -396,7 +396,7 @@ fn test_decrypt_file_with_context_dir_marker() {
             assert!(context.filename.as_deref() == Some("test_dir"));
             assert!(context.dir_id.as_deref() == Some("parent-id"));
         }
-        other => panic!("Expected InvalidHeader error, got: {:?}", other),
+        other => panic!("Expected InvalidHeader error, got: {other:?}"),
     }
 }
 
@@ -415,7 +415,7 @@ fn test_io_error_to_file_error() {
             // Default context should be empty
             assert!(context.filename.is_none());
         }
-        other => panic!("Expected Io error, got: {:?}", other),
+        other => panic!("Expected Io error, got: {other:?}"),
     }
 }
 
@@ -429,7 +429,7 @@ fn test_io_error_to_file_decryption_error() {
             assert_eq!(source.kind(), io::ErrorKind::NotFound);
             assert!(context.filename.is_none());
         }
-        other => panic!("Expected Io error, got: {:?}", other),
+        other => panic!("Expected Io error, got: {other:?}"),
     }
 }
 
@@ -443,7 +443,7 @@ fn test_io_error_to_file_encryption_error() {
             assert_eq!(source.kind(), io::ErrorKind::OutOfMemory);
             assert!(context.filename.is_none());
         }
-        other => panic!("Expected Io error, got: {:?}", other),
+        other => panic!("Expected Io error, got: {other:?}"),
     }
 }
 
@@ -459,7 +459,7 @@ fn test_file_error_io_with_context() {
             assert_eq!(source.kind(), io::ErrorKind::InvalidData);
             assert_eq!(context.filename.as_deref(), Some("bad_file.bin"));
         }
-        other => panic!("Expected Io error, got: {:?}", other),
+        other => panic!("Expected Io error, got: {other:?}"),
     }
 }
 
@@ -475,7 +475,7 @@ fn test_file_decryption_error_io_with_context() {
             assert_eq!(source.kind(), io::ErrorKind::BrokenPipe);
             assert_eq!(context.chunk_number, Some(42));
         }
-        other => panic!("Expected Io error, got: {:?}", other),
+        other => panic!("Expected Io error, got: {other:?}"),
     }
 }
 
@@ -491,7 +491,7 @@ fn test_file_encryption_error_io_with_context() {
             assert_eq!(source.kind(), io::ErrorKind::WriteZero);
             assert!(context.encrypted_path.is_some());
         }
-        other => panic!("Expected Io error, got: {:?}", other),
+        other => panic!("Expected Io error, got: {other:?}"),
     }
 }
 
@@ -512,7 +512,7 @@ fn test_header_decryption_with_context_transformation() {
         FileDecryptionError::HeaderDecryption { context } => {
             assert_eq!(context.filename.as_deref(), Some("new_file.txt"));
         }
-        other => panic!("Expected HeaderDecryption, got: {:?}", other),
+        other => panic!("Expected HeaderDecryption, got: {other:?}"),
     }
 }
 
@@ -529,7 +529,7 @@ fn test_content_decryption_with_context_transformation() {
         FileDecryptionError::ContentDecryption { context } => {
             assert_eq!(context.chunk_number, Some(7));
         }
-        other => panic!("Expected ContentDecryption, got: {:?}", other),
+        other => panic!("Expected ContentDecryption, got: {other:?}"),
     }
 }
 
@@ -548,7 +548,7 @@ fn test_invalid_header_with_context_transformation() {
             assert_eq!(reason, "test reason"); // Reason should be preserved
             assert_eq!(context.dir_id.as_deref(), Some("new-dir"));
         }
-        other => panic!("Expected InvalidHeader, got: {:?}", other),
+        other => panic!("Expected InvalidHeader, got: {other:?}"),
     }
 }
 
@@ -567,7 +567,7 @@ fn test_incomplete_chunk_with_context_transformation() {
             assert_eq!(actual_size, 15); // Size should be preserved
             assert_eq!(context.filename.as_deref(), Some("partial.bin"));
         }
-        other => panic!("Expected IncompleteChunk, got: {:?}", other),
+        other => panic!("Expected IncompleteChunk, got: {other:?}"),
     }
 }
 
@@ -587,7 +587,7 @@ fn test_io_error_with_context_transformation() {
             assert_eq!(source.kind(), io::ErrorKind::NotFound);
             assert!(context.encrypted_path.is_some());
         }
-        other => panic!("Expected Io, got: {:?}", other),
+        other => panic!("Expected Io, got: {other:?}"),
     }
 }
 
@@ -631,7 +631,7 @@ fn test_dir_id_backup_too_small() {
             assert!(reason.contains("too small"));
             assert!(context.filename.as_deref() == Some("dirid.c9r"));
         }
-        other => panic!("Expected InvalidHeader error, got: {:?}", other),
+        other => panic!("Expected InvalidHeader error, got: {other:?}"),
     }
 }
 
@@ -664,7 +664,7 @@ fn test_dir_id_backup_wrong_key() {
         Err(FileDecryptionError::HeaderDecryption { context }) => {
             assert!(context.filename.as_deref() == Some("dirid.c9r"));
         }
-        other => panic!("Expected HeaderDecryption error, got: {:?}", other),
+        other => panic!("Expected HeaderDecryption error, got: {other:?}"),
     }
 }
 
@@ -701,14 +701,14 @@ fn test_decrypted_file_debug_short_content() {
         content: b"Hello, World!".to_vec(),
     };
 
-    let debug_str = format!("{:?}", decrypted);
+    let debug_str = format!("{decrypted:?}");
 
     // Should contain the full content (< 100 bytes)
-    assert!(debug_str.contains("Hello, World!"), "Debug should show content: {}", debug_str);
+    assert!(debug_str.contains("Hello, World!"), "Debug should show content: {debug_str}");
     // Should NOT contain "..." for short content
-    assert!(!debug_str.ends_with("...\""), "Short content should not be truncated: {}", debug_str);
+    assert!(!debug_str.ends_with("...\""), "Short content should not be truncated: {debug_str}");
     // Content key should be redacted
-    assert!(debug_str.contains("[REDACTED]"), "Content key should be redacted: {}", debug_str);
+    assert!(debug_str.contains("[REDACTED]"), "Content key should be redacted: {debug_str}");
 }
 
 #[test]
@@ -724,12 +724,12 @@ fn test_decrypted_file_debug_long_content() {
         content,
     };
 
-    let debug_str = format!("{:?}", decrypted);
+    let debug_str = format!("{decrypted:?}");
 
     // Should contain truncated content with "..."
-    assert!(debug_str.contains("..."), "Long content should be truncated: {}", debug_str);
+    assert!(debug_str.contains("..."), "Long content should be truncated: {debug_str}");
     // Should contain the tag in hex
-    assert!(debug_str.contains("4242424242"), "Should show tag in hex: {}", debug_str);
+    assert!(debug_str.contains("4242424242"), "Should show tag in hex: {debug_str}");
 }
 
 #[test]
@@ -744,10 +744,10 @@ fn test_decrypted_file_debug_empty_content() {
         content: Vec::new(),
     };
 
-    let debug_str = format!("{:?}", decrypted);
+    let debug_str = format!("{decrypted:?}");
 
     // Should handle empty content gracefully
-    assert!(debug_str.contains("DecryptedFile"), "Should be a valid debug output: {}", debug_str);
+    assert!(debug_str.contains("DecryptedFile"), "Should be a valid debug output: {debug_str}");
 }
 
 #[test]
@@ -764,10 +764,10 @@ fn test_decrypted_file_debug_binary_content() {
         content,
     };
 
-    let debug_str = format!("{:?}", decrypted);
+    let debug_str = format!("{decrypted:?}");
 
     // Should handle binary content with lossy conversion
-    assert!(debug_str.contains("DecryptedFile"), "Should produce valid debug output: {}", debug_str);
+    assert!(debug_str.contains("DecryptedFile"), "Should produce valid debug output: {debug_str}");
 }
 
 // =============================================================================
@@ -781,15 +781,15 @@ fn test_file_header_debug_redacts_key() {
         tag: [0xAB; 16],
     };
 
-    let debug_str = format!("{:?}", header);
+    let debug_str = format!("{header:?}");
 
     // Content key should be redacted
-    assert!(debug_str.contains("[REDACTED]"), "Content key should be redacted: {}", debug_str);
+    assert!(debug_str.contains("[REDACTED]"), "Content key should be redacted: {debug_str}");
     // Should NOT contain the actual key bytes
-    assert!(!debug_str.contains("42424242"), "Should not expose key bytes: {}", debug_str);
+    assert!(!debug_str.contains("42424242"), "Should not expose key bytes: {debug_str}");
     // Tag should be shown in hex
     assert!(debug_str.contains("abab") || debug_str.contains("ABAB"),
-            "Tag should be shown in hex: {}", debug_str);
+            "Tag should be shown in hex: {debug_str}");
 }
 
 // =============================================================================
@@ -848,9 +848,9 @@ fn test_file_error_display() {
     let context = FileContext::new().with_filename("missing.txt");
     let error = FileError::io_with_context(io_error, context);
 
-    let display = format!("{}", error);
-    assert!(display.contains("IO error"), "Should mention IO error: {}", display);
-    assert!(display.contains("missing.txt"), "Should mention filename: {}", display);
+    let display = format!("{error}");
+    assert!(display.contains("IO error"), "Should mention IO error: {display}");
+    assert!(display.contains("missing.txt"), "Should mention filename: {display}");
 }
 
 #[test]
@@ -860,12 +860,12 @@ fn test_file_decryption_error_display() {
         .with_chunk(3);
 
     let error = FileDecryptionError::ContentDecryption { context };
-    let display = format!("{}", error);
+    let display = format!("{error}");
 
-    assert!(display.contains("secret.bin"), "Should mention filename: {}", display);
-    assert!(display.contains("chunk 3"), "Should mention chunk: {}", display);
+    assert!(display.contains("secret.bin"), "Should mention filename: {display}");
+    assert!(display.contains("chunk 3"), "Should mention chunk: {display}");
     assert!(display.contains("authentication") || display.contains("tampering"),
-            "Should mention auth failure: {}", display);
+            "Should mention auth failure: {display}");
 }
 
 #[test]
@@ -876,7 +876,7 @@ fn test_file_encryption_error_display() {
         context,
     };
 
-    let display = format!("{}", error);
-    assert!(display.contains("output.bin"), "Should mention filename: {}", display);
-    assert!(display.contains("test failure"), "Should mention reason: {}", display);
+    let display = format!("{error}");
+    assert!(display.contains("output.bin"), "Should mention filename: {display}");
+    assert!(display.contains("test failure"), "Should mention reason: {display}");
 }

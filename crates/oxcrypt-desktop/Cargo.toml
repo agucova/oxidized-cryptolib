@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["cryptomator", "encryption", "vault", "gui"]
+categories = ["cryptography"]
 
 [[bin]]
 name = "oxcrypt-desktop"
@@ -21,7 +24,7 @@ oxcrypt-mount = { path = "../oxcrypt-mount" }
 
 # Mount backends (all optional for cross-platform support)
 oxcrypt-fuse = { path = "../oxcrypt-fuse", optional = true }
-oxcrypt-fskit = { path = "../oxcrypt-fskit", optional = true }
+oxcrypt-fileprovider = { path = "../oxcrypt-fileprovider", optional = true }
 oxcrypt-nfs = { path = "../oxcrypt-nfs", optional = true }
 oxcrypt-webdav = { path = "../oxcrypt-webdav", optional = true }
 
@@ -54,19 +57,32 @@ image = { version = "0.25.9", features = ["png", "tiff"] }
 plotters = { version = "0.3.7", features = ["svg_backend"] }
 fs2 = "0.4.3"
 anyhow.workspace = true
+parking_lot = "0.12.5"
+tracing-appender = "0.2.4"
+chrono = { version = "0.4.42", features = ["serde"] }
+nix = { version = "0.30.1", features = ["signal"] }
+
+# High-performance allocator (optional, enabled by default)
+mimalloc = { version = "0.1", default-features = false, features = ["v3"], optional = true }
+base64 = "0.22.1"
 
 [features]
-# No default backend - platform-specific features should be enabled at build time
-# Linux/macOS: --features fuse (or fskit on macOS 15.4+)
-# Windows: --features webdav
-default = []
+# Default backends: Include commonly used backends
+# - fuse: Cross-platform (requires macFUSE on macOS or libfuse on Linux)
+# - fileprovider: macOS 13+ only (native, no installation needed)
+# - webdav: Cross-platform (no installation needed)
+# - nfs: Unix only (no installation needed)
+default = ["mimalloc", "fuse", "fileprovider", "webdav", "nfs"]
+
+# High-performance allocator for reduced allocation latency
+mimalloc = ["dep:mimalloc"]
 
 # FUSE backend (macOS with macFUSE, Linux with libfuse)
 # Not available on Windows
 fuse = ["dep:oxcrypt-fuse"]
 
-# FSKit backend (macOS 15.4+ only)
-fskit = ["dep:oxcrypt-fskit"]
+# File Provider backend (macOS 13+ only)
+fileprovider = ["dep:oxcrypt-fileprovider"]
 
 # WebDAV backend (cross-platform, no kernel extensions required)
 webdav = ["dep:oxcrypt-webdav"]
@@ -75,7 +91,7 @@ webdav = ["dep:oxcrypt-webdav"]
 nfs = ["dep:oxcrypt-nfs"]
 
 # All Unix backends
-unix-backends = ["fuse", "fskit", "nfs", "webdav"]
+unix-backends = ["fuse", "fileprovider", "nfs", "webdav"]
 
 # Enable tokio-console for async debugging (forwards to all backends)
 tokio-console = [
@@ -99,3 +115,6 @@ objc2-app-kit = { version = "0.3", features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

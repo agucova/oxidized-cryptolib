@@ -58,13 +58,13 @@ pub fn SettingsWindow() -> Element {
                         label: "General",
                         icon: "⚙️",
                         is_active: active_tab() == SettingsTab::General,
-                        on_click: move |_| active_tab.set(SettingsTab::General),
+                        on_click: move |()| active_tab.set(SettingsTab::General),
                     }
                     TabButton {
                         label: "About",
                         icon: "ℹ️",
                         is_active: active_tab() == SettingsTab::About,
-                        on_click: move |_| active_tab.set(SettingsTab::About),
+                        on_click: move |()| active_tab.set(SettingsTab::About),
                     }
                 }
             }
@@ -107,7 +107,7 @@ fn TabButton(props: TabButtonProps) -> Element {
     rsx! {
         button {
             class: tab_class,
-            onclick: move |_| props.on_click.call(()),
+            onclick: move |_| { props.on_click.call(()) },
             span { class: "mr-1.5", "{props.icon}" }
             span { "{props.label}" }
         }
@@ -136,6 +136,7 @@ fn GeneralTab(props: GeneralTabProps) -> Element {
 
     // Handle mount prefix browse
     let handle_browse_mount_prefix = move |_| {
+        let mut config = config;
         spawn(async move {
             let folder = rfd::AsyncFileDialog::new()
                 .set_title("Select Default Mount Location")
@@ -145,14 +146,16 @@ fn GeneralTab(props: GeneralTabProps) -> Element {
             if let Some(folder) = folder {
                 let path = folder.path().to_path_buf();
                 config.write().default_mount_prefix = Some(path);
-                save_config();
+                if let Err(e) = config.read().save() {
+                    tracing::error!("Failed to save config: {}", e);
+                }
             }
         });
     };
 
     // Handle clear mount prefix
     let handle_clear_mount_prefix = {
-        let save = save_config.clone();
+        let save = save_config;
         move |_| {
             config.write().default_mount_prefix = None;
             save();
@@ -188,7 +191,7 @@ fn GeneralTab(props: GeneralTabProps) -> Element {
                             "settings-theme-btn"
                         };
                         let theme_value = *theme;
-                        let save = save_config.clone();
+                        let save = save_config;
                         rsx! {
                             button {
                                 key: "{theme:?}",
@@ -233,7 +236,7 @@ fn GeneralTab(props: GeneralTabProps) -> Element {
             BackendSelector {
                 current_backend: current_config.default_backend,
                 on_change: {
-                    let save = save_config.clone();
+                    let save = save_config;
                     move |backend| {
                         config.write().default_backend = backend;
                         save();
@@ -266,9 +269,7 @@ fn GeneralTab(props: GeneralTabProps) -> Element {
                         "settings-path-display placeholder"
                     };
                     let display_text = current_config.default_mount_prefix
-                        .as_ref()
-                        .map(|p: &std::path::PathBuf| p.display().to_string())
-                        .unwrap_or_else(|| "System default".to_string());
+                        .as_ref().map_or_else(|| "System default".to_string(), |p: &std::path::PathBuf| p.display().to_string());
                     rsx! {
                         div {
                             class: "{text_class}",
@@ -312,16 +313,10 @@ fn AboutTab() -> Element {
         div {
             class: "settings-about",
 
-            // App icon/logo placeholder
-            div {
-                class: "text-6xl mb-4",
-                "🔐"
-            }
-
             // App name
             h2 {
                 class: "text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-1",
-                "Oxidized Vault"
+                "Oxcrypt"
             }
 
             // Version
@@ -334,7 +329,7 @@ fn AboutTab() -> Element {
             p {
                 class: "text-sm text-gray-700 dark:text-gray-300 leading-relaxed mb-6 max-w-xs",
                 "A fast, secure Cryptomator vault manager written in Rust. "
-                "Open source under the MIT license."
+                "Open source under the MPL-2.0 license."
             }
 
             // Links
@@ -404,9 +399,7 @@ fn BackendSelector(props: BackendSelectorProps) -> Element {
     // Find the display name for current backend
     let current_display = backends
         .iter()
-        .find(|b| b.backend_type == props.current_backend)
-        .map(|b| b.name.as_str())
-        .unwrap_or_else(|| props.current_backend.display_name());
+        .find(|b| b.backend_type == props.current_backend).map_or_else(|| props.current_backend.display_name(), |b| b.name.as_str());
 
     rsx! {
         div {
@@ -415,7 +408,7 @@ fn BackendSelector(props: BackendSelectorProps) -> Element {
             // Dropdown button
             button {
                 class: "settings-dropdown-btn",
-                onclick: move |_| is_open.set(!is_open()),
+                onclick: move |_| { is_open.set(!is_open())},
 
                 span {
                     class: "flex-1",
@@ -433,7 +426,7 @@ fn BackendSelector(props: BackendSelectorProps) -> Element {
                 // Click-away overlay
                 div {
                     class: "fixed inset-0 z-40",
-                    onclick: move |_| is_open.set(false),
+                    onclick: move |_| { is_open.set(false) },
                 }
 
                 // Options list

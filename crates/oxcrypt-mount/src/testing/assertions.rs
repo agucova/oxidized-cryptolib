@@ -20,22 +20,17 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// On failure, shows sizes and first differing position rather than
 /// dumping potentially huge byte arrays.
 pub fn assert_bytes_equal(actual: &[u8], expected: &[u8], context: &str) {
-    if actual.len() != expected.len() {
-        panic!(
-            "{}: size mismatch - expected {} bytes, got {} bytes",
-            context,
-            expected.len(),
-            actual.len()
-        );
-    }
+    assert!(actual.len() == expected.len(), 
+        "{}: size mismatch - expected {} bytes, got {} bytes",
+        context,
+        expected.len(),
+        actual.len()
+    );
 
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
-        if a != e {
-            panic!(
-                "{}: content mismatch at byte {} - expected 0x{:02x}, got 0x{:02x}",
-                context, i, e, a
-            );
-        }
+        assert!(a == e, 
+            "{context}: content mismatch at byte {i} - expected 0x{e:02x}, got 0x{a:02x}"
+        );
     }
 }
 
@@ -45,12 +40,10 @@ pub fn assert_bytes_equal(actual: &[u8], expected: &[u8], context: &str) {
 /// content in error messages would be impractical.
 pub fn assert_hash_equal(actual: &[u8], expected_hash: &[u8; 32], context: &str) {
     let actual_hash = sha256(actual);
-    if &actual_hash != expected_hash {
-        panic!(
-            "{}: hash mismatch\n  expected: {:02x?}\n  got:      {:02x?}\n  (data size: {} bytes)",
-            context, expected_hash, actual_hash, actual.len()
-        );
-    }
+    assert!(&actual_hash == expected_hash, 
+        "{}: hash mismatch\n  expected: {:02x?}\n  got:      {:02x?}\n  (data size: {} bytes)",
+        context, expected_hash, actual_hash, actual.len()
+    );
 }
 
 /// Assert that an I/O result is an error with a specific errno.
@@ -65,22 +58,19 @@ pub fn assert_errno<T: std::fmt::Debug>(
     match result {
         Ok(value) => {
             panic!(
-                "{}: expected errno {} but got success with {:?}",
-                context, expected_errno, value
+                "{context}: expected errno {expected_errno} but got success with {value:?}"
             );
         }
         Err(err) => {
             let actual_errno = err.raw_os_error().unwrap_or(0);
-            if actual_errno != expected_errno {
-                panic!(
-                    "{}: expected errno {} ({}), got errno {} ({})",
-                    context,
-                    expected_errno,
-                    errno_name(expected_errno),
-                    actual_errno,
-                    errno_name(actual_errno)
-                );
-            }
+            assert!(actual_errno == expected_errno, 
+                "{}: expected errno {} ({}), got errno {} ({})",
+                context,
+                expected_errno,
+                errno_name(expected_errno),
+                actual_errno,
+                errno_name(actual_errno)
+            );
         }
     }
 }
@@ -137,8 +127,7 @@ pub fn assert_io_ok<T>(result: std::io::Result<T>, context: &str) -> T {
 pub fn assert_io_err<T: std::fmt::Debug>(result: std::io::Result<T>, context: &str) {
     if let Ok(value) = result {
         panic!(
-            "{}: expected error but got success with {:?}",
-            context, value
+            "{context}: expected error but got success with {value:?}"
         );
     }
 }

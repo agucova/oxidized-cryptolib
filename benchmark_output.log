@@ -1,0 +1,139 @@
+
+oxbench: test_vault (FUSE, WebDAV, NFS) - 10 iterations
+
+Checking sudo access for cache clearing between implementations...
+  Sudo access recommended for accurate benchmarks (clears OS caches).
+  Enter password to enable, or press Ctrl+C and re-run without sudo.
+
+  Sudo access granted. Will clear caches between implementations.
+
+[2m2025-12-31T04:16:57.432693Z[0m [33m WARN[0m Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling
+mount_macfuse: failed to mount /private/tmp/oxbench/fuse@/dev/macfuse3: Resource busy
+Benchmark: FUSE / Sequential Read
+  Time (mean ± σ):  16.22 us ± 9.14 us    [Throughput: 60.2 MB/s]
+  Range (min … max):  12.04 us … 43.25 us    10 runs
+
+Benchmark: FUSE / Sequential Read
+  Time (mean ± σ):  72.80 us ± 42.51 us    [Throughput: 429.3 MB/s]
+  Range (min … max):  49.62 us … 197.33 us    10 runs
+
+Benchmark: FUSE / Sequential Read
+  Time (mean ± σ):  72.59 us ± 50.59 us    [Throughput: 1.3 GB/s]
+  Range (min … max):  25.88 us … 188.04 us    10 runs
+
+Benchmark: FUSE / Sequential Read
+  Time (mean ± σ):  165.52 us ± 75.19 us    [Throughput: 5.9 GB/s]
+  Range (min … max):  118.33 us … 384.29 us    10 runs
+
+Benchmark: FUSE / Sequential Read
+  Time (mean ± σ):  1.29 ms ± 482.12 us    [Throughput: 7.6 GB/s]
+  Range (min … max):  692.42 us … 2.25 ms    10 runs
+
+Benchmark: FUSE / Random Read
+  Time (mean ± σ):  190.08 us ± 51.58 us    [Throughput: 164.4 MB/s]
+  Range (min … max):  163.62 us … 340.04 us    10 runs
+
+Benchmark: FUSE / Random Read
+  Time (mean ± σ):  193.60 us ± 71.31 us    [Throughput: 5.0 GB/s]
+  Range (min … max):  142.38 us … 391.58 us    10 runs
+
+Benchmark: FUSE / Directory Listing
+  Time (mean ± σ):  44.92 us ± 21.48 us    
+  Range (min … max):  35.04 us … 108.83 us    10 runs
+
+Benchmark: FUSE / Directory Listing
+  Time (mean ± σ):  401.37 us ± 222.06 us    
+  Range (min … max):  262.33 us … 1.04 ms    10 runs
+
+Benchmark: FUSE / Directory Listing
+  Time (mean ± σ):  1.38 ms ± 394.85 us    
+  Range (min … max):  914.46 us … 1.95 ms    10 runs
+
+Benchmark: FUSE / Metadata
+  Time (mean ± σ):  2.31 ms ± 407.30 us    
+  Range (min … max):  1.77 ms … 3.08 ms    10 runs
+
+Benchmark: FUSE / Sequential Write
+  Time (mean ± σ):  4.44 ms ± 429.11 us    [Throughput: 225.4 KB/s]
+  Range (min … max):  3.74 ms … 5.31 ms    10 runs
+
+Benchmark: FUSE / Sequential Write
+  Time (mean ± σ):  4.40 ms ± 368.78 us    [Throughput: 7.1 MB/s]
+  Range (min … max):  3.65 ms … 4.76 ms    10 runs
+
+Benchmark: FUSE / Sequential Write
+  Time (mean ± σ):  4.95 ms ± 417.78 us    [Throughput: 19.7 MB/s]
+  Range (min … max):  4.62 ms … 5.99 ms    10 runs
+
+Benchmark: FUSE / Sequential Write
+  Time (mean ± σ):  4.63 ms ± 383.76 us    [Throughput: 215.8 MB/s]
+  Range (min … max):  3.86 ms … 4.96 ms    10 runs
+
+Benchmark: FUSE / Sequential Write
+  Time (mean ± σ):  8.76 ms ± 673.07 us    [Throughput: 1.1 GB/s]
+  Range (min … max):  7.60 ms … 9.94 ms    10 runs
+
+Benchmark: FUSE / Random Write
+  Time (mean ± σ):  4.95 ms ± 141.58 us    [Throughput: 6.3 MB/s]
+  Range (min … max):  4.79 ms … 5.19 ms    10 runs
+
+Benchmark: FUSE / File Creation
+  Time (mean ± σ):  11.64 ms ± 1.84 ms    
+  Range (min … max):  9.44 ms … 14.86 ms    10 runs
+
+Benchmark: FUSE / File Deletion
+  Time (mean ± σ):  3.31 ms ± 1.02 ms    
+  Range (min … max):  2.37 ms … 5.94 ms    10 runs
+
+[2m2025-12-31T04:17:04.772744Z[0m [33m WARN[0m umount failed with Os { code: 22, kind: InvalidInput, message: "Invalid argument" }
+Benchmark: WebDAV / Sequential Read
+  Time (mean ± σ):  163.42 us ± 65.12 us    [Throughput: 6.0 MB/s]
+  Range (min … max):  66.92 us … 335.25 us    10 runs
+
+Benchmark: WebDAV / Sequential Read
+  Time (mean ± σ):  75.82 us ± 39.98 us    [Throughput: 412.1 MB/s]
+  Range (min … max):  52.33 us … 189.96 us    10 runs
+
+Benchmark: WebDAV / Sequential Read
+  Time (mean ± σ):  127.36 us ± 57.17 us    [Throughput: 766.8 MB/s]
+  Range (min … max):  84.46 us … 283.25 us    10 runs
+
+Benchmark: WebDAV / Sequential Read
+  Time (mean ± σ):  214.40 us ± 48.06 us    [Throughput: 4.6 GB/s]
+  Range (min … max):  144.71 us … 337.17 us    10 runs
+
+Benchmark: WebDAV / Sequential Read
+  Time (mean ± σ):  771.74 us ± 190.35 us    [Throughput: 12.7 GB/s]
+  Range (min … max):  598.54 us … 1.31 ms    10 runs
+
+Benchmark: WebDAV / Random Read
+  Time (mean ± σ):  226.87 us ± 57.42 us    [Throughput: 137.7 MB/s]
+  Range (min … max):  180.38 us … 370.67 us    10 runs
+
+Benchmark: WebDAV / Random Read
+  Time (mean ± σ):  956.90 us ± 1.07 ms    [Throughput: 1.0 GB/s]
+  Range (min … max):  175.92 us … 3.17 ms    10 runs
+
+Benchmark: WebDAV / Directory Listing
+  Time (mean ± σ):  2.56 ms ± 474.21 us    
+  Range (min … max):  1.99 ms … 3.67 ms    10 runs
+
+Benchmark: WebDAV / Directory Listing
+  Time (mean ± σ):  13.21 ms ± 2.11 ms    
+  Range (min … max):  11.48 ms … 19.20 ms    10 runs
+
+Benchmark: WebDAV / Directory Listing
+[2m2025-12-31T04:21:55.522068Z[0m [33m WARN[0m diskutil unmount timed out for /tmp/oxbench/webdav (possible ghost mount)
+Error: Benchmark execution failed
+
+Caused by:
+    Setup for Directory Listing took 172.068591166s, exceeding timeout of 120s
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::capture
+   1: <anyhow::Error>::msg::<alloc::string::String>
+   2: <oxcrypt_bench::bench::runner::BenchmarkRunner>::run_single_benchmark_with_progress
+   3: <oxcrypt_bench::bench::runner::BenchmarkRunner>::run
+   4: oxbench::main
+   5: std::sys::backtrace::__rust_begin_short_backtrace::<fn() -> core::result::Result<(), anyhow::Error>, core::result::Result<(), anyhow::Error>>
+   6: _main

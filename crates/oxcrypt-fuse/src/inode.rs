@@ -135,9 +135,9 @@ impl InodeTable {
 
     /// Allocates a new inode for the given path and kind.
     /// If the path already has an inode, increments its lookup count and returns the existing inode.
-    pub fn get_or_insert(&self, path: VaultPath, kind: InodeKind) -> u64 {
+    pub fn get_or_insert(&self, path: &VaultPath, kind: &InodeKind) -> u64 {
         // Check if already exists
-        if let Some(inode) = self.inner.get_id(&path) {
+        if let Some(inode) = self.inner.get_id(path) {
             // Increment lookup count
             if let Some(entry) = self.inner.get(inode) {
                 entry.inc_nlookup();
@@ -146,8 +146,10 @@ impl InodeTable {
         }
 
         // Allocate new inode
+        let path_clone = path.clone();
+        let kind_clone = kind.clone();
         self.inner
-            .get_or_insert_with(path.clone(), || InodeEntry::new(path, kind))
+            .get_or_insert_with(path, || InodeEntry::new(path_clone, kind_clone))
     }
 
     /// Allocates a new inode for the given path and kind WITHOUT incrementing nlookup.
@@ -158,15 +160,17 @@ impl InodeTable {
     ///
     /// If the path already has an inode, returns the existing inode without incrementing.
     /// If the path is new, creates an inode entry with nlookup = 0.
-    pub fn get_or_insert_no_lookup_inc(&self, path: VaultPath, kind: InodeKind) -> u64 {
+    pub fn get_or_insert_no_lookup_inc(&self, path: &VaultPath, kind: &InodeKind) -> u64 {
         // Check if already exists - return without incrementing
-        if let Some(inode) = self.inner.get_id(&path) {
+        if let Some(inode) = self.inner.get_id(path) {
             return inode;
         }
 
         // Allocate new inode with nlookup = 0
+        let path_clone = path.clone();
+        let kind_clone = kind.clone();
         self.inner
-            .get_or_insert_with(path.clone(), || InodeEntry::new_no_lookup(path, kind))
+            .get_or_insert_with(path, || InodeEntry::new_no_lookup(path_clone, kind_clone))
     }
 
     /// Looks up an entry by inode number.
@@ -204,15 +208,13 @@ impl InodeTable {
             return false;
         }
 
-        if let Some(entry) = self.inner.get(inode) {
-            if let Some(remaining) = entry.dec_nlookup(nlookup) {
-                if remaining == 0 {
+        if let Some(entry) = self.inner.get(inode)
+            && let Some(remaining) = entry.dec_nlookup(nlookup)
+                && remaining == 0 {
                     // Safe to evict - drop the ref first
                     drop(entry);
                     return self.evict(inode);
                 }
-            }
-        }
         false
     }
 
@@ -223,7 +225,17 @@ impl InodeTable {
     }
 
     /// Invalidates an inode by path (used after delete operations).
-    /// This removes the path mapping but keeps the inode entry until forget() is called.
+    ///
+    /// Removes the path-to-ID mapping but does NOT evict the inode entry.
+    /// The kernel will call forget() when it's done with the inode, which is
+    /// the only reliable signal for safe eviction per the FUSE protocol.
+    ///
+    /// # FUSE Protocol Semantics
+    ///
+    /// Even when nlookup=0, the kernel may still have the inode cached in its
+    /// dcache (from readdir entries). The kernel can pass these cached inode
+    /// numbers to subsequent FUSE operations. Therefore, we must NOT evict
+    /// inodes until the kernel explicitly signals via forget().
     pub fn invalidate_path(&self, path: &VaultPath) {
         self.inner.invalidate_path(path);
     }
@@ -304,13 +316,13 @@ mod tests {
         let path = VaultPath::new("documents");
         let dir_id = DirId::from_raw("test-uuid");
 
-        let inode = table.get_or_insert(path.clone(), InodeKind::Directory { dir_id });
+        let inode = table.get_or_insert(&path.clone(), &InodeKind::Directory { dir_id });
         assert!(inode > ROOT_INODE);
 
         // Second call should return same inode
         let inode2 = table.get_or_insert(
-            path.clone(),
-            InodeKind::Directory {
+            &path.clone(),
+            &InodeKind::Directory {
                 dir_id: DirId::from_raw("different"),
             },
         );
@@ -327,8 +339,8 @@ mod tests {
         let path = VaultPath::new("temp");
 
         let inode = table.get_or_insert(
-            path.clone(),
-            InodeKind::File {
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "temp".to_string(),
             },
@@ -358,9 +370,7 @@ mod tests {
         let old_path = VaultPath::new("old_name");
         let new_path = VaultPath::new("new_name");
 
-        let inode = table.get_or_insert(
-            old_path.clone(),
-            InodeKind::File {
+        let inode = table.get_or_insert(&old_path.clone(), &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "old_name".to_string(),
             },
@@ -381,13 +391,12 @@ mod tests {
     }
 
     #[test]
-    fn test_invalidate_path() {
+    fn test_invalidate_path_with_nlookup() {
         let table = InodeTable::new();
         let path = VaultPath::new("to_delete");
 
-        let inode = table.get_or_insert(
-            path.clone(),
-            InodeKind::File {
+        // get_or_insert sets nlookup=1
+        let inode = table.get_or_insert(&path.clone(), &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "to_delete".to_string(),
             },
@@ -395,13 +404,44 @@ mod tests {
 
         // Path should be mapped
         assert_eq!(table.get_inode(&path), Some(inode));
+        assert_eq!(table.get(inode).unwrap().nlookup(), 1);
 
-        // Invalidate
+        // Invalidate - inode stays because nlookup > 0
         table.invalidate_path(&path);
 
-        // Path should not be mapped, but inode entry still exists
+        // Path should not be mapped, but inode entry still exists (kernel holds reference)
         assert!(table.get_inode(&path).is_none());
         assert!(table.get(inode).is_some());
+    }
+
+    #[test]
+    fn test_invalidate_path_keeps_inode_nlookup_zero() {
+        let table = InodeTable::new();
+        let path = VaultPath::new("readdir_entry");
+
+        // get_or_insert_no_lookup_inc sets nlookup=0 (like readdir does)
+        let inode = table.get_or_insert_no_lookup_inc(
+            &path.clone(),
+            &InodeKind::File {
+                dir_id: DirId::root(),
+                name: "readdir_entry".to_string(),
+            },
+        );
+
+        // Path should be mapped
+        assert_eq!(table.get_inode(&path), Some(inode));
+        assert_eq!(table.get(inode).unwrap().nlookup(), 0);
+
+        // Invalidate - path mapping removed but inode stays
+        table.invalidate_path(&path);
+
+        // Path mapping should be gone
+        assert!(table.get_inode(&path).is_none());
+
+        // BUT inode entry should STILL EXIST
+        // Only forget() should evict it
+        assert!(table.get(inode).is_some());
+        assert_eq!(table.get(inode).unwrap().nlookup(), 0);
     }
 
     #[test]
@@ -416,12 +456,10 @@ mod tests {
         for i in 0..10 {
             let table = Arc::clone(&table);
             handles.push(thread::spawn(move || {
-                let path = VaultPath::new(format!("file_{}", i));
-                table.get_or_insert(
-                    path,
-                    InodeKind::File {
+                let path = VaultPath::new(format!("file_{i}"));
+                table.get_or_insert(&path, &InodeKind::File {
                         dir_id: DirId::root(),
-                        name: format!("file_{}", i),
+                        name: format!("file_{i}"),
                     },
                 )
             }));
@@ -431,7 +469,7 @@ mod tests {
 
         // All inodes should be unique (not counting root)
         let mut sorted = inodes.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), inodes.len());
 
@@ -445,9 +483,7 @@ mod tests {
         let path = VaultPath::new("nlookup_test");
 
         // First insert: nlookup = 1
-        let inode = table.get_or_insert(
-            path.clone(),
-            InodeKind::File {
+        let inode = table.get_or_insert(&path.clone(), &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "nlookup_test".to_string(),
             },
@@ -455,9 +491,7 @@ mod tests {
         assert_eq!(table.get(inode).unwrap().nlookup(), 1);
 
         // Second lookup: nlookup = 2
-        table.get_or_insert(
-            path.clone(),
-            InodeKind::File {
+        table.get_or_insert(&path.clone(), &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "ignored".to_string(),
             },
@@ -480,8 +514,8 @@ mod tests {
 
         // First insert with no_lookup_inc: nlookup = 0
         let inode = table.get_or_insert_no_lookup_inc(
-            path.clone(),
-            InodeKind::File {
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "readdir_entry".to_string(),
             },
@@ -490,8 +524,8 @@ mod tests {
 
         // Second call: still nlookup = 0 (no increment)
         let inode2 = table.get_or_insert_no_lookup_inc(
-            path.clone(),
-            InodeKind::File {
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "ignored".to_string(),
             },
@@ -501,8 +535,8 @@ mod tests {
 
         // Now use regular get_or_insert: nlookup = 1
         table.get_or_insert(
-            path.clone(),
-            InodeKind::File {
+            &path.clone(),
+            &InodeKind::File {
                 dir_id: DirId::root(),
                 name: "ignored".to_string(),
             },
@@ -525,7 +559,7 @@ mod tests {
         );
 
         assert_eq!(entry.filename(), Some("file.txt"));
-        assert_eq!(entry.parent_dir_id().map(|d| d.as_str()), Some("parent-id"));
+        assert_eq!(entry.parent_dir_id().map(DirId::as_str), Some("parent-id"));
         assert!(entry.dir_id().is_none());
 
         let dir_entry = InodeEntry::new(
@@ -552,7 +586,7 @@ mod tests {
             dir_id: DirId::root(),
             name: "link_to_file".to_string(),
         };
-        let inode = table.get_or_insert(path, kind);
+        let inode = table.get_or_insert(&path, &kind);
 
         let entry = table.get(inode).unwrap();
         assert!(matches!(entry.kind, InodeKind::Symlink { .. }));
@@ -564,14 +598,14 @@ mod tests {
         let table = InodeTable::new();
 
         // Create a very deep path (100 levels)
-        let path_parts: Vec<String> = (0..100).map(|i| format!("dir_{}", i)).collect();
+        let path_parts: Vec<String> = (0..100).map(|i| format!("dir_{i}")).collect();
         let long_path = VaultPath::new(path_parts.join("/"));
 
         let kind = InodeKind::File {
             dir_id: DirId::from_raw("deep-dir"),
             name: "file.txt".to_string(),
         };
-        let inode = table.get_or_insert(long_path.clone(), kind);
+        let inode = table.get_or_insert(&long_path.clone(), &kind);
 
         assert!(table.get(inode).is_some());
         assert_eq!(table.get_inode(&long_path), Some(inode));
@@ -596,7 +630,7 @@ mod tests {
                 dir_id: DirId::root(),
                 name: name.to_string(),
             };
-            let inode = table.get_or_insert(path.clone(), kind);
+            let inode = table.get_or_insert(&path.clone(), &kind);
 
             let entry = table.get(inode).unwrap();
             assert_eq!(entry.filename(), Some(name));
@@ -613,15 +647,15 @@ mod tests {
         // Pre-populate with high nlookup count to survive concurrent forgets
         let inodes: Vec<u64> = (0..100)
             .map(|i| {
-                let path = VaultPath::new(format!("file_{}", i));
+                let path = VaultPath::new(format!("file_{i}"));
                 let kind = InodeKind::File {
                     dir_id: DirId::root(),
-                    name: format!("file_{}", i),
+                    name: format!("file_{i}"),
                 };
-                let inode = table.get_or_insert(path.clone(), kind.clone());
+                let inode = table.get_or_insert(&path.clone(), &kind.clone());
                 // Increase nlookup to 10 so forgets don't evict
                 for _ in 0..9 {
-                    table.get_or_insert(path.clone(), kind.clone());
+                    table.get_or_insert(&path.clone(), &kind.clone());
                 }
                 inode
             })

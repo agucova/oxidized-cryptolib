@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unique identifier for this launchd service -->
+    <key>Label</key>
+    <string>com.agucova.oxcrypt.hostapp</string>
+
+    <!-- Path to the host app executable -->
+    <!-- This will be updated during installation based on where app is installed -->
+    <key>Program</key>
+    <string>/Applications/OxVaultFS.app/Contents/MacOS/OxVaultFS</string>
+
+    <!-- Arguments to pass - run in XPC mode -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/OxVaultFS.app/Contents/MacOS/OxVaultFS</string>
+        <string>--xpc</string>
+    </array>
+
+    <!-- Register the XPC Mach service for on-demand activation -->
+    <!-- When a client connects to this service, launchd starts the app -->
+    <key>MachServices</key>
+    <dict>
+        <key>com.agucova.oxcrypt.desktop.xpc</key>
+        <true/>
+    </dict>
+
+    <!-- Keep alive policy: restart on crash, but not on clean exit -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart if it crashes -->
+        <key>SuccessfulExit</key>
+        <false/>
+        <!-- Also restart if connection crashes -->
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- Run as the current user (this is a user agent, not a daemon) -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Limit to a reasonable number of crashes before giving up -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>XPC_SERVICE_NAME</key>
+        <string>com.agucova.oxcrypt.desktop.xpc</string>
+    </dict>
+
+    <!-- Standard output/error for debugging -->
+    <key>StandardOutPath</key>
+    <string>/tmp/oxcrypt-hostapp.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/oxcrypt-hostapp.err</string>
+</dict>
+</plist>

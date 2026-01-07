@@ -26,7 +26,7 @@ pub fn Sidebar(
                 class: "sidebar-header border-b border-gray-200/70 dark:border-neutral-800",
                 h1 {
                     class: "text-[15px] font-semibold text-gray-900 dark:text-gray-100",
-                    "Vaults"
+                    "Oxcrypt Vaults"
                 }
             }
 
@@ -55,7 +55,7 @@ pub fn Sidebar(
                             is_selected: selected_vault_id.as_ref() == Some(&vault.config.id),
                             on_click: {
                                 let id = vault.config.id.clone();
-                                move |_| on_select.call(id.clone())
+                                move |()| on_select.call(id.clone())
                             },
                         }
                     }

@@ -9,6 +9,7 @@ use super::types::IconName;
 ///
 /// Returns the inner path elements for a 24x24 viewBox.
 /// All paths use `fill="currentColor"` for easy theming.
+#[allow(dead_code)]
 pub fn get_heroicon_path(name: IconName) -> &'static str {
     match name {
         IconName::Lock => {
@@ -95,6 +96,7 @@ pub fn get_heroicon_path(name: IconName) -> &'static str {
 }
 
 /// Render a complete Heroicon SVG element
+#[allow(dead_code)]
 pub fn render_heroicon_svg(name: IconName, size: u32, color: &str) -> String {
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 24 24" fill="{color}">{}</svg>"#,

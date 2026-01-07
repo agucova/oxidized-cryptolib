@@ -86,7 +86,7 @@ impl From<GuiError> for UserFacingError {
 
             GuiError::VaultNotFound(path) => UserFacingError::new(
                 "Vault Not Found",
-                format!("The vault at {} could not be found.", path),
+                format!("The vault at {path} could not be found."),
             )
             .with_suggestion("The vault may have been moved or deleted."),
         }

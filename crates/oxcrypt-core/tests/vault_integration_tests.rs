@@ -489,11 +489,11 @@ fn test_list_by_path() {
 
     let file_names: Vec<_> = docs_entries.iter()
         .filter(|e| e.is_file())
-        .map(|e| e.name())
+        .map(oxcrypt_core::vault::DirEntry::name)
         .collect();
     let dir_names: Vec<_> = docs_entries.iter()
         .filter(|e| e.is_directory())
-        .map(|e| e.name())
+        .map(oxcrypt_core::vault::DirEntry::name)
         .collect();
 
     assert_eq!(file_names, vec!["readme.md"]);

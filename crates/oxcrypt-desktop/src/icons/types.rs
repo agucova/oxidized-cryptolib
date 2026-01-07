@@ -3,6 +3,7 @@
 //! Maps icon names to SF Symbols (macOS) and Heroicons (fallback).
 
 /// Icon names with mappings to platform-specific implementations
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IconName {
     /// Locked vault - lock.fill / lock-closed
@@ -49,12 +50,11 @@ pub enum IconName {
 
 impl IconName {
     /// SF Symbol name (macOS)
-    pub fn sf_symbol(&self) -> &'static str {
+    pub fn sf_symbol(self) -> &'static str {
         match self {
             Self::Lock => "lock.fill",
             Self::LockOpen => "lock.open.fill",
-            Self::Folder => "folder.fill",
-            Self::FolderOpen => "folder.fill", // SF Symbols doesn't have open variant
+            Self::Folder | Self::FolderOpen => "folder.fill", // SF Symbols doesn't have open variant
             Self::Gear => "gear",
             Self::ChartBar => "chart.bar.fill",
             Self::Warning => "exclamationmark.triangle.fill",
@@ -75,7 +75,8 @@ impl IconName {
     }
 
     /// Heroicon name (fallback)
-    pub fn heroicon(&self) -> &'static str {
+    #[allow(dead_code)]
+    pub fn heroicon(self) -> &'static str {
         match self {
             Self::Lock => "lock-closed",
             Self::LockOpen => "lock-open",
@@ -118,6 +119,7 @@ impl From<u32> for IconSize {
 }
 
 /// Icon weight (thickness)
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum IconWeight {
     Ultralight,
@@ -135,7 +137,8 @@ pub enum IconWeight {
 impl IconWeight {
     /// Convert to SF Symbol weight value (CGFloat)
     /// Values from NSFontWeight constants
-    pub fn sf_weight(&self) -> f64 {
+    #[allow(dead_code)]
+    pub fn sf_weight(self) -> f64 {
         match self {
             Self::Ultralight => -0.8,
             Self::Thin => -0.6,
@@ -149,7 +152,7 @@ impl IconWeight {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Ultralight => "ultralight",
             Self::Thin => "thin",
@@ -165,6 +168,7 @@ impl IconWeight {
 }
 
 /// Icon color - supports common semantic colors
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum IconColor {
     /// Adapts to current context (white in dark mode, black in light)
@@ -180,30 +184,35 @@ pub enum IconColor {
     Danger,
     /// Accent/brand color (blue)
     Accent,
+    /// Adaptive icon color for light UI on macOS (black, invert in dark mode)
+    Adaptive,
 }
 
 impl IconColor {
     /// CSS color value for Heroicons
-    pub fn css_color(&self) -> &'static str {
+    #[allow(dead_code)]
+    pub fn css_color(self) -> &'static str {
         match self {
             Self::Primary => "currentColor",
-            Self::Secondary => "rgb(156, 163, 175)", // gray-400
+            Self::Secondary => "rgb(107, 114, 128)", // gray-500
             Self::Success => "rgb(34, 197, 94)",     // green-500
             Self::Warning => "rgb(234, 179, 8)",     // yellow-500
             Self::Danger => "rgb(239, 68, 68)",      // red-500
             Self::Accent => "rgb(59, 130, 246)",     // blue-500
+            Self::Adaptive => "currentColor",
         }
     }
 
     /// Hex color for SF Symbol tinting
-    pub fn hex_color(&self) -> &'static str {
+    pub fn hex_color(self) -> &'static str {
         match self {
             Self::Primary => "ffffff",   // White for dark mode (our default)
-            Self::Secondary => "9ca3af", // gray-400
+            Self::Secondary => "6b7280", // gray-500
             Self::Success => "22c55e",   // green-500
             Self::Warning => "eab308",   // yellow-500
             Self::Danger => "ef4444",    // red-500
             Self::Accent => "3b82f6",    // blue-500
+            Self::Adaptive => "000000",  // Black for light mode (invert in dark)
         }
     }
 }

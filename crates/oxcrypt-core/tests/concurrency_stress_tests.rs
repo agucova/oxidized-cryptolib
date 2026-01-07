@@ -503,8 +503,7 @@ async fn stress_lock_identity_under_cleanup() {
 
     assert_eq!(
         viols, 0,
-        "Lock identity violated {} times out of {} operations - cleanup race detected!",
-        viols, ops
+        "Lock identity violated {viols} times out of {ops} operations - cleanup race detected!"
     );
 }
 
@@ -538,7 +537,7 @@ async fn stress_high_contention_single_lock() {
                 let before = cnt.fetch_add(1, Ordering::SeqCst);
 
                 // Random yield to increase interleaving
-                if rand::random::<u8>() % 10 == 0 {
+                if rand::random::<u8>().is_multiple_of(10) {
                     tokio::task::yield_now().await;
                 }
 
@@ -574,8 +573,7 @@ async fn stress_high_contention_single_lock() {
 
     assert_eq!(
         conflict_count, 0,
-        "Detected {} serialization conflicts - lock not providing exclusion!",
-        conflict_count
+        "Detected {conflict_count} serialization conflicts - lock not providing exclusion!"
     );
 }
 
@@ -587,7 +585,7 @@ async fn stress_high_contention_single_lock() {
 async fn stress_ordered_locking_no_deadlock() {
     let manager = Arc::new(VaultLockManager::new());
     let dir_ids: Vec<DirId> = (0..10)
-        .map(|i| DirId::from_raw(&format!("dir-{:02}", i)))
+        .map(|i| DirId::from_raw(format!("dir-{i:02}")))
         .collect();
     let completions = Arc::new(AtomicUsize::new(0));
 
@@ -709,8 +707,7 @@ fn stress_true_parallel_lock_contention() {
 
     assert_eq!(
         viol_count, 0,
-        "Detected {} serialization violations with true OS parallelism",
-        viol_count
+        "Detected {viol_count} serialization violations with true OS parallelism"
     );
 }
 
@@ -753,7 +750,7 @@ fn stress_mixed_operations_timed() {
 
                     while is_running.load(Ordering::Relaxed) {
                         let op_type = rand::random::<u8>() % 4;
-                        let filename = format!("stress_file_{}.txt", worker_id);
+                        let filename = format!("stress_file_{worker_id}.txt");
 
                         // Run operations and track if they succeeded
                         let succeeded = match op_type {
@@ -780,7 +777,7 @@ fn stress_mixed_operations_timed() {
         .collect();
 
     // Run for 10 seconds
-    std::thread::sleep(Duration::from_secs(10));
+    thread::sleep(Duration::from_secs(10));
     running.store(false, Ordering::Relaxed);
 
     // Wait for threads
@@ -792,8 +789,7 @@ fn stress_mixed_operations_timed() {
     let total_errors = errors.load(Ordering::Relaxed);
 
     println!(
-        "Completed {} operations in 10 seconds with {} unexpected errors",
-        total_ops, total_errors
+        "Completed {total_ops} operations in 10 seconds with {total_errors} unexpected errors"
     );
 
     assert!(total_ops > 100, "Should complete substantial operations");

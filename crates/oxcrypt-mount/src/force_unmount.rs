@@ -20,7 +20,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// Force unmount a filesystem at the given path.
 ///
@@ -93,49 +93,84 @@ pub fn lazy_unmount(mountpoint: &Path) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn force_unmount_macos(mountpoint: &Path) -> Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // NOTE: We intentionally skip checking mountpoint.exists() here because:
+    // 1. On ghost mounts, exists() blocks forever waiting for dead FUSE daemon
+    // 2. The unmount commands will fail gracefully if there's nothing to unmount
+    // 3. If the directory was deleted, diskutil/umount will just return an error
+
     // Try diskutil unmount force first (most reliable on macOS)
-    let result = Command::new("diskutil")
-        .args(["unmount", "force"])
-        .arg(mountpoint)
-        .output()
-        .context("Failed to run diskutil")?;
+    // Use timeout to avoid hanging on ghost mounts
+    let (tx, rx) = mpsc::channel();
+    let mountpoint_clone = mountpoint.to_path_buf();
 
-    if result.status.success() {
+    std::thread::spawn(move || {
+        let result = Command::new("diskutil")
+            .args(["unmount", "force"])
+            .arg(&mountpoint_clone)
+            .output();
+        let _ = tx.send(result);
+    });
+
+    if let Ok(Ok(result)) = rx.recv_timeout(Duration::from_secs(3)) {
+        if result.status.success() {
+            tracing::debug!(
+                "Force unmount via diskutil succeeded for {}",
+                mountpoint.display()
+            );
+            return Ok(());
+        }
+
+        // Log diskutil failure and try fallback
+        let stderr = String::from_utf8_lossy(&result.stderr);
         tracing::debug!(
-            "Force unmount via diskutil succeeded for {}",
+            "diskutil unmount failed for {}: {}",
+            mountpoint.display(),
+            stderr.trim()
+        );
+    } else {
+        tracing::warn!(
+            "diskutil unmount timed out for {} (possible ghost mount)",
             mountpoint.display()
         );
-        return Ok(());
     }
 
-    // Log diskutil failure and try fallback
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    tracing::debug!(
-        "diskutil unmount failed for {}: {}",
-        mountpoint.display(),
-        stderr.trim()
-    );
+    // Fallback to umount -f with timeout
+    let (tx, rx) = mpsc::channel();
+    let mountpoint_clone = mountpoint.to_path_buf();
 
-    // Fallback to umount -f
-    let result = Command::new("umount")
-        .arg("-f")
-        .arg(mountpoint)
-        .output()
-        .context("Failed to run umount")?;
+    std::thread::spawn(move || {
+        let result = Command::new("umount")
+            .arg("-f")
+            .arg(&mountpoint_clone)
+            .output();
+        let _ = tx.send(result);
+    });
 
-    if result.status.success() {
-        tracing::debug!(
-            "Force unmount via umount -f succeeded for {}",
-            mountpoint.display()
-        );
-        return Ok(());
+    if let Ok(Ok(result)) = rx.recv_timeout(Duration::from_secs(3)) {
+        if result.status.success() {
+            tracing::debug!(
+                "Force unmount via umount -f succeeded for {}",
+                mountpoint.display()
+            );
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        anyhow::bail!(
+            "Failed to force unmount {}: {}",
+            mountpoint.display(),
+            stderr.trim()
+        )
     }
 
-    let stderr = String::from_utf8_lossy(&result.stderr);
+    // Both methods timed out - likely a ghost mount
     anyhow::bail!(
-        "Failed to force unmount {}: {}",
-        mountpoint.display(),
-        stderr.trim()
+        "Failed to force unmount {} (timed out - possible ghost mount). \
+        You may need to reboot to clear this mount.",
+        mountpoint.display()
     )
 }
 

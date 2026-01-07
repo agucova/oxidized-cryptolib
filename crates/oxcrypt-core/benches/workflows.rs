@@ -1,10 +1,14 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+#![allow(clippy::cast_possible_truncation)] // Benchmark code with safe type conversions
+#![allow(clippy::cast_sign_loss)] // Benchmark uses modulo to ensure safe u8 conversion
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use oxcrypt_core::crypto::keys::MasterKey;
 use oxcrypt_core::fs::file::{decrypt_file_content, decrypt_file_header, encrypt_file_content, encrypt_file_header};
 use oxcrypt_core::fs::name::{decrypt_filename, encrypt_filename, hash_dir_id};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
+use std::hint::black_box;
 
 fn setup_master_key() -> MasterKey {
     MasterKey::random().unwrap()
@@ -40,7 +44,7 @@ impl MockVault {
         };
         
         // Setup directory structure
-        vault.directory_structure.insert("".to_string(), String::new()); // root
+        vault.directory_structure.insert(String::new(), String::new()); // root
         vault.add_directory("Documents");
         vault.add_directory("Documents/Work");
         vault.add_directory("Documents/Personal");
@@ -229,6 +233,8 @@ fn bench_find_files(c: &mut Criterion) {
                 // Check all files in this directory
                 for encrypted_name in &node.files {
                     let name = decrypt_filename(encrypted_name, &node.id, &master_key).unwrap();
+                    // Benchmark code: case-sensitive check is intentional for performance
+                    #[allow(clippy::case_sensitive_file_extension_comparisons)]
                     if name.ends_with(".pdf") {
                         pdf_count += 1;
                     }

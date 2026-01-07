@@ -33,11 +33,26 @@ pub fn update_tray_menu(vaults: &[ManagedVault], window_visible: bool) -> bool {
         if let Some(ref tray) = *tray_cell.borrow() {
             let menu = menu::build_menu(vaults, window_visible);
             tray.set_menu(Some(Box::new(menu)));
+
+            // Update tooltip to show mounted vault count
+            let mounted_count = vaults.iter().filter(|v| v.state.is_mounted()).count();
+            let tooltip = format_tray_tooltip(mounted_count);
+            let _ = tray.set_tooltip(Some(&tooltip));
+
             true
         } else {
             false
         }
     })
+}
+
+/// Format the tray tooltip based on mounted vault count
+fn format_tray_tooltip(mounted_count: usize) -> String {
+    match mounted_count {
+        0 => "Oxcrypt - No vaults mounted".to_string(),
+        1 => "Oxcrypt - 1 vault mounted".to_string(),
+        n => format!("Oxcrypt - {n} vaults mounted"),
+    }
 }
 
 /// Error type for tray operations
@@ -81,7 +96,7 @@ impl TrayManager {
         // Create the tray icon
         let tray_icon = TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip("Oxidized Vault")
+            .with_tooltip("Oxcrypt")
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(true) // Show menu on click, not open window
             .build()?;
@@ -117,7 +132,11 @@ fn create_default_icon() -> Result<Icon, TrayError> {
         let edge = 0.0;
         let smoothness = 1.2;
         let t = ((edge - dist) / smoothness + 0.5).clamp(0.0, 1.0);
-        (t * 255.0) as u8
+        // Convert normalized [0.0, 1.0] to u8 [0, 255] for alpha channel
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            (t * 255.0) as u8
+        }
     };
 
     // SDF for rounded rectangle
@@ -226,6 +245,8 @@ fn create_default_icon() -> Result<Icon, TrayError> {
         }
     }
 
+    // SIZE is a compile-time constant (44), safely fits in u32
+    #[allow(clippy::cast_possible_truncation)]
     Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)
         .map_err(|e| TrayError::IconCreation(e.to_string()))
 }

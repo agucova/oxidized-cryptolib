@@ -196,7 +196,7 @@ impl PathEntry {
 /// let path = VaultPath::new("documents");
 /// let kind = EntryKind::Directory { dir_id: oxcrypt_core::vault::path::DirId::from_raw("abc") };
 ///
-/// let id = table.get_or_insert_with(path, || PathEntry::new(VaultPath::new("documents"), kind));
+/// let id = table.get_or_insert_with(&path, || PathEntry::new(VaultPath::new("documents"), kind));
 /// assert!(id > 1); // Greater than root ID
 /// ```
 pub struct PathTable<Id, Entry> {
@@ -280,12 +280,12 @@ where
     /// # Returns
     ///
     /// The ID associated with the path (existing or newly allocated).
-    pub fn get_or_insert_with<F>(&self, path: VaultPath, make_entry: F) -> u64
+    pub fn get_or_insert_with<F>(&self, path: &VaultPath, make_entry: F) -> u64
     where
         F: FnOnce() -> Entry,
     {
         // Fast path: check if already exists
-        if let Some(id) = self.path_to_id.get(&path) {
+        if let Some(id) = self.path_to_id.get(path) {
             return *id;
         }
 
@@ -452,7 +452,7 @@ mod tests {
         let table = make_test_table();
         let path = VaultPath::new("documents");
 
-        let id = table.get_or_insert_with(path.clone(), || {
+        let id = table.get_or_insert_with(&path, || {
             PathEntry::new(
                 path.clone(),
                 EntryKind::Directory {
@@ -463,7 +463,7 @@ mod tests {
         assert!(id > 1);
 
         // Second call should return same ID
-        let id2 = table.get_or_insert_with(path.clone(), || {
+        let id2 = table.get_or_insert_with(&path, || {
             PathEntry::new(
                 path.clone(),
                 EntryKind::Directory {
@@ -479,7 +479,7 @@ mod tests {
         let table = make_test_table();
         let path = VaultPath::new("temp");
 
-        let id = table.get_or_insert_with(path.clone(), || {
+        let id = table.get_or_insert_with(&path, || {
             PathEntry::new(
                 path.clone(),
                 EntryKind::File {
@@ -514,7 +514,7 @@ mod tests {
         let old_path = VaultPath::new("old_name");
         let new_path = VaultPath::new("new_name");
 
-        let id = table.get_or_insert_with(old_path.clone(), || {
+        let id = table.get_or_insert_with(&old_path, || {
             PathEntry::new(
                 old_path.clone(),
                 EntryKind::File {
@@ -540,7 +540,7 @@ mod tests {
         let table = make_test_table();
         let path = VaultPath::new("to_delete");
 
-        let id = table.get_or_insert_with(path.clone(), || {
+        let id = table.get_or_insert_with(&path, || {
             PathEntry::new(
                 path.clone(),
                 EntryKind::File {
@@ -565,13 +565,13 @@ mod tests {
 
         // Add some entries
         for i in 0..5 {
-            let path = VaultPath::new(format!("file_{}", i));
-            table.get_or_insert_with(path.clone(), || {
+            let path = VaultPath::new(format!("file_{i}"));
+            table.get_or_insert_with(&path, || {
                 PathEntry::new(
-                    path,
+                    path.clone(),
                     EntryKind::File {
                         dir_id: DirId::root(),
-                        name: format!("file_{}", i),
+                        name: format!("file_{i}"),
                     },
                 )
             });
@@ -595,7 +595,7 @@ mod tests {
         assert!(!file.is_directory());
         assert!(!file.is_symlink());
         assert_eq!(file.filename(), Some("test.txt"));
-        assert_eq!(file.parent_dir_id().map(|d| d.as_str()), Some("parent"));
+        assert_eq!(file.parent_dir_id().map(DirId::as_str), Some("parent"));
         assert!(file.dir_id().is_none());
 
         let dir = EntryKind::Directory {
@@ -629,13 +629,13 @@ mod tests {
         for i in 0..10 {
             let table = Arc::clone(&table);
             handles.push(thread::spawn(move || {
-                let path = VaultPath::new(format!("file_{}", i));
-                table.get_or_insert_with(path.clone(), || {
+                let path = VaultPath::new(format!("file_{i}"));
+                table.get_or_insert_with(&path, || {
                     PathEntry::new(
-                        path,
+                        path.clone(),
                         EntryKind::File {
                             dir_id: DirId::root(),
-                            name: format!("file_{}", i),
+                            name: format!("file_{i}"),
                         },
                     )
                 })
@@ -646,7 +646,7 @@ mod tests {
 
         // All IDs should be unique
         let mut sorted = ids.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len());
 
@@ -664,9 +664,9 @@ mod tests {
         assert!(table.get(2).is_some());
 
         let path = VaultPath::new("test");
-        let id = table.get_or_insert_with(path.clone(), || {
+        let id = table.get_or_insert_with(&path, || {
             PathEntry::new(
-                path,
+                path.clone(),
                 EntryKind::File {
                     dir_id: DirId::root(),
                     name: "test".to_string(),

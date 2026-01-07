@@ -222,7 +222,7 @@ jobs:
             --exclude oxcrypt-fskit \
             --exclude DELETED \
             --exclude oxcrypt-desktop \
-            --exclude oxbench
+            --exclude oxcrypt-bench
       - name: Test (no default features)
         run: |
           cargo nextest run --profile unit --no-default-features \
@@ -296,10 +296,10 @@ jobs:
         run: cargo nextest run --profile unit
 
       - name: Build CLI (no mount backends)
-        run: cargo build -p oxcrypt --no-default-features --verbose
+        run: cargo build -p oxcrypt-cli --no-default-features --verbose
 
       - name: Build CLI with WebDAV
-        run: cargo build -p oxcrypt --features webdav --verbose
+        run: cargo build -p oxcrypt-cli --features webdav --verbose
 
       - name: Build WebDAV crate
         run: cargo build -p oxcrypt-webdav --verbose

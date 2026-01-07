@@ -4,15 +4,12 @@ use dioxus::prelude::*;
 
 use crate::backend::{cleanup_and_exit, mount_manager};
 use crate::components::{EmptyState, Sidebar, VaultDetail};
-use crate::dialogs::{AddVaultDialog, CreateVaultDialog};
+use crate::dialogs::{AddVaultDialog, ConfigWarningDialog, CreateVaultDialog};
 use crate::menu::MenuBarEvent;
 use crate::state::{use_app_state, AppState, VaultConfig, VaultState};
 use crate::tray::menu::VaultAction;
 use crate::tray::{update_tray_menu, TrayEvent};
 use crate::windows::{SettingsWindow, StatsWindow, StatsWindowProps};
-
-#[cfg(all(target_os = "macos", feature = "fskit"))]
-use crate::dialogs::FSKitSetupDialog;
 
 /// Tailwind CSS stylesheet asset
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
@@ -30,7 +27,7 @@ pub fn App() -> Element {
     // Get theme and platform classes for styling
     let theme_class = app_state.read().config.theme.css_class().unwrap_or("");
     let platform_class = crate::current_platform().css_class();
-    let root_class = format!("app-root {} {}", theme_class, platform_class);
+    let root_class = format!("app-root {theme_class} {platform_class}");
 
     rsx! {
         // Include Tailwind CSS
@@ -44,9 +41,9 @@ pub fn App() -> Element {
             Sidebar {
                 selected_vault_id: selected_vault(),
                 on_select: move |id: String| selected_vault.set(Some(id)),
-                on_add_vault: move |_| show_add_vault_dialog.set(true),
-                on_new_vault: move |_| show_create_vault_dialog.set(true),
-                on_settings: move |_| open_settings_window(),
+                on_add_vault: move |()| show_add_vault_dialog.set(true),
+                on_new_vault: move |()| show_create_vault_dialog.set(true),
+                on_settings: move |()| open_settings_window(),
             }
 
             // Right panel with vault details or empty state
@@ -56,7 +53,7 @@ pub fn App() -> Element {
                 if let Some(vault_id) = selected_vault() {
                     VaultDetail {
                         vault_id,
-                        on_removed: move |_| selected_vault.set(None),
+                        on_removed: move |()| selected_vault.set(None),
                     }
                 } else {
                     EmptyState {}
@@ -67,8 +64,8 @@ pub fn App() -> Element {
         // Add existing vault dialog
         if show_add_vault_dialog() {
             AddVaultDialog {
-                on_complete: move |_| show_add_vault_dialog.set(false),
-                on_cancel: move |_| show_add_vault_dialog.set(false),
+                on_complete: move |()| show_add_vault_dialog.set(false),
+                on_cancel: move |()| show_add_vault_dialog.set(false),
             }
         }
 
@@ -78,9 +75,7 @@ pub fn App() -> Element {
                 on_complete: move |path: std::path::PathBuf| {
                     // Add the newly created vault to state
                     let name = path
-                        .file_name()
-                        .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "New Vault".to_string());
+                        .file_name().map_or_else(|| "New Vault".to_string(), |n: &std::ffi::OsStr| n.to_string_lossy().to_string());
                     // Use the default backend from settings
                     let default_backend = app_state.read().config.default_backend;
                     let config = VaultConfig::with_backend(name, path, default_backend);
@@ -89,12 +84,12 @@ pub fn App() -> Element {
                     selected_vault.set(Some(id));
                     show_create_vault_dialog.set(false);
                 },
-                on_cancel: move |_| show_create_vault_dialog.set(false),
+                on_cancel: move |()| show_create_vault_dialog.set(false),
             }
         }
 
-        // FSKit setup wizard (macOS only, conditionally compiled)
-        FSKitSetupWrapper {}
+        // Config warning dialog (shown if config was corrupted)
+        ConfigWarningWrapper {}
 
         // Tray event handler
         TrayEventHandler {
@@ -103,8 +98,8 @@ pub fn App() -> Element {
 
         // Menu bar event handler
         MenuEventHandler {
-            on_add_vault: move |_| show_add_vault_dialog.set(true),
-            on_new_vault: move |_| show_create_vault_dialog.set(true),
+            on_add_vault: move |()| show_add_vault_dialog.set(true),
+            on_new_vault: move |()| show_create_vault_dialog.set(true),
         }
 
         // Tray menu updater - keeps tray menu in sync with vault state
@@ -131,19 +126,19 @@ fn open_settings_window() {
 }
 
 /// Open the statistics window for a vault in a separate window
-pub fn open_stats_window(vault_id: String, vault_name: String) {
+pub fn open_stats_window(vault_id: String, vault_name: &str) {
     let window = dioxus::desktop::window();
-    let props = StatsWindowProps { vault_id, vault_name: vault_name.clone() };
+    let props = StatsWindowProps { vault_id, vault_name: vault_name.to_string() };
     let dom = VirtualDom::new_with_props(StatsWindow, props);
     // Build a menu for this window to maintain consistent menu bar
     let menu = crate::menu::build_menu_bar();
     // Include CSS in head - workaround for asset loading in secondary windows with props
     let css_path = asset!("/assets/tailwind.css");
-    let custom_head = format!(r#"<link rel="stylesheet" href="{}" />"#, css_path);
+    let custom_head = format!(r#"<link rel="stylesheet" href="{css_path}" />"#);
     let cfg = dioxus::desktop::Config::new()
         .with_window(
             dioxus::desktop::WindowBuilder::new()
-                .with_title(format!("Statistics - {}", vault_name))
+                .with_title(format!("Statistics - {vault_name}"))
                 .with_inner_size(dioxus::desktop::LogicalSize::new(500.0, 700.0))
                 .with_min_inner_size(dioxus::desktop::LogicalSize::new(420.0, 550.0))
                 .with_resizable(true),
@@ -153,61 +148,37 @@ pub fn open_stats_window(vault_id: String, vault_name: String) {
     window.new_window(dom, cfg);
 }
 
-/// Wrapper component for FSKit setup dialog
+/// Wrapper component for config warning dialog
 ///
-/// This is a separate component so we can use #[cfg] attributes properly
-/// (rsx! macro doesn't support inline #[cfg]).
-#[cfg(all(target_os = "macos", feature = "fskit"))]
+/// Shows a warning dialog if the config file was corrupted or couldn't be loaded.
 #[component]
-fn FSKitSetupWrapper() -> Element {
+fn ConfigWarningWrapper() -> Element {
     let mut app_state = use_app_state();
-    let mut show_fskit_setup = use_signal(|| false);
+    let mut show_warning = use_signal(|| false);
+    let mut warning_message = use_signal(String::new);
 
-    // Check FSKit status on startup
-    let config_dismissed = app_state.read().config.fskit_setup_dismissed;
+    // Check for config warning on startup
     use_effect(move || {
-        if config_dismissed {
-            return;
+        if let Some(message) = app_state.read().config_warning() {
+            warning_message.set(message);
+            show_warning.set(true);
         }
-        spawn(async move {
-            use oxcrypt_fskit::setup::{get_status, BridgeStatus};
-            let status = get_status().await;
-            // Show dialog if FSKit needs setup (but is supported)
-            if matches!(
-                status,
-                BridgeStatus::NotInstalled
-                    | BridgeStatus::Quarantined
-                    | BridgeStatus::ExtensionDisabled
-            ) {
-                show_fskit_setup.set(true);
-            }
-        });
     });
 
-    if show_fskit_setup() {
+    if show_warning() {
         rsx! {
-            FSKitSetupDialog {
-                on_complete: move |_| {
-                    show_fskit_setup.set(false);
-                },
-                on_dismiss: move |_| {
-                    // Mark as dismissed so we don't show again
-                    app_state.write().config.fskit_setup_dismissed = true;
-                    let _ = app_state.read().save();
-                    show_fskit_setup.set(false);
+            ConfigWarningDialog {
+                message: warning_message(),
+                on_dismiss: move |()| {
+                    // Clear the warning so it won't show again
+                    app_state.write().clear_config_warning();
+                    show_warning.set(false);
                 },
             }
         }
     } else {
         rsx! {}
     }
-}
-
-/// No-op wrapper for non-macOS or non-fskit builds
-#[cfg(not(all(target_os = "macos", feature = "fskit")))]
-#[component]
-fn FSKitSetupWrapper() -> Element {
-    rsx! {}
 }
 
 /// Component that handles tray menu events
@@ -426,9 +397,7 @@ fn handle_menu_event(
         | MenuBarEvent::RemoveVault => {
             tracing::debug!("Menu: Vault action {:?} - handled via VaultDetail", event);
         }
-        // Window actions are handled by the system
-        MenuBarEvent::Minimize | MenuBarEvent::Zoom => {}
-        // Standard macOS items (About and Quit handled by system)
-        MenuBarEvent::About | MenuBarEvent::Quit => {}
+        // Window actions are handled by the system, standard macOS items (About and Quit handled by system)
+        MenuBarEvent::Minimize | MenuBarEvent::Zoom | MenuBarEvent::About | MenuBarEvent::Quit => {}
     }
 }

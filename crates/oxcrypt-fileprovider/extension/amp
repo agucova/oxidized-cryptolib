@@ -1,0 +1,6 @@
+warning: unhandled Platform key FamilyDisplayName
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project OxCryptFileProvider.xcodeproj -scheme OxCryptFileProvider -configuration Debug build 2
+
+2026-01-05 18:16:12.720 xcodebuild[13741:4100413] Writing error result bundle to /var/folders/lk/jgh211f55z72kb1lr9zp7d1c0000gn/T/ResultBundle_2026-05-01_18-16-0012.xcresult
+xcodebuild: error: Unknown build action '2'.

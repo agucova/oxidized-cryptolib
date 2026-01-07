@@ -14,8 +14,8 @@ use std::collections::HashSet;
 pub fn assert_file_content(mount: &TestMount, path: &str, expected: &[u8]) {
     let actual = mount
         .read(path)
-        .unwrap_or_else(|e| panic!("Failed to read file '{}': {}", path, e));
-    assert_bytes_equal(&actual, expected, &format!("file '{}'", path));
+        .unwrap_or_else(|e| panic!("Failed to read file '{path}': {e}"));
+    assert_bytes_equal(&actual, expected, &format!("file '{path}'"));
 }
 
 /// Assert that a file exists and its SHA-256 hash matches.
@@ -24,12 +24,11 @@ pub fn assert_file_content(mount: &TestMount, path: &str, expected: &[u8]) {
 pub fn assert_file_hash(mount: &TestMount, path: &str, expected_hash: &[u8; 32]) {
     let actual = mount
         .read(path)
-        .unwrap_or_else(|e| panic!("Failed to read file '{}': {}", path, e));
+        .unwrap_or_else(|e| panic!("Failed to read file '{path}': {e}"));
     let actual_hash = sha256(&actual);
     assert_eq!(
         &actual_hash, expected_hash,
-        "File '{}' hash mismatch:\n  expected: {:02x?}\n  got:      {:02x?}",
-        path, expected_hash, actual_hash
+        "File '{path}' hash mismatch:\n  expected: {expected_hash:02x?}\n  got:      {actual_hash:02x?}"
     );
 }
 
@@ -37,22 +36,20 @@ pub fn assert_file_hash(mount: &TestMount, path: &str, expected_hash: &[u8; 32])
 pub fn assert_not_found(mount: &TestMount, path: &str) {
     assert!(
         !mount.exists(path),
-        "Expected '{}' to not exist, but it does",
-        path
+        "Expected '{path}' to not exist, but it does"
     );
 }
 
 /// Assert that a path exists.
 pub fn assert_exists(mount: &TestMount, path: &str) {
-    assert!(mount.exists(path), "Expected '{}' to exist, but it doesn't", path);
+    assert!(mount.exists(path), "Expected '{path}' to exist, but it doesn't");
 }
 
 /// Assert that a path is a directory.
 pub fn assert_is_directory(mount: &TestMount, path: &str) {
     assert!(
         mount.is_dir(path),
-        "Expected '{}' to be a directory, but it isn't",
-        path
+        "Expected '{path}' to be a directory, but it isn't"
     );
 }
 
@@ -60,8 +57,7 @@ pub fn assert_is_directory(mount: &TestMount, path: &str) {
 pub fn assert_is_file(mount: &TestMount, path: &str) {
     assert!(
         mount.is_file(path),
-        "Expected '{}' to be a file, but it isn't",
-        path
+        "Expected '{path}' to be a file, but it isn't"
     );
 }
 
@@ -69,7 +65,7 @@ pub fn assert_is_file(mount: &TestMount, path: &str) {
 pub fn assert_file_size(mount: &TestMount, path: &str, expected_size: u64) {
     let metadata = mount
         .metadata(path)
-        .unwrap_or_else(|e| panic!("Failed to get metadata for '{}': {}", path, e));
+        .unwrap_or_else(|e| panic!("Failed to get metadata for '{path}': {e}"));
     assert_eq!(
         metadata.len(),
         expected_size,
@@ -84,18 +80,17 @@ pub fn assert_file_size(mount: &TestMount, path: &str, expected_size: u64) {
 pub fn assert_dir_entries(mount: &TestMount, path: &str, expected: &[&str]) {
     let actual = mount
         .list(path)
-        .unwrap_or_else(|e| panic!("Failed to list directory '{}': {}", path, e));
+        .unwrap_or_else(|e| panic!("Failed to list directory '{path}': {e}"));
 
     let expected_set: HashSet<&str> = expected.iter().copied().collect();
-    let actual_set: HashSet<&str> = actual.iter().map(|s| s.as_str()).collect();
+    let actual_set: HashSet<&str> = actual.iter().map(std::string::String::as_str).collect();
 
     let missing: Vec<_> = expected_set.difference(&actual_set).collect();
     let extra: Vec<_> = actual_set.difference(&expected_set).collect();
 
     assert!(
         missing.is_empty() && extra.is_empty(),
-        "Directory '{}' entries mismatch:\n  missing: {:?}\n  extra: {:?}\n  expected: {:?}\n  actual: {:?}",
-        path, missing, extra, expected, actual
+        "Directory '{path}' entries mismatch:\n  missing: {missing:?}\n  extra: {extra:?}\n  expected: {expected:?}\n  actual: {actual:?}"
     );
 }
 
@@ -103,17 +98,14 @@ pub fn assert_dir_entries(mount: &TestMount, path: &str, expected: &[&str]) {
 pub fn assert_dir_contains(mount: &TestMount, path: &str, expected: &[&str]) {
     let actual = mount
         .list(path)
-        .unwrap_or_else(|e| panic!("Failed to list directory '{}': {}", path, e));
+        .unwrap_or_else(|e| panic!("Failed to list directory '{path}': {e}"));
 
-    let actual_set: HashSet<&str> = actual.iter().map(|s| s.as_str()).collect();
+    let actual_set: HashSet<&str> = actual.iter().map(std::string::String::as_str).collect();
 
     for entry in expected {
         assert!(
             actual_set.contains(entry),
-            "Directory '{}' missing expected entry '{}'. Found: {:?}",
-            path,
-            entry,
-            actual
+            "Directory '{path}' missing expected entry '{entry}'. Found: {actual:?}"
         );
     }
 }
@@ -133,7 +125,7 @@ pub fn assert_errno<T: std::fmt::Debug>(
 pub fn assert_symlink_target(mount: &TestMount, link_path: &str, expected_target: &str) {
     let actual = mount
         .read_link(link_path)
-        .unwrap_or_else(|e| panic!("Failed to read symlink '{}': {}", link_path, e));
+        .unwrap_or_else(|e| panic!("Failed to read symlink '{link_path}': {e}"));
     assert_eq!(
         actual.to_string_lossy(),
         expected_target,

@@ -1,0 +1,46 @@
+{
+  "" : {
+    "const-values" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary.swiftconstvalues",
+    "dependencies" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary.d",
+    "diagnostics" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary.dia",
+    "emit-module-dependencies" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary-emit-module.dia",
+    "pch" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFSExtension-primary.swiftdeps"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Shared/KeychainHelper.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/KeychainHelper.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/KeychainHelper.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/KeychainHelper.o"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Shared/MountRegistry.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/MountRegistry.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/MountRegistry.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/MountRegistry.o"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Shared/OxVaultServiceProtocol.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultServiceProtocol.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultServiceProtocol.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultServiceProtocol.o"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Sources/OxVaultFilesystem.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFilesystem.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFilesystem.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultFilesystem.o"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/Sources/OxVaultVolume.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultVolume.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultVolume.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/OxVaultVolume.o"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/swift/Sources/OxVaultFFI/SwiftBridgeCore.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/SwiftBridgeCore.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/SwiftBridgeCore.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/SwiftBridgeCore.o"
+  },
+  "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/swift/Sources/OxVaultFFI/oxidized-fskit-ffi.swift" : {
+    "index-unit-output-path" : "/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/oxidized-fskit-ffi.o",
+    "llvm-bc" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/oxidized-fskit-ffi.bc",
+    "object" : "/Users/agucova/repos/oxidized-cryptolib/crates/oxcrypt-fskit/extension/build/OxVaultFS.build/Release/OxVaultFSExtension.build/Objects-normal/x86_64/oxidized-fskit-ffi.o"
+  }
+}

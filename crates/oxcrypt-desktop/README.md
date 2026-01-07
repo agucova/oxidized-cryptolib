@@ -8,9 +8,9 @@ Desktop GUI for managing Cryptomator vaults using [Dioxus](https://dioxuslabs.co
 - Mount/unmount vaults as native filesystems
 - Multiple backend support:
   - **FUSE** (Linux/macOS) - requires `--features fuse`
-  - **FSKit** (macOS 15.4+) - requires `--features fskit`
   - **WebDAV** (cross-platform) - requires `--features webdav`
   - **NFS** (Linux/macOS) - requires `--features nfs`
+  - **File Provider** (macOS 13+) - requires `--features fileprovider`
 - Automatic backend selection based on platform capabilities
 - System tray integration
 - Real-time vault statistics
@@ -34,9 +34,6 @@ cargo build -p oxcrypt-desktop --features fuse --release
 # WebDAV backend (cross-platform, no kernel extensions)
 cargo build -p oxcrypt-desktop --features webdav --release
 
-# FSKit backend (macOS 15.4+)
-cargo build -p oxcrypt-desktop --features fskit --release
-
 # Multiple backends
 cargo build -p oxcrypt-desktop --features fuse,webdav,nfs --release
 ```
@@ -49,9 +46,9 @@ oxcrypt-desktop (Dioxus desktop app)
      ├── MountManager
      │        │
      │        ├── FuseBackend (from oxcrypt-fuse)
-     │        ├── FSKitBackend (from oxcrypt-fskit)
      │        ├── WebDavBackend (from oxcrypt-webdav)
-     │        └── NfsBackend (from oxcrypt-nfs)
+     │        ├── NfsBackend (from oxcrypt-nfs)
+     │        └── FileProviderBackend (from oxcrypt-fileprovider)
      │
      ├── VaultState (app state)
      │
@@ -76,9 +73,9 @@ The GUI supports automatic or manual backend selection:
 | Backend | Platform | Requirements |
 |---------|----------|--------------|
 | FUSE | Linux, macOS | libfuse/macFUSE installed |
-| FSKit | macOS 15.4+ | Swift extension built and enabled |
 | WebDAV | All | None (userspace server) |
 | NFS | Linux, macOS | None (userspace server) |
+| File Provider | macOS 13+ | Built-in system extension |
 
 When using `BackendType::Auto`, the GUI will select the best available backend for your platform.
 

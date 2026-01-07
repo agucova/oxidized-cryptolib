@@ -44,7 +44,6 @@ use generic_array::{
 
 type U8x8 = GenericArray<u8, U8>;
 type Block = GenericArray<u8, U16>;
-extern crate hex;
 
 /**
     IV from RFC3394 Section 2.2.3.1

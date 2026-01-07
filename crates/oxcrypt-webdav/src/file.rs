@@ -9,7 +9,6 @@ use crate::error::write_error_to_fs_error;
 use crate::metadata::CryptomatorMetaData;
 use bytes::Bytes;
 use dav_server::fs::{DavFile, DavMetaData, FsError, FsFuture};
-use oxcrypt_core::fs::streaming::VaultFileReader;
 use oxcrypt_core::vault::VaultOperationsAsync;
 use oxcrypt_mount::moka_cache::SyncTtlCache;
 use oxcrypt_mount::{VaultStats, WriteBuffer};
@@ -25,10 +24,14 @@ type MetadataCache = SyncTtlCache<String, CryptomatorMetaData>;
 /// A file handle for WebDAV operations.
 ///
 /// Supports two modes:
-/// - **Reader**: Streaming read-only access using `VaultFileReader`
+/// - **Reader**: In-memory buffered read-only access
 /// - **WriteBuffer**: Buffered write access with read-modify-write pattern
+///
+/// Both modes use in-memory buffers to avoid holding vault locks for the
+/// duration of the HTTP request. This prevents lock contention when multiple
+/// operations target the same directory.
 pub enum CryptomatorFile {
-    /// Read-only streaming reader for GET requests.
+    /// Read-only in-memory buffer for GET requests.
     Reader(ReaderHandle),
     /// Write buffer for PUT requests.
     Writer(WriterHandle),
@@ -53,9 +56,13 @@ impl std::fmt::Debug for CryptomatorFile {
 }
 
 /// Handle for read-only file access.
+///
+/// Uses an in-memory buffer that is populated at open time using `read_file`.
+/// This avoids holding vault locks for the lifetime of the HTTP request,
+/// preventing lock contention with concurrent write operations.
 pub struct ReaderHandle {
-    /// The streaming reader (wrapped in Mutex for interior mutability).
-    reader: Arc<Mutex<VaultFileReader>>,
+    /// In-memory file content buffer.
+    content: Vec<u8>,
     /// Current read position.
     position: u64,
     /// File size (plaintext).
@@ -85,12 +92,16 @@ pub struct WriterHandle {
 }
 
 impl CryptomatorFile {
-    /// Create a new reader handle from a VaultFileReader.
-    pub fn reader(reader: VaultFileReader, filename: String, stats: Arc<VaultStats>) -> Self {
-        let size = reader.plaintext_size();
+    /// Create a new reader handle from file content.
+    ///
+    /// The content should be obtained via `read_file` which reads the entire
+    /// file into memory at open time. This avoids holding vault locks for the
+    /// duration of the HTTP request.
+    pub fn reader(content: Vec<u8>, filename: String, stats: Arc<VaultStats>) -> Self {
+        let size = content.len() as u64;
         stats.record_file_open();
         CryptomatorFile::Reader(ReaderHandle {
-            reader: Arc::new(Mutex::new(reader)),
+            content,
             position: 0,
             size,
             filename,
@@ -156,25 +167,27 @@ impl DavFile for CryptomatorFile {
                 CryptomatorFile::Reader(h) => {
                     h.stats.start_read();
                     let start = Instant::now();
-                    let mut reader = h.reader.lock().await;
-                    let result = reader
-                        .read_range(h.position, count)
-                        .await
-                        .map_err(|_| FsError::GeneralFailure);
+
+                    // Read from in-memory buffer (no locks held)
+                    // Safe cast: position is tracked file offset, fits in usize
+                    #[allow(clippy::cast_possible_truncation)]
+                    let offset = h.position as usize;
+                    let end = std::cmp::min(offset + count, h.content.len());
+                    let data = if offset < h.content.len() {
+                        h.content[offset..end].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+
                     let elapsed = start.elapsed();
                     h.stats.finish_read();
                     h.stats.record_read_latency(elapsed);
 
-                    match result {
-                        Ok(data) => {
-                            let len = data.len() as u64;
-                            h.position += len;
-                            h.stats.record_read(len);
-                            h.stats.record_decrypted(len);
-                            Ok(Bytes::from(data))
-                        }
-                        Err(e) => Err(e),
-                    }
+                    let len = data.len() as u64;
+                    h.position += len;
+                    h.stats.record_read(len);
+                    h.stats.record_decrypted(len);
+                    Ok(Bytes::from(data))
                 }
                 CryptomatorFile::Writer(h) => {
                     let buf = h.buffer.lock().await;
@@ -214,27 +227,36 @@ impl DavFile for CryptomatorFile {
     fn seek(&mut self, pos: SeekFrom) -> FsFuture<'_, u64> {
         Box::pin(async move {
             let (base, offset) = match pos {
-                SeekFrom::Start(n) => (0i64, n as i64),
+                SeekFrom::Start(n) => (0i64, i64::try_from(n).unwrap_or(0)),
                 SeekFrom::End(n) => {
                     let size = match self {
+                        // Safe cast: file sizes from dav_server API are always positive and within i64 range
+                        #[allow(clippy::cast_possible_wrap)]
                         CryptomatorFile::Reader(h) => h.size as i64,
                         CryptomatorFile::Writer(h) => {
                             let buf = h.buffer.lock().await;
-                            buf.len() as i64
+                            // Safe cast: buffer lengths are always positive and within i64 range
+                            #[allow(clippy::cast_possible_wrap)]
+                            let len = buf.len() as i64;
+                            len
                         }
                     };
                     (size, n)
                 }
                 SeekFrom::Current(n) => {
                     let pos = match self {
+                        // Safe cast: file positions are always positive and within i64 range
+                        #[allow(clippy::cast_possible_wrap)]
                         CryptomatorFile::Reader(h) => h.position as i64,
+                        // Safe cast: file positions are always positive and within i64 range
+                        #[allow(clippy::cast_possible_wrap)]
                         CryptomatorFile::Writer(h) => h.position as i64,
                     };
                     (pos, n)
                 }
             };
 
-            let new_pos = (base + offset).max(0) as u64;
+            let new_pos = u64::try_from((base + offset).max(0)).unwrap_or(0);
             match self {
                 CryptomatorFile::Reader(h) => h.position = new_pos,
                 CryptomatorFile::Writer(h) => h.position = new_pos,
@@ -249,6 +271,7 @@ impl DavFile for CryptomatorFile {
                 CryptomatorFile::Reader(_) => Ok(()), // Nothing to flush for readers
                 CryptomatorFile::Writer(h) => {
                     let mut buffer = h.buffer.lock().await;
+
                     if buffer.is_dirty() {
                         let dir_id = buffer.dir_id().clone();
                         let filename = buffer.filename().to_string();

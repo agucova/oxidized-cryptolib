@@ -73,7 +73,7 @@ pub fn find_processes_using_mount(mountpoint: &Path) -> Vec<ProcessInfo> {
             Err(_) => continue,
         };
         // The file path is the last column (NAME)
-        let file_path = parts.last().map(|s| s.to_string());
+        let file_path = parts.last().map(ToString::to_string);
 
         // Deduplicate by PID, keeping first occurrence
         processes.entry(pid).or_insert(ProcessInfo {

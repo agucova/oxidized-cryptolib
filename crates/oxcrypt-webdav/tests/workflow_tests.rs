@@ -217,30 +217,30 @@ async fn test_multiple_file_operations() {
 
     // Create many files
     for i in 0..count {
-        let content = format!("file {} content", i).into_bytes();
-        server.put_ok(&format!("/multi{}.txt", i), content).await;
+        let content = format!("file {i} content").into_bytes();
+        server.put_ok(&format!("/multi{i}.txt"), content).await;
     }
 
     // Read all
     for i in 0..count {
-        let expected = format!("file {} content", i).into_bytes();
-        assert_file_content(&server, &format!("/multi{}.txt", i), &expected).await;
+        let expected = format!("file {i} content").into_bytes();
+        assert_file_content(&server, &format!("/multi{i}.txt"), &expected).await;
     }
 
     // Delete even numbered
     for i in (0..count).step_by(2) {
-        server.delete_ok(&format!("/multi{}.txt", i)).await;
+        server.delete_ok(&format!("/multi{i}.txt")).await;
     }
 
     // Verify odd numbered still exist
     for i in (1..count).step_by(2) {
-        let expected = format!("file {} content", i).into_bytes();
-        assert_file_content(&server, &format!("/multi{}.txt", i), &expected).await;
+        let expected = format!("file {i} content").into_bytes();
+        assert_file_content(&server, &format!("/multi{i}.txt"), &expected).await;
     }
 
     // Verify even numbered are gone
     for i in (0..count).step_by(2) {
-        assert_not_found(&server, &format!("/multi{}.txt", i)).await;
+        assert_not_found(&server, &format!("/multi{i}.txt")).await;
     }
 }
 

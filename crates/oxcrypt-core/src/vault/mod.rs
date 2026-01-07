@@ -1,5 +1,6 @@
 //! Vault-level abstractions and operations
 
+pub mod cache;
 pub mod config;
 pub mod creator;
 pub mod master_key;
@@ -13,6 +14,8 @@ pub mod handles;
 #[cfg(feature = "async")]
 pub mod locks;
 #[cfg(feature = "async")]
+pub mod lock_metrics;
+#[cfg(feature = "async")]
 pub mod operations_async;
 
 #[cfg(feature = "async")]
@@ -23,6 +26,7 @@ pub use locks::{VaultLockManager, VaultLockRegistry};
 pub use operations_async::{change_password_async, ChangePasswordAsyncError, VaultOperationsAsync};
 
 // Re-export commonly used types
+pub use cache::{CacheStats, VaultCache};
 pub use config::{
     create_vault_config, extract_master_key, validate_vault_claims, CipherCombo, CiphertextDir,
     VaultConfig, VaultConfigurationClaims, VaultError,
@@ -36,8 +40,8 @@ pub use password::{
     PasswordValidationError, PasswordValidator, ValidatedPassword, DEFAULT_VALIDATION_TIMEOUT,
 };
 pub use operations::{
-    debug_read_files_in_tree, DirEntry, VaultDirectoryInfo, VaultFileInfo, VaultOperationError,
-    VaultOperations, VaultSymlinkInfo, VaultWriteError,
+    DirEntry, VaultDirectoryInfo, VaultFileInfo, VaultOperationError, VaultOperations,
+    VaultSymlinkInfo, VaultWriteError,
 };
 pub use path::{DirId, EntryType, VaultPath};
 

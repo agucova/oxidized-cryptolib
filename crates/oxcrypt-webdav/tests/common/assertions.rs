@@ -1,5 +1,7 @@
 //! Custom assertions for WebDAV integration tests.
 
+#![allow(dead_code)]
+
 use crate::common::TestServer;
 use reqwest::StatusCode;
 use sha2::{Digest, Sha256};
@@ -20,8 +22,7 @@ pub async fn assert_file_content(server: &TestServer, path: &str, expected: &[u8
         }
         Err((status, body)) => {
             panic!(
-                "Failed to read file {}: status={}, body={}",
-                path, status, body
+                "Failed to read file {path}: status={status}, body={body}"
             );
         }
     }
@@ -37,14 +38,12 @@ pub async fn assert_file_hash(server: &TestServer, path: &str, expected_hash: &[
             let actual_hash = sha256(&actual);
             assert_eq!(
                 &actual_hash, expected_hash,
-                "File hash mismatch at {}: expected {:x?}, got {:x?}",
-                path, expected_hash, actual_hash
+                "File hash mismatch at {path}: expected {expected_hash:x?}, got {actual_hash:x?}"
             );
         }
         Err((status, body)) => {
             panic!(
-                "Failed to read file {}: status={}, body={}",
-                path, status, body
+                "Failed to read file {path}: status={status}, body={body}"
             );
         }
     }
@@ -66,8 +65,7 @@ pub async fn assert_not_found(server: &TestServer, path: &str) {
 pub fn assert_status(actual: StatusCode, expected: StatusCode, context: &str) {
     assert_eq!(
         actual, expected,
-        "{}: expected status {}, got {}",
-        context, expected, actual
+        "{context}: expected status {expected}, got {actual}"
     );
 }
 
@@ -78,22 +76,19 @@ pub async fn assert_dir_entries(server: &TestServer, path: &str, expected: &[&st
     let (status, body) = server.propfind_body(path, "1").await;
     assert!(
         status == StatusCode::MULTI_STATUS || status.is_success(),
-        "PROPFIND {} failed with status {}: {}",
-        path,
-        status,
-        body
+        "PROPFIND {path} failed with status {status}: {body}"
     );
 
     // Parse the XML response to extract hrefs
     let entries = extract_hrefs_from_propfind(&body, path);
 
-    let expected_set: std::collections::HashSet<String> = expected.iter().map(|s| s.to_string()).collect();
+    let expected_set: std::collections::HashSet<String> = expected.iter().map(ToString::to_string).collect();
     let mut actual_set: std::collections::HashSet<String> = entries.into_iter().collect();
 
     // Remove the directory itself from actual (PROPFIND includes it)
     let normalized_path = path.trim_end_matches('/');
     actual_set.remove(normalized_path);
-    actual_set.remove(&format!("{}/", normalized_path));
+    actual_set.remove(&format!("{normalized_path}/"));
 
     // Compare
     let missing: Vec<_> = expected_set.difference(&actual_set).collect();
@@ -101,12 +96,7 @@ pub async fn assert_dir_entries(server: &TestServer, path: &str, expected: &[&st
 
     assert!(
         missing.is_empty() && extra.is_empty(),
-        "Directory {} entries mismatch:\n  missing: {:?}\n  extra: {:?}\n  expected: {:?}\n  actual: {:?}",
-        path,
-        missing,
-        extra,
-        expected,
-        actual_set
+        "Directory {path} entries mismatch:\n  missing: {missing:?}\n  extra: {extra:?}\n  expected: {expected:?}\n  actual: {actual_set:?}"
     );
 }
 
@@ -116,9 +106,7 @@ pub async fn assert_dir_exists(server: &TestServer, path: &str) {
     let status = resp.status();
     assert!(
         status == StatusCode::MULTI_STATUS || status.is_success(),
-        "Expected directory {} to exist, but got status {}",
-        path,
-        status
+        "Expected directory {path} to exist, but got status {status}"
     );
 }
 

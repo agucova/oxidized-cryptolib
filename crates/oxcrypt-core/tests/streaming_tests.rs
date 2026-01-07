@@ -1,6 +1,7 @@
 //! Integration tests for streaming file I/O.
 
 #![cfg(feature = "async")]
+#![allow(clippy::cast_possible_truncation)] // Test code with safe type conversions
 
 use oxcrypt_core::{
     fs::streaming::{CHUNK_PLAINTEXT_SIZE, encrypted_to_plaintext_size_or_zero},
@@ -16,7 +17,7 @@ use common::vault_builder::VaultBuilder;
 // Helper Functions
 // ============================================================================
 
-async fn setup_vault() -> (PathBuf, VaultOperationsAsync) {
+fn setup_vault() -> (PathBuf, VaultOperationsAsync) {
     let (vault_path, master_key) = VaultBuilder::new().build();
     let ops = VaultOperationsAsync::new(&vault_path, Arc::new(master_key));
     (vault_path, ops)
@@ -28,7 +29,7 @@ async fn setup_vault() -> (PathBuf, VaultOperationsAsync) {
 
 #[tokio::test]
 async fn test_streaming_write_read_roundtrip_small() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Write using streaming API
@@ -55,7 +56,7 @@ async fn test_streaming_write_read_roundtrip_small() {
 
 #[tokio::test]
 async fn test_streaming_write_read_roundtrip_empty() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Write empty file using streaming API
@@ -80,7 +81,7 @@ async fn test_streaming_write_read_roundtrip_empty() {
 
 #[tokio::test]
 async fn test_streaming_write_read_roundtrip_large() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create data larger than one chunk (32KB)
@@ -121,7 +122,7 @@ async fn test_streaming_write_read_roundtrip_large() {
 
 #[tokio::test]
 async fn test_streaming_random_access_within_chunk() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create test file
@@ -151,7 +152,7 @@ async fn test_streaming_random_access_within_chunk() {
 
 #[tokio::test]
 async fn test_streaming_random_access_across_chunks() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create data spanning multiple chunks
@@ -196,7 +197,7 @@ async fn test_streaming_random_access_across_chunks() {
 
 #[tokio::test]
 async fn test_streaming_read_past_eof() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let test_data = b"Short file content";
@@ -228,7 +229,7 @@ async fn test_streaming_read_past_eof() {
 
 #[tokio::test]
 async fn test_streaming_write_abort() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create and write some data
@@ -251,7 +252,7 @@ async fn test_streaming_write_abort() {
 
 #[tokio::test]
 async fn test_streaming_write_exact_chunk_boundary() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Write exactly one chunk worth of data
@@ -285,7 +286,7 @@ async fn test_streaming_write_exact_chunk_boundary() {
 
 #[tokio::test]
 async fn test_streaming_open_by_path() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create a subdirectory and file
@@ -310,7 +311,7 @@ async fn test_streaming_open_by_path() {
 
 #[tokio::test]
 async fn test_streaming_create_by_path() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create a subdirectory first
@@ -340,7 +341,7 @@ async fn test_streaming_create_by_path() {
 
 #[tokio::test]
 async fn test_streaming_read_non_streaming_write() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Write with non-streaming API
@@ -360,7 +361,7 @@ async fn test_streaming_read_non_streaming_write() {
 
 #[tokio::test]
 async fn test_non_streaming_read_streaming_write() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Write with streaming API
@@ -404,8 +405,7 @@ async fn test_reader_file_too_small() {
     let err_string = err.to_string();
     assert!(
         err_string.contains("too small") || err_string.contains("FileTooSmall"),
-        "Expected FileTooSmall error, got: {}",
-        err_string
+        "Expected FileTooSmall error, got: {err_string}"
     );
 }
 
@@ -431,8 +431,7 @@ async fn test_reader_invalid_header() {
     let err_string = err.to_string();
     assert!(
         err_string.contains("Header") || err_string.contains("decryption"),
-        "Expected header decryption error, got: {}",
-        err_string
+        "Expected header decryption error, got: {err_string}"
     );
 }
 
@@ -451,14 +450,13 @@ async fn test_reader_file_not_found() {
     let err_string = err.to_string();
     assert!(
         err_string.contains("IO error") || err_string.contains("No such file"),
-        "Expected IO error, got: {}",
-        err_string
+        "Expected IO error, got: {err_string}"
     );
 }
 
 #[tokio::test]
 async fn test_reader_corrupted_chunk() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create a valid file first
@@ -498,8 +496,7 @@ async fn test_reader_corrupted_chunk() {
         err_string.contains("Chunk decryption failed") ||
         err_string.contains("authentication tag") ||
         err_string.contains("Streaming"),
-        "Expected chunk decryption error, got: {}",
-        err_string
+        "Expected chunk decryption error, got: {err_string}"
     );
 }
 
@@ -509,7 +506,7 @@ async fn test_reader_corrupted_chunk() {
 
 #[tokio::test]
 async fn test_writer_write_after_finish() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let mut writer = ops.create_file(&root, "finished.txt").await
@@ -528,7 +525,7 @@ async fn test_writer_write_after_finish() {
 
 #[tokio::test]
 async fn test_writer_abort_cleans_up_temp_file() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create and write some data
@@ -571,8 +568,7 @@ async fn test_writer_invalid_path_no_parent() {
     let err_string = err.to_string();
     assert!(
         err_string.contains("Invalid path") || err_string.contains("no parent"),
-        "Expected invalid path error, got: {}",
-        err_string
+        "Expected invalid path error, got: {err_string}"
     );
 }
 
@@ -582,7 +578,7 @@ async fn test_writer_invalid_path_no_parent() {
 
 #[tokio::test]
 async fn test_reader_cache_hit_on_sequential_reads() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create a file with known content
@@ -610,7 +606,7 @@ async fn test_reader_cache_hit_on_sequential_reads() {
 
 #[tokio::test]
 async fn test_reader_cache_across_chunk_boundaries() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create data spanning multiple chunks
@@ -641,7 +637,7 @@ async fn test_reader_cache_across_chunk_boundaries() {
 
 #[tokio::test]
 async fn test_read_zero_length() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let test_data = b"Some content";
@@ -661,7 +657,7 @@ async fn test_read_zero_length() {
 
 #[tokio::test]
 async fn test_read_at_exact_chunk_boundary() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let chunk_size = CHUNK_PLAINTEXT_SIZE;
@@ -687,7 +683,7 @@ async fn test_read_at_exact_chunk_boundary() {
 
 #[tokio::test]
 async fn test_read_spanning_multiple_chunks() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let chunk_size = CHUNK_PLAINTEXT_SIZE;
@@ -719,7 +715,7 @@ fn test_streaming_context_display_empty() {
     use oxcrypt_core::fs::streaming::StreamingContext;
 
     let ctx = StreamingContext::new();
-    let display = format!("{}", ctx);
+    let display = format!("{ctx}");
     assert_eq!(display, "(no context)");
 }
 
@@ -729,8 +725,8 @@ fn test_streaming_context_display_with_path_only() {
     use std::path::PathBuf;
 
     let ctx = StreamingContext::new().with_path(PathBuf::from("/test/path"));
-    let display = format!("{}", ctx);
-    assert!(display.contains("/test/path"), "Display should contain path: {}", display);
+    let display = format!("{ctx}");
+    assert!(display.contains("/test/path"), "Display should contain path: {display}");
 }
 
 #[test]
@@ -738,8 +734,8 @@ fn test_streaming_context_display_with_chunk_only() {
     use oxcrypt_core::fs::streaming::StreamingContext;
 
     let ctx = StreamingContext::new().with_chunk(42);
-    let display = format!("{}", ctx);
-    assert!(display.contains("chunk 42"), "Display should contain chunk: {}", display);
+    let display = format!("{ctx}");
+    assert!(display.contains("chunk 42"), "Display should contain chunk: {display}");
 }
 
 #[test]
@@ -747,8 +743,8 @@ fn test_streaming_context_display_with_operation_only() {
     use oxcrypt_core::fs::streaming::StreamingContext;
 
     let ctx = StreamingContext::new().with_operation("test_op");
-    let display = format!("{}", ctx);
-    assert!(display.contains("test_op"), "Display should contain operation: {}", display);
+    let display = format!("{ctx}");
+    assert!(display.contains("test_op"), "Display should contain operation: {display}");
 }
 
 #[test]
@@ -761,10 +757,10 @@ fn test_streaming_context_display_full() {
         .with_chunk(5)
         .with_operation("decrypt");
 
-    let display = format!("{}", ctx);
-    assert!(display.contains("decrypt"), "Display should contain operation: {}", display);
-    assert!(display.contains("file.c9r"), "Display should contain path: {}", display);
-    assert!(display.contains("chunk 5"), "Display should contain chunk: {}", display);
+    let display = format!("{ctx}");
+    assert!(display.contains("decrypt"), "Display should contain operation: {display}");
+    assert!(display.contains("file.c9r"), "Display should contain path: {display}");
+    assert!(display.contains("chunk 5"), "Display should contain chunk: {display}");
 }
 
 #[test]
@@ -792,8 +788,8 @@ fn test_streaming_error_io_with_context() {
     let streaming_err = StreamingError::io_with_context(io_err, ctx);
     let err_string = streaming_err.to_string();
 
-    assert!(err_string.contains("IO error"), "Error should mention IO: {}", err_string);
-    assert!(err_string.contains("test"), "Error should contain context: {}", err_string);
+    assert!(err_string.contains("IO error"), "Error should mention IO: {err_string}");
+    assert!(err_string.contains("test"), "Error should contain context: {err_string}");
 }
 
 // ============================================================================
@@ -888,8 +884,7 @@ fn test_chunk_offset_calculations() {
         assert_eq!(
             chunk_num * CHUNK_PLAINTEXT_SIZE as u64 + chunk_offset as u64,
             offset as u64,
-            "Offset {} should decompose correctly into chunk {} offset {}",
-            offset, chunk_num, chunk_offset
+            "Offset {offset} should decompose correctly into chunk {chunk_num} offset {chunk_offset}"
         );
 
         // Verify encrypted offset
@@ -897,8 +892,7 @@ fn test_chunk_offset_calculations() {
         assert_eq!(
             encrypted_offset,
             HEADER_SIZE as u64 + chunk_num * CHUNK_ENCRYPTED_SIZE as u64,
-            "Encrypted offset for chunk {} should match formula",
-            chunk_num
+            "Encrypted offset for chunk {chunk_num} should match formula"
         );
     }
 }
@@ -909,7 +903,7 @@ fn test_chunk_offset_calculations() {
 
 #[tokio::test]
 async fn test_writer_exactly_one_chunk() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let chunk_size = CHUNK_PLAINTEXT_SIZE;
@@ -938,7 +932,7 @@ async fn test_writer_exactly_one_chunk() {
 
 #[tokio::test]
 async fn test_writer_multiple_small_writes() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let mut writer = ops.create_file(&root, "many_writes.txt").await
@@ -946,7 +940,7 @@ async fn test_writer_multiple_small_writes() {
 
     // Write many small pieces
     for i in 0..100 {
-        writer.write(format!("Line {}\n", i).as_bytes()).await
+        writer.write(format!("Line {i}\n").as_bytes()).await
             .expect("Failed to write line");
     }
 
@@ -968,7 +962,7 @@ async fn test_writer_multiple_small_writes() {
 
 #[tokio::test]
 async fn test_writer_large_single_write() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Write data larger than the buffer in a single call
@@ -1003,7 +997,7 @@ async fn test_writer_large_single_write() {
 
 #[tokio::test]
 async fn test_encrypted_size_matches_expected() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create files of various sizes and verify encrypted size calculation
@@ -1019,21 +1013,20 @@ async fn test_encrypted_size_matches_expected() {
         let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
 
         ops.write_file(&root, name, &data).await
-            .expect(&format!("Failed to write {}", name));
+            .unwrap_or_else(|_| panic!("Failed to write {name}"));
 
         let files = ops.list_files(&root).await
             .expect("Failed to list files");
 
         let file_info = files.iter()
             .find(|f| f.name == name)
-            .expect(&format!("File {} not found", name));
+            .unwrap_or_else(|| panic!("File {name} not found"));
 
         let calculated_plaintext = encrypted_to_plaintext_size_or_zero(file_info.encrypted_size);
 
         assert_eq!(
             calculated_plaintext, size as u64,
-            "Plaintext size mismatch for {}: expected {}, got {}",
-            name, size, calculated_plaintext
+            "Plaintext size mismatch for {name}: expected {size}, got {calculated_plaintext}"
         );
     }
 }
@@ -1044,7 +1037,7 @@ async fn test_encrypted_size_matches_expected() {
 
 #[tokio::test]
 async fn test_writer_drop_without_finish_cleans_up() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create a writer in a block so it gets dropped
@@ -1071,7 +1064,7 @@ async fn test_writer_drop_without_finish_cleans_up() {
 
 #[tokio::test]
 async fn test_reader_debug_format() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     ops.write_file(&root, "debug_test.txt", b"test content").await
@@ -1081,14 +1074,14 @@ async fn test_reader_debug_format() {
         .expect("Failed to open file");
 
     // Test Debug implementation
-    let debug_str = format!("{:?}", reader);
+    let debug_str = format!("{reader:?}");
     assert!(debug_str.contains("VaultFileReader"), "Debug output should identify type");
     assert!(debug_str.contains("plaintext_size"), "Debug output should show size");
 }
 
 #[tokio::test]
 async fn test_writer_debug_format() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let mut writer = ops.create_file(&root, "writer_debug.txt").await
@@ -1097,7 +1090,7 @@ async fn test_writer_debug_format() {
     writer.write(b"some data").await.expect("write failed");
 
     // Test Debug implementation
-    let debug_str = format!("{:?}", writer);
+    let debug_str = format!("{writer:?}");
     assert!(debug_str.contains("VaultFileWriter"), "Debug output should identify type");
     assert!(debug_str.contains("chunks_written"), "Debug output should show chunks written");
     assert!(debug_str.contains("buffer_len"), "Debug output should show buffer length");
@@ -1112,7 +1105,7 @@ async fn test_writer_debug_format() {
 
 #[tokio::test]
 async fn test_reader_handles_partial_final_chunk() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create a file with partial final chunk
@@ -1137,7 +1130,7 @@ async fn test_reader_handles_partial_final_chunk() {
 
 #[tokio::test]
 async fn test_reader_read_very_large_range() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let test_data = b"Small file content";
@@ -1161,13 +1154,13 @@ async fn test_reader_read_very_large_range() {
 
 #[tokio::test]
 async fn test_reader_plaintext_size_accessor() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     let test_sizes = [0, 1, 100, 1000, CHUNK_PLAINTEXT_SIZE, CHUNK_PLAINTEXT_SIZE * 2 + 100];
 
     for &size in &test_sizes {
-        let filename = format!("size_{}.bin", size);
+        let filename = format!("size_{size}.bin");
         let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
 
         ops.write_file(&root, &filename, &data).await
@@ -1178,8 +1171,7 @@ async fn test_reader_plaintext_size_accessor() {
 
         assert_eq!(
             reader.plaintext_size(), size as u64,
-            "Plaintext size should match for {} byte file",
-            size
+            "Plaintext size should match for {size} byte file"
         );
     }
 }
@@ -1190,7 +1182,7 @@ async fn test_reader_plaintext_size_accessor() {
 
 #[tokio::test]
 async fn test_streaming_overwrite_existing_file() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Create initial file
@@ -1223,7 +1215,7 @@ async fn test_streaming_overwrite_existing_file() {
 
 #[tokio::test]
 async fn test_streaming_binary_data_with_null_bytes() {
-    let (_temp_dir, ops) = setup_vault().await;
+    let (_temp_dir, ops) = setup_vault();
     let root = DirId::root();
 
     // Binary data with null bytes and all byte values

@@ -14,16 +14,18 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "26.0"
 
 targets:
-  # Host app (container for the extension)
+  # Host app (container for the extension AND XPC service host)
   OxVaultFS:
     type: application
     platform: macOS
     sources:
       - path: HostApp
         createIntermediateGroups: true
+      - path: Shared
+        createIntermediateGroups: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxcrypt.oxvaultfs
+        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxcrypt.desktop
         INFOPLIST_FILE: HostApp/Info.plist
         CODE_SIGN_ENTITLEMENTS: HostApp/OxVaultFS.entitlements
         LIBRARY_SEARCH_PATHS:
@@ -44,11 +46,13 @@ targets:
     sources:
       - path: Sources
         createIntermediateGroups: true
+      - path: Shared
+        createIntermediateGroups: true
       - path: ../swift/Sources/OxVaultFFI
         createIntermediateGroups: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxcrypt.oxvaultfs.extension
+        PRODUCT_BUNDLE_IDENTIFIER: com.agucova.oxcrypt.desktop.fsextension
         INFOPLIST_FILE: Info.plist
         CODE_SIGN_ENTITLEMENTS: OxVaultFSExtension.entitlements
         HEADER_SEARCH_PATHS:

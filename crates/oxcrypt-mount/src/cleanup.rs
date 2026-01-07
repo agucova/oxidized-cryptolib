@@ -9,7 +9,7 @@
 //!
 //! 1. **Never unmount if PID is alive** - Could be another instance
 //! 2. **Never unmount without our markers** - Could be another program's mount
-//! 3. **Never auto-unmount orphans** - Warn only, let user decide
+//! 3. **Never auto-unmount orphans by default** - Warn only, let user decide
 //! 4. **Handle races** - Caller should use file locking on state operations
 //!
 //! # Usage
@@ -38,7 +38,6 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::Result;
 
@@ -47,9 +46,6 @@ use crate::mount_markers::{get_system_mounts_detailed, SystemMount};
 use crate::stale_detection::{
     check_mount_status, find_orphaned_mounts, MountStatus, StaleReason, TrackedMount,
 };
-
-/// Default timeout for mount accessibility checks.
-pub const DEFAULT_CHECK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Result of cleaning up a single mount.
 #[derive(Debug, Clone)]
@@ -83,20 +79,20 @@ pub enum CleanupAction {
 /// Options for cleanup behavior.
 #[derive(Debug, Clone)]
 pub struct CleanupOptions {
-    /// Timeout for mount accessibility checks
-    pub check_timeout: Duration,
     /// Whether to actually unmount or just report what would be done
     pub dry_run: bool,
-    /// Whether to detect and warn about orphaned mounts
+    /// Whether to detect and warn about orphaned mounts (default: true)
     pub warn_orphans: bool,
+    /// Whether to auto-clean orphaned mounts (aggressive - use with caution)
+    pub cleanup_orphans: bool,
 }
 
 impl Default for CleanupOptions {
     fn default() -> Self {
         Self {
-            check_timeout: DEFAULT_CHECK_TIMEOUT,
             dry_run: false,
             warn_orphans: true,
+            cleanup_orphans: false,
         }
     }
 }
@@ -132,7 +128,7 @@ pub struct TrackedMountInfo {
 /// This function will:
 /// - NEVER unmount a mount whose process is still alive
 /// - NEVER unmount a mount without our markers (cryptomator:*)
-/// - NEVER auto-unmount orphaned mounts (only warn)
+/// - NEVER auto-unmount orphaned mounts unless `cleanup_orphans` is enabled
 ///
 /// # Example
 ///
@@ -158,8 +154,8 @@ pub fn cleanup_stale_mounts(
         results.push(result);
     }
 
-    // Optionally detect and warn about orphaned mounts
-    if options.warn_orphans {
+    // Optionally detect and warn/cleanup orphaned mounts
+    if options.warn_orphans || options.cleanup_orphans {
         let tracked_paths: Vec<&Path> = tracked_mounts
             .iter()
             .map(|t| t.mountpoint.as_path())
@@ -167,13 +163,17 @@ pub fn cleanup_stale_mounts(
 
         match find_orphaned_mounts(&tracked_paths) {
             Ok(orphans) => {
-                for orphan in orphans {
-                    results.push(CleanupResult {
-                        mountpoint: orphan.mountpoint,
-                        action: CleanupAction::Warning,
-                        success: true,
-                        error: None,
-                    });
+                if options.cleanup_orphans {
+                    results.extend(cleanup_orphaned_mounts(orphans, options));
+                } else if options.warn_orphans {
+                    for orphan in orphans {
+                        results.push(CleanupResult {
+                            mountpoint: orphan.mountpoint,
+                            action: CleanupAction::Warning,
+                            success: true,
+                            error: None,
+                        });
+                    }
                 }
             }
             Err(e) => {
@@ -183,6 +183,58 @@ pub fn cleanup_stale_mounts(
     }
 
     Ok(results)
+}
+
+fn cleanup_orphaned_mounts(
+    orphans: Vec<SystemMount>,
+    options: &CleanupOptions,
+) -> Vec<CleanupResult> {
+    let mut results = Vec::new();
+
+    for orphan in orphans {
+        // For orphaned mounts, we can't safely determine if they're stale without probing
+        // (which could block on ghost mounts). If cleanup_orphans is enabled, we force
+        // unmount. Otherwise, we just warn.
+        //
+        // This is aggressive but safe: if someone is actively using an orphaned mount,
+        // they can re-mount it after cleanup.
+
+        if options.dry_run {
+            tracing::info!(
+                "[DRY RUN] Would force unmount orphaned mount {}",
+                orphan.mountpoint.display()
+            );
+            results.push(CleanupResult {
+                mountpoint: orphan.mountpoint,
+                action: CleanupAction::Unmounted,
+                success: true,
+                error: None,
+            });
+            continue;
+        }
+
+        tracing::info!(
+            "Force unmounting orphaned mount {}",
+            orphan.mountpoint.display()
+        );
+
+        match force_unmount(&orphan.mountpoint) {
+            Ok(()) => results.push(CleanupResult {
+                mountpoint: orphan.mountpoint,
+                action: CleanupAction::Unmounted,
+                success: true,
+                error: None,
+            }),
+            Err(e) => results.push(CleanupResult {
+                mountpoint: orphan.mountpoint,
+                action: CleanupAction::Unmounted,
+                success: false,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    results
 }
 
 /// Process a single tracked mount for cleanup.
@@ -198,8 +250,8 @@ fn process_tracked_mount(
         fsname: None,
     };
 
-    // Check mount status
-    let status = check_mount_status(&tracked_mount, system_mounts, options.check_timeout);
+    // Check mount status (non-blocking - uses mount table + process check only)
+    let status = check_mount_status(&tracked_mount, system_mounts);
 
     match status {
         MountStatus::Active => CleanupResult {
@@ -230,7 +282,7 @@ fn process_tracked_mount(
         MountStatus::Unknown { error } => CleanupResult {
             mountpoint: tracked.mountpoint.clone(),
             action: CleanupAction::Skipped {
-                reason: format!("Could not determine status: {}", error),
+                reason: format!("Could not determine status: {error}"),
             },
             success: false,
             error: Some(error),
@@ -293,7 +345,7 @@ fn handle_stale_mount(
                     error: None,
                 },
                 Err(e) => {
-                    let error_msg = format!("Failed to force unmount: {}", e);
+                    let error_msg = format!("Failed to force unmount: {e}");
                     tracing::error!(
                         "Failed to force unmount {}: {}",
                         tracked.mountpoint.display(),
@@ -314,13 +366,13 @@ fn handle_stale_mount(
 /// Clean up test mounts specifically.
 ///
 /// This is a convenience function for test harnesses that cleans up
-/// any mounts with `cryptomator-test` in their fsname.
+/// any mounts with `cryptomator-test` or `cryptomator:test` in their fsname.
 ///
 /// Unlike the main cleanup function, this does NOT require tracked mounts -
-/// it finds and cleans ALL test mounts that are unresponsive.
-pub fn cleanup_test_mounts(responsiveness_timeout: Duration) -> Result<Vec<CleanupResult>> {
+/// it finds and force unmounts ALL test mounts. Since test mounts are explicitly
+/// for testing, we can be aggressive about cleanup.
+pub fn cleanup_test_mounts() -> Result<Vec<CleanupResult>> {
     use crate::mount_markers::find_our_mounts;
-    use crate::mount_utils::is_directory_readable;
 
     let mut results = Vec::new();
     let our_mounts = find_our_mounts()?;
@@ -332,23 +384,9 @@ pub fn cleanup_test_mounts(responsiveness_timeout: Duration) -> Result<Vec<Clean
             continue;
         }
 
-        // Check if responsive
-        if is_directory_readable(&mount.mountpoint, responsiveness_timeout) {
-            // Responsive - might be in use, skip
-            results.push(CleanupResult {
-                mountpoint: mount.mountpoint,
-                action: CleanupAction::Skipped {
-                    reason: "Test mount is responsive".to_string(),
-                },
-                success: true,
-                error: None,
-            });
-            continue;
-        }
-
-        // Unresponsive test mount - force unmount
+        // Force unmount test mount (no responsiveness check - tests should be robust)
         tracing::info!(
-            "Cleaning up unresponsive test mount: {}",
+            "Cleaning up test mount: {}",
             mount.mountpoint.display()
         );
 
@@ -382,9 +420,9 @@ mod tests {
     #[test]
     fn test_cleanup_options_default() {
         let options = CleanupOptions::default();
-        assert_eq!(options.check_timeout, DEFAULT_CHECK_TIMEOUT);
         assert!(!options.dry_run);
         assert!(options.warn_orphans);
+        assert!(!options.cleanup_orphans);
     }
 
     #[test]
@@ -392,6 +430,7 @@ mod tests {
         let tracked: Vec<TrackedMountInfo> = vec![];
         let options = CleanupOptions {
             warn_orphans: false, // Disable orphan detection for this test
+            cleanup_orphans: false,
             ..Default::default()
         };
 

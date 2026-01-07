@@ -1,0 +1,21 @@
+
+oxbench: test_vault (FUSE) - 1 iterations
+
+Mounting FUSE (this may take a few seconds)...
+[2m2026-01-05T03:16:45.730382Z[0m [33m WARN[0m Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling
+  Mount ready.
+Benchmark: FUSE / Concurrent Access
+  Time (mean ± σ):  5.10 s ± 0 ns    
+  Range (min … max):  5.10 s … 5.10 s    1 runs
+
+
+--------------------------------- FLAMEGRAPHS ----------------------------------
+
+Flamegraphs saved to: profiles
+
+Per-benchmark flamegraphs (1 total):
+  FUSE: 1 files
+    - fuse_Concurrent_Access.svg
+
+Aggregate per-implementation flamegraphs:
+

@@ -19,6 +19,7 @@
 use std::io::{self, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lru::LruCache;
 
@@ -110,7 +111,11 @@ pub fn plaintext_to_chunk_number(offset: u64) -> u64 {
 /// Calculate the byte offset within a chunk for a given plaintext offset.
 #[inline]
 pub fn plaintext_to_chunk_offset(offset: u64) -> usize {
-    (offset % CHUNK_PLAINTEXT_SIZE as u64) as usize
+    // Safe cast: remainder of division by CHUNK_PLAINTEXT_SIZE (32768) always fits in usize
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (offset % CHUNK_PLAINTEXT_SIZE as u64) as usize
+    }
 }
 
 /// Calculate the encrypted file offset for the start of a chunk (GCM format).
@@ -217,16 +222,19 @@ impl StreamingContext {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(path.into());
         self
     }
 
+    #[must_use]
     pub fn with_chunk(mut self, chunk_number: u64) -> Self {
         self.chunk_number = Some(chunk_number);
         self
     }
 
+    #[must_use]
     pub fn with_operation(mut self, operation: &'static str) -> Self {
         self.operation = Some(operation);
         self
@@ -244,7 +252,7 @@ impl std::fmt::Display for StreamingContext {
             parts.push(format!("at {:?}", path.display()));
         }
         if let Some(chunk) = self.chunk_number {
-            parts.push(format!("chunk {}", chunk));
+            parts.push(format!("chunk {chunk}"));
         }
 
         if parts.is_empty() {
@@ -381,8 +389,10 @@ pub struct VaultFileReader {
     /// Path to the file (for error context)
     path: PathBuf,
     /// LRU cache of recently-read chunks for random access patterns.
-    /// Key: chunk number, Value: decrypted chunk data.
-    chunk_cache: LruCache<u64, Zeroizing<Vec<u8>>>,
+    /// Key: chunk number, Value: decrypted chunk data wrapped in Arc.
+    /// Arc enables cache hits to return an 8-byte pointer clone instead of
+    /// a 32KB data clone, significantly reducing allocation overhead.
+    chunk_cache: LruCache<u64, Arc<Zeroizing<Vec<u8>>>>,
     /// Directory read lock guard (held for lifetime if set).
     /// This prevents the directory from being modified while reading.
     #[allow(dead_code)]
@@ -452,9 +462,12 @@ impl VaultFileReader {
         let encrypted_size = metadata.len();
 
         if encrypted_size < header_size as u64 {
+            // Safe cast: encrypted_size already validated to be >= header_size (88 bytes minimum)
+            // This branch only executes when encrypted_size < 88 bytes, well within usize range
+            let actual = encrypted_size.try_into().unwrap_or(0);
             return Err(StreamingError::FileTooSmall {
                 expected: header_size,
-                actual: encrypted_size as usize,
+                actual,
                 context,
             });
         }
@@ -475,7 +488,7 @@ impl VaultFileReader {
                 let header = super::file::decrypt_file_header_with_context(
                     &header_bytes,
                     master_key,
-                    file_context,
+                    &file_context,
                 )?;
                 (header.content_key, None)
             }
@@ -483,7 +496,7 @@ impl VaultFileReader {
                 let header = file_ctrmac::decrypt_header(
                     &header_bytes,
                     master_key,
-                    file_context,
+                    &file_context,
                 ).map_err(|e| {
                     warn!(error = %e, "CTRMAC header decryption failed");
                     StreamingError::HeaderDecryption(
@@ -540,6 +553,7 @@ impl VaultFileReader {
     ///
     /// * `dir_guard` - Directory read lock guard
     /// * `file_guard` - File read lock guard
+    #[must_use]
     pub fn with_locks(
         mut self,
         dir_guard: OwnedRwLockReadGuard<()>,
@@ -577,7 +591,8 @@ impl VaultFileReader {
         }
 
         // Clamp length to available data
-        let available = (self.plaintext_size - offset) as usize;
+        // Safe cast: (plaintext_size - offset) is always < plaintext_size which fits in usize for realistic files
+        let available = usize::try_from(self.plaintext_size - offset).unwrap_or(0);
         let actual_len = len.min(available);
 
         if actual_len == 0 {
@@ -631,12 +646,13 @@ impl VaultFileReader {
 
     /// Read and decrypt a single chunk.
     ///
-    /// Uses the LRU cache if the chunk was recently read.
-    async fn read_chunk(&mut self, chunk_num: u64) -> Result<Zeroizing<Vec<u8>>, StreamingError> {
-        // Check LRU cache
+    /// Uses the LRU cache if the chunk was recently read. Returns an Arc
+    /// to enable cheap cloning on cache hits (8-byte pointer vs 32KB data).
+    async fn read_chunk(&mut self, chunk_num: u64) -> Result<Arc<Zeroizing<Vec<u8>>>, StreamingError> {
+        // Check LRU cache - Arc::clone is 8 bytes instead of 32KB data clone
         if let Some(data) = self.chunk_cache.get(&chunk_num) {
             trace!(chunk = chunk_num, "Cache hit");
-            return Ok(data.clone());
+            return Ok(Arc::clone(data));
         }
 
         trace!(chunk = chunk_num, cipher_combo = ?self.cipher_combo, "Cache miss, reading from disk");
@@ -688,10 +704,11 @@ impl VaultFileReader {
 
         // Decrypt chunk using appropriate algorithm
         let decrypted = self.decrypt_chunk(chunk_num, &encrypted_chunk)?;
-        let decrypted = Zeroizing::new(decrypted);
+        let decrypted = Arc::new(Zeroizing::new(decrypted));
 
         // Store in LRU cache (evicts oldest if at capacity)
-        self.chunk_cache.put(chunk_num, decrypted.clone());
+        // Arc::clone is 8 bytes - no 32KB data copy
+        self.chunk_cache.put(chunk_num, Arc::clone(&decrypted));
 
         Ok(decrypted)
     }
@@ -926,7 +943,7 @@ impl VaultFileWriter {
         let encrypted_header = super::file::encrypt_file_header_with_context(
             &content_key,
             master_key,
-            file_context,
+            &file_context,
         )?;
 
         // Update header_nonce from the actual encrypted header
@@ -967,6 +984,7 @@ impl VaultFileWriter {
     ///
     /// * `dir_guard` - Directory write lock guard
     /// * `file_guard` - File write lock guard
+    #[must_use]
     pub fn with_locks(
         mut self,
         dir_guard: OwnedRwLockWriteGuard<()>,

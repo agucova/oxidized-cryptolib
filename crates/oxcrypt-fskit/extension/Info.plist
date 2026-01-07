@@ -26,14 +26,45 @@
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
 
+    <!-- XPC Service for CLI/Desktop communication -->
+    <key>XPCService</key>
+    <dict>
+        <key>ServiceType</key>
+        <string>Application</string>
+    </dict>
+
+    <!-- Mach service name for XPC connections -->
+    <key>MachServices</key>
+    <dict>
+        <key>com.agucova.oxcrypt.desktop.fsextension.xpc</key>
+        <true/>
+    </dict>
+
     <!-- FSKit Extension Configuration (ExtensionKit format) -->
     <key>EXAppExtensionAttributes</key>
     <dict>
         <key>EXExtensionPointIdentifier</key>
         <string>com.apple.fskit.fsmodule</string>
 
+        <!-- Principal class for FSKit to instantiate -->
+        <key>EXExtensionPrincipalClass</key>
+        <string>OxVaultFSExtension</string>
+
+        <key>FSRequiresSecurityScopedPathURLResources</key>
+        <false/>
+
+        <key>FSFileSystemType</key>
+        <string>oxcrypt</string>
+
         <key>FSShortName</key>
-        <string>cryptomator</string>
+        <string>oxcrypt</string>
+
+        <!-- Mount option syntax for mount -t oxcrypt -->
+        <key>FSActivateOptionSyntax</key>
+        <dict>
+            <key>shortOptions</key>
+            <string>o:</string>
+        </dict>
 
         <key>FSPersonalities</key>
         <dict>
@@ -49,19 +80,21 @@
         <key>FSMediaTypes</key>
         <dict/>
 
-        <!-- Support generic URL resources with custom scheme -->
+        <!-- Support path URL resources (local directories) -->
         <key>FSSupportsPathURLs</key>
-        <false/>
+        <true/>
         <key>FSSupportsBlockResources</key>
-        <false/>
+        <true/>
+        <!-- Enable generic URL resources for oxcrypt:// scheme -->
         <key>FSSupportsGenericURLResources</key>
         <true/>
-        <key>FSSupportsServerURLs</key>
-        <false/>
+        <!-- URL schemes this extension handles -->
         <key>FSSupportedSchemes</key>
         <array>
-            <string>cryptomator</string>
+            <string>oxcrypt</string>
         </array>
+        <key>FSSupportsServerURLs</key>
+        <false/>
     </dict>
 </dict>
 </plist>

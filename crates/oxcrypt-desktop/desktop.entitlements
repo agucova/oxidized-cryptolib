@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened Runtime -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!-- Custom entitlement for secure password retrieval via XPC -->
+    <!-- Required by File Provider host app's audit token verification -->
+    <!-- Only apps with this entitlement + Team ID 2LR4AGRZW3 can retrieve passwords -->
+    <key>com.agucova.oxcrypt.password-retrieval</key>
+    <true/>
+</dict>
+</plist>

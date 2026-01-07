@@ -47,8 +47,7 @@ async fn test_etag_present_in_propfind_response() {
     // ETag should appear in PROPFIND response as getetag property
     assert!(
         body.contains("getetag") || body.contains("etag"),
-        "PROPFIND response should contain getetag property: {}",
-        body
+        "PROPFIND response should contain getetag property: {body}"
     );
 }
 
@@ -148,19 +147,17 @@ async fn test_etag_format_consistent() {
     // Verify both ETags have the same format (quoted string with size component)
     assert!(
         etag1.starts_with('"') || etag1.starts_with("W/\""),
-        "ETag should be quoted: {}",
-        etag1
+        "ETag should be quoted: {etag1}"
     );
     assert!(
         etag2.starts_with('"') || etag2.starts_with("W/\""),
-        "ETag should be quoted: {}",
-        etag2
+        "ETag should be quoted: {etag2}"
     );
 
     // Extract size component (before the hyphen) - should be same for unchanged file
     fn extract_size(etag: &str) -> Option<String> {
         let inner = etag.trim_start_matches("W/").trim_matches('"');
-        inner.split('-').next().map(|s| s.to_string())
+        inner.split('-').next().map(ToString::to_string)
     }
 
     let size1 = extract_size(&etag1);
@@ -168,8 +165,7 @@ async fn test_etag_format_consistent() {
 
     assert_eq!(
         size1, size2,
-        "ETag size component should be stable: {} vs {}",
-        etag1, etag2
+        "ETag size component should be stable: {etag1} vs {etag2}"
     );
 }
 
@@ -374,8 +370,7 @@ async fn test_etag_format_is_quoted() {
     assert!(
         (etag.starts_with('"') && etag.ends_with('"'))
             || (etag.starts_with("W/\"") && etag.ends_with('"')),
-        "ETag should be quoted: got {}",
-        etag
+        "ETag should be quoted: got {etag}"
     );
 }
 

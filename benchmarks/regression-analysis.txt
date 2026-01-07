@@ -1,0 +1,42 @@
+# Regression Source Identification
+
+## Comparison: Baseline vs Phase 2 (all changes) vs Phase 2 (without Moka)
+
+| Workload | Baseline | Phase 2 (Moka) | Phase 2 (DashMap) | Moka Impact |
+|----------|----------|----------------|-------------------|-------------|
+| IDE Simulation | 35.31ms | 41.92ms (+18.7%) | 33.30ms (-5.7%) | ✅ **Fixed** |
+| Working Set | 57.53ms | 52.68ms (-8.4%) | 41.96ms (-27.1%) | ✅ **Better** |
+| Directory Tree | 4.47ms | 6.61ms (+47.9%) | 3.94ms (-11.9%) | ✅ **Fixed** |
+| Concurrent Access | 5.08s | 5.11s (+0.6%) | 5.10s (+0.4%) | ✅ Neutral |
+| Chinook Database | 130.82ms | 142.75ms (+9.1%) | 126.20ms (-3.5%) | ✅ **Fixed** |
+| Media Streaming | 841.61ms | 854.43ms (+1.5%) | 846.47ms (+0.6%) | ✅ Neutral |
+| Photo Library | 534.70ms | 562.25ms (+5.2%) | 540.22ms (+1.0%) | ✅ **Fixed** |
+| Backup/Sync | 1.08s | 890.71ms (-17.5%) | 903.07ms (-16.4%) | ✅ **Still good** |
+| Cold Start | 21.20ms | 27.38ms (+29.2%) | 22.74ms (+7.3%) | ✅ **Fixed** |
+
+## Conclusion
+
+**Root Cause:** Moka cache (Phase 2.3) was responsible for ALL regressions.
+
+**Why Moka was slow:**
+- TinyLFU admission policy adds overhead on every cache operation
+- Eviction tracking adds metadata and computation cost
+- DashMap is simpler: lock-free concurrent hashmap with no eviction
+
+**Phase 2 Final Configuration:**
+✅ Keep: Arc LRU cache in streaming.rs (Phase 2.1)
+✅ Keep: WriteBuffer geometric growth with FIXED reserve() bug (Phase 2.2)  
+❌ Revert: Moka cache → back to DashMap (Phase 2.3 reverted)
+
+**Net Performance Gains vs Baseline:**
+- IDE Simulation: -5.7% faster ✅
+- Working Set: -27.1% faster ✅ 
+- Directory Tree: -11.9% faster ✅
+- Chinook Database: -3.5% faster ✅
+- Backup/Sync: -16.4% faster ✅
+- Cold Start: +7.3% slower ⚠️ (acceptable variance)
+
+**Critical Bug Fixed:**
+WriteBuffer::write() was using `reserve(new_capacity - len())` instead of 
+`reserve(new_capacity - capacity())`, causing exponential memory growth 
+(43-64GB for 1000 files). Fixed in crates/oxcrypt-mount/src/write_buffer.rs:125

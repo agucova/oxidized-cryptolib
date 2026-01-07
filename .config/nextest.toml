@@ -22,9 +22,10 @@
 #   cargo nextest run --profile stress -F fuse-tests
 #
 # Feature flags required for integration tests:
-#   -F fuse-tests   oxcrypt-fuse (Linux/macOS with libfuse)
-#   -F fskit-tests  oxcrypt-fskit (macOS 15.4+ only)
-#   -F nfs-tests    oxcrypt-nfs
+#   -F fuse-tests         oxcrypt-fuse (Linux/macOS with libfuse)
+#   -F fskit-tests        oxcrypt-fskit (macOS 15.4+ only)
+#   -F nfs-tests          oxcrypt-nfs
+#   -F fileprovider-tests oxcrypt-fileprovider (macOS 13+)
 #
 # =============================================================================
 
@@ -85,8 +86,13 @@ setup = 'kdf-setup'
 
 # Mount backend tests run serially to avoid conflicts
 [[profile.default.overrides]]
-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
+filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt-fileprovider)'
 test-group = 'mount-tests'
+
+# Deferred deletion tests need longer timeout for POSIX compliance validation
+[[profile.default.overrides]]
+filter = 'test(~unlink_with.*open_handles)'
+slow-timeout = { period = "120s", terminate-after = 2 }
 
 # Stress/concurrency tests get longer timeouts and limited concurrency
 [[profile.default.overrides]]
@@ -129,7 +135,7 @@ path = "target/nextest/unit/junit.xml"
 # backends you want to test.
 
 [profile.integration]
-default-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt)'
+default-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt-fileprovider) | package(oxcrypt-cli)'
 retries = 1
 fail-fast = true
 slow-timeout = { period = "120s", terminate-after = 2 }
@@ -141,8 +147,12 @@ filter = 'all()'
 setup = 'kdf-setup'
 
 [[profile.integration.overrides]]
-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
+filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt-fileprovider)'
 test-group = 'mount-tests'
+
+[[profile.integration.overrides]]
+filter = 'test(~unlink_with.*open_handles)'
+slow-timeout = { period = "120s", terminate-after = 2 }
 
 [profile.integration.junit]
 path = "target/nextest/integration/junit.xml"
@@ -156,7 +166,7 @@ path = "target/nextest/integration/junit.xml"
 # Focused testing of filesystem mount backends without CLI tests.
 
 [profile.mounts]
-default-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
+default-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt-fileprovider)'
 retries = 1
 fail-fast = true
 slow-timeout = { period = "120s", terminate-after = 2 }
@@ -169,6 +179,10 @@ setup = 'kdf-setup'
 [[profile.mounts.overrides]]
 filter = 'all()'
 test-group = 'mount-tests'
+
+[[profile.mounts.overrides]]
+filter = 'test(~unlink_with.*open_handles)'
+slow-timeout = { period = "120s", terminate-after = 2 }
 
 [profile.mounts.junit]
 path = "target/nextest/mounts/junit.xml"
@@ -219,7 +233,7 @@ filter = 'all()'
 setup = 'kdf-setup'
 
 [[profile.ci.overrides]]
-filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs)'
+filter = 'package(oxcrypt-fuse) | package(oxcrypt-fskit) | package(oxcrypt-webdav) | package(oxcrypt-nfs) | package(oxcrypt-fileprovider)'
 test-group = 'mount-tests'
 
 [[profile.ci.overrides]]

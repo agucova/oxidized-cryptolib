@@ -1,5 +1,7 @@
 //! Common test utilities for WebDAV integration tests.
 
+#![allow(unused_imports)]
+
 pub mod assertions;
 pub mod harness;
 

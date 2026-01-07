@@ -1,0 +1,41 @@
+# Phase 2 Performance Comparison
+
+## Results
+
+| Workload | Baseline (5 iter) | Phase 2 (fixed) | Change |
+|----------|------------------|-----------------|--------|
+| IDE Simulation | 35.31ms ± 1.78ms | 41.92ms ± 5.09ms | +18.7% slower ❌ |
+| Working Set | 57.53ms ± 11.57ms | 52.68ms ± 3.02ms | -8.4% faster ✅ |
+| Directory Tree | 4.47ms ± 648µs | 6.61ms ± 532µs | +47.9% slower ❌ |
+| Concurrent Access | 5.08s ± 8.25ms | 5.11s ± 17.43ms | +0.6% slower |
+| Chinook Database | 130.82ms ± 2.02ms | 142.75ms ± 4.15ms | +9.1% slower ❌ |
+| Media Streaming | 841.61ms ± 2.97ms | 854.43ms ± 5.05ms | +1.5% slower |
+| Photo Library | 534.70ms ± 3.13ms | 562.25ms ± 5.92ms | +5.2% slower ❌ |
+| Backup/Sync | 1.08s ± 45.68ms | 890.71ms ± 70.68ms | -17.5% faster ✅ |
+| Cold Start | 21.20ms ± 4.53ms | 27.38ms ± 2.66ms | +29.2% slower ❌ |
+
+## Analysis
+
+**Improvements:**
+- Working Set: -8.4% (better cache behavior with fixed geometric growth)
+- Backup/Sync: -17.5% (fewer reallocations during large file operations)
+
+**Regressions:**
+- IDE Simulation: +18.7%
+- Directory Tree: +47.9%  
+- Chinook Database: +9.1%
+- Photo Library: +5.2%
+- Cold Start: +29.2%
+
+**Critical Bug Fixed:**
+- WriteBuffer geometric growth was using `len()` instead of `capacity()` in reserve calculation
+- This caused exponential memory growth (43-64GB for 1000 files!)
+- Fix changed line 125: `reserve(new_capacity - self.content.capacity())` instead of `len()`
+
+**Root Cause of Regressions:**
+The regressions suggest that one or more of the Phase 2 optimizations are adding overhead:
+1. **Arc LRU cache** - Arc clone overhead might outweigh benefits for small chunks
+2. **Moka cache** - TinyLFU admission policy has overhead vs unbounded DashMap
+3. **WriteBuffer geometric growth** - Pre-allocation overhead for small files
+
+Next steps: Isolate which optimization is causing the regressions by testing each individually.

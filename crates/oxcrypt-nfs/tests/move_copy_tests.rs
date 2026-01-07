@@ -215,6 +215,26 @@ fn test_rename_directory_with_subdirectories() {
     assert_file_content(&mount, "/root_renamed/sub1/sub2/file.txt", b"deep");
 }
 
+#[test]
+fn test_move_directory_across_parents() {
+    let mount = TestMount::with_temp_vault().expect("Failed to create test mount");
+    skip_if_not_mounted!(mount);
+
+    mount.mkdir_all("/parent_a/child").expect("mkdir_all failed");
+    mount.mkdir("/parent_b").expect("mkdir failed");
+    mount
+        .write("/parent_a/child/data.txt", b"payload")
+        .expect("write failed");
+
+    mount
+        .rename("/parent_a/child", "/parent_b/child_moved")
+        .expect("move failed");
+
+    assert!(!mount.exists("/parent_a/child"));
+    assert_is_dir(&mount, "/parent_b/child_moved");
+    assert_file_content(&mount, "/parent_b/child_moved/data.txt", b"payload");
+}
+
 // ============================================================================
 // Copy Operations
 // ============================================================================

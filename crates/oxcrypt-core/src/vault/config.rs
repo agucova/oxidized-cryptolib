@@ -226,7 +226,7 @@ impl CipherCombo {
                 let ctrmac_header = file_ctrmac::decrypt_header(
                     &encrypted_data[..file_ctrmac::HEADER_SIZE],
                     master_key,
-                    context.clone(),
+                    &context,
                 )
                 .map_err(|_| FileDecryptionError::HeaderDecryption { context: context.clone() })?;
 
@@ -237,7 +237,7 @@ impl CipherCombo {
                             &ctrmac_header.content_key,
                             &ctrmac_header.nonce,
                             mac_key,
-                            context.clone(),
+                            &context,
                         )
                     })
                     .map_err(FileDecryptionError::KeyAccess)?
@@ -299,7 +299,9 @@ pub struct VaultConfigurationClaims {
 }
 
 fn default_shortening_threshold() -> i32 {
-    DEFAULT_SHORTENING_THRESHOLD as i32
+    // Safe cast: DEFAULT_SHORTENING_THRESHOLD (220) is well within i32 range
+    i32::try_from(DEFAULT_SHORTENING_THRESHOLD)
+        .expect("DEFAULT_SHORTENING_THRESHOLD (220) fits in i32")
 }
 
 impl VaultConfigurationClaims {
@@ -323,7 +325,9 @@ impl VaultConfigurationClaims {
     /// Encrypted filenames longer than this value will be shortened using
     /// the .c9s format (SHA-1 hash of the encrypted name).
     pub fn shortening_threshold(&self) -> usize {
-        self.shortening_threshold.max(0) as usize
+        // Safe cast: .max(0) ensures non-negative, and typical values are 220-1024 (well within usize)
+        usize::try_from(self.shortening_threshold.max(0))
+            .expect("shortening_threshold is ensured to be non-negative")
     }
 }
 
@@ -364,7 +368,7 @@ pub enum VaultError {
     ClaimValidation(#[from] ClaimValidationError),
 
     #[error("Error cloning master key: {0}")]
-    KeyClone(#[from] crate::crypto::keys::KeyAccessError),
+    KeyClone(#[from] KeyAccessError),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -575,7 +579,8 @@ mod tests {
         let result = validate_vault_claims(&tampered_token, &master_key);
         println!("{result:?}");
         match result {
-            Err(ClaimValidationError::JwtDecode(_)) | Err(ClaimValidationError::JwtValidation(_)) => (),
+            Err(ClaimValidationError::JwtDecode(_) |
+ClaimValidationError::JwtValidation(_)) => (),
             Ok(_) => panic!("Tampered token was validated successfully"),
             Err(e) => panic!("Unexpected error: {e:?}"),
         }

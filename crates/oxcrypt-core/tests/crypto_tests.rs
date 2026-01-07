@@ -234,12 +234,11 @@ mod crypto_tests {
             // Decryption should succeed
             let decrypted = decrypt_file_header(&encrypted_header, &master_key)
                 .unwrap_or_else(|e| panic!(
-                    "decryption should succeed with reserved bytes {:02X?}, but got error: {}",
-                    reserved, e
+                    "decryption should succeed with reserved bytes {reserved:02X?}, but got error: {e}"
                 ));
 
             assert_eq!(*decrypted.content_key, content_key,
-                "content key should match for reserved bytes {:02X?}", reserved);
+                "content key should match for reserved bytes {reserved:02X?}");
         }
     }
 }
@@ -278,7 +277,7 @@ mod ctrmac_tests {
         fn test_header_roundtrip(content_key in any::<[u8; 32]>()) {
             let master_key = MasterKey::random().unwrap();
             let encrypted = encrypt_header(&content_key, &master_key).unwrap();
-            let header = decrypt_header(&encrypted, &master_key, FileContext::new()).unwrap();
+            let header = decrypt_header(&encrypted, &master_key, &FileContext::new()).unwrap();
             prop_assert_eq!(content_key, *header.content_key);
         }
 
@@ -289,7 +288,7 @@ mod ctrmac_tests {
             let mac_key = generate_mac_key();
 
             let encrypted = encrypt_content(&content, &content_key, &header_nonce, &mac_key).unwrap();
-            let decrypted = decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new()).unwrap();
+            let decrypted = decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new()).unwrap();
             prop_assert_eq!(content, decrypted);
         }
 
@@ -305,7 +304,7 @@ mod ctrmac_tests {
             let mid = encrypted.len() / 2;
             encrypted[mid] ^= 0xFF;
 
-            let result = decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new());
+            let result = decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new());
             prop_assert!(result.is_err());
         }
 
@@ -318,7 +317,7 @@ mod ctrmac_tests {
             let mid = encrypted.len() / 2;
             encrypted[mid] ^= 0xFF;
 
-            let result = decrypt_header(&encrypted, &master_key, FileContext::new());
+            let result = decrypt_header(&encrypted, &master_key, &FileContext::new());
             prop_assert!(result.is_err());
         }
 
@@ -332,7 +331,7 @@ mod ctrmac_tests {
             let encrypted = encrypt_content(&content, &content_key1, &header_nonce, &mac_key).unwrap();
             // Decryption with wrong content key should still succeed (HMAC doesn't depend on content key)
             // but produce garbage output. The content will be wrong, not an error.
-            let decrypted = decrypt_content(&encrypted, &content_key2, &header_nonce, &mac_key, FileContext::new());
+            let decrypted = decrypt_content(&encrypted, &content_key2, &header_nonce, &mac_key, &FileContext::new());
             // This actually succeeds because HMAC verification passes (doesn't include content key)
             // but the decrypted content will be garbage
             if let Ok(dec) = decrypted {
@@ -348,7 +347,7 @@ mod ctrmac_tests {
             let mac_key = generate_mac_key();
 
             let encrypted = encrypt_content(&content, &content_key, &header_nonce1, &mac_key).unwrap();
-            let result = decrypt_content(&encrypted, &content_key, &header_nonce2, &mac_key, FileContext::new());
+            let result = decrypt_content(&encrypted, &content_key, &header_nonce2, &mac_key, &FileContext::new());
             // Wrong header nonce causes HMAC verification to fail
             prop_assert!(result.is_err());
         }
@@ -361,7 +360,7 @@ mod ctrmac_tests {
             let mac_key2 = generate_mac_key();
 
             let encrypted = encrypt_content(&content, &content_key, &header_nonce, &mac_key1).unwrap();
-            let result = decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key2, FileContext::new());
+            let result = decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key2, &FileContext::new());
             // Wrong MAC key causes HMAC verification to fail
             prop_assert!(result.is_err());
         }
@@ -375,7 +374,7 @@ mod ctrmac_tests {
 
         let encrypted = encrypt_content(&[], &content_key, &header_nonce, &mac_key).unwrap();
         let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new())
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
                 .unwrap();
         assert_eq!(decrypted, Vec::<u8>::new());
     }
@@ -389,7 +388,7 @@ mod ctrmac_tests {
 
         let encrypted = encrypt_content(&content, &content_key, &header_nonce, &mac_key).unwrap();
         let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new())
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
                 .unwrap();
         assert_eq!(content, decrypted);
     }
@@ -404,7 +403,7 @@ mod ctrmac_tests {
 
         let encrypted = encrypt_content(&content, &content_key, &header_nonce, &mac_key).unwrap();
         let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new())
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
                 .unwrap();
         assert_eq!(content, decrypted);
     }
@@ -419,7 +418,7 @@ mod ctrmac_tests {
 
         let encrypted = encrypt_content(&content, &content_key, &header_nonce, &mac_key).unwrap();
         let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new())
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
                 .unwrap();
         assert_eq!(content, decrypted);
     }

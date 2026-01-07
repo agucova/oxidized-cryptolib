@@ -99,12 +99,10 @@ fn test_aes_256_gcm_wycheproof_vectors() {
                     }
                 }
                 wycheproof::TestResult::Invalid => {
-                    if result.is_ok() {
-                        panic!(
-                            "Test {} (invalid): Expected decryption to fail due to integrity violation, but it succeeded",
-                            test.tc_id
-                        );
-                    }
+                    assert!(result.is_err(), 
+                        "Test {} (invalid): Expected decryption to fail due to integrity violation, but it succeeded",
+                        test.tc_id
+                    );
                     invalid_count += 1;
                 }
             }
@@ -112,8 +110,7 @@ fn test_aes_256_gcm_wycheproof_vectors() {
     }
 
     println!(
-        "Wycheproof AES-256-GCM: {} valid, {} invalid, {} skipped (wrong key/iv/tag size)",
-        valid_count, invalid_count, skipped_count
+        "Wycheproof AES-256-GCM: {valid_count} valid, {invalid_count} invalid, {skipped_count} skipped (wrong key/iv/tag size)"
     );
 
     // Sanity check: we should have tested a reasonable number of vectors
@@ -157,8 +154,7 @@ fn test_file_header_aes_gcm_properties() {
         // Tampering should cause either InvalidHeader or HeaderDecryption error
         assert!(
             result.is_err(),
-            "Tampering byte {} should cause decryption to fail",
-            i
+            "Tampering byte {i} should cause decryption to fail"
         );
     }
 }
@@ -289,8 +285,7 @@ fn test_aes_256_keywrap_wycheproof_vectors() {
     }
 
     println!(
-        "Wycheproof AES-256-KW: {} valid, {} invalid, {} skipped",
-        valid_count, invalid_count, skipped_count
+        "Wycheproof AES-256-KW: {valid_count} valid, {invalid_count} invalid, {skipped_count} skipped"
     );
 
     // Verify we tested a meaningful number of vectors
@@ -370,9 +365,7 @@ fn test_keywrap_integrity_coverage() {
             let result = unwrap_key(&tampered, &kek);
             assert!(
                 result.is_err(),
-                "Flipping bit {} of byte {} should cause integrity failure",
-                bit_idx,
-                byte_idx
+                "Flipping bit {bit_idx} of byte {byte_idx} should cause integrity failure"
             );
         }
     }

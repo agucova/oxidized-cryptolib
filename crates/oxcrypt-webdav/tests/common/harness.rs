@@ -1,4 +1,6 @@
 //! Test server harness for WebDAV integration tests.
+
+#![allow(dead_code)]
 //!
 //! Provides a `TestServer` that manages the lifecycle of a WebDAV server
 //! with a temporary or shared vault, along with HTTP convenience methods.
@@ -23,7 +25,7 @@ fn url_encode_path(path: &str) -> String {
         } else {
             // Percent-encode the UTF-8 bytes
             for byte in c.to_string().as_bytes() {
-                result.push_str(&format!("%{:02X}", byte));
+                result.push_str(&format!("%{byte:02X}"));
             }
         }
     }
@@ -101,8 +103,7 @@ impl TestServer {
 
         assert!(
             test_vault_path.exists(),
-            "test_vault not found at {:?}",
-            test_vault_path
+            "test_vault not found at {test_vault_path:?}"
         );
 
         // The test vault password
@@ -144,11 +145,9 @@ impl TestServer {
                 .header("Depth", "0")
                 .send()
                 .await
-            {
-                if resp.status().is_success() || resp.status() == StatusCode::MULTI_STATUS {
+                && (resp.status().is_success() || resp.status() == StatusCode::MULTI_STATUS) {
                     return;
                 }
-            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("Server did not become ready in time");
@@ -488,7 +487,7 @@ impl TestServer {
     pub async fn unlock(&self, path: &str, lock_token: &str) -> Response {
         self.client
             .request(Method::from_bytes(b"UNLOCK").unwrap(), self.url(path))
-            .header("Lock-Token", format!("<{}>", lock_token))
+            .header("Lock-Token", format!("<{lock_token}>"))
             .send()
             .await
             .expect("UNLOCK request failed")

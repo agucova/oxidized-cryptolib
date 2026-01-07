@@ -38,8 +38,7 @@ async fn test_propfind_root_depth_1() {
     let (status, body) = server.propfind_body("/", "1").await;
     assert!(
         status == StatusCode::MULTI_STATUS || status.is_success(),
-        "PROPFIND / depth=1 failed with status {}",
-        status
+        "PROPFIND / depth=1 failed with status {status}"
     );
 
     // Verify response contains our entries
@@ -128,9 +127,7 @@ async fn test_propfind_size_chunk_boundary() {
     let expected_size = CHUNK_SIZE.to_string();
     assert!(
         body.contains(&expected_size),
-        "PROPFIND should show size {} for one chunk file, body: {}",
-        expected_size,
-        body
+        "PROPFIND should show size {expected_size} for one chunk file, body: {body}"
     );
 }
 
@@ -149,8 +146,7 @@ async fn test_propfind_size_multi_chunk() {
     let expected_size = expected_len.to_string();
     assert!(
         body.contains(&expected_size),
-        "PROPFIND should show size {} for multi-chunk file",
-        expected_size
+        "PROPFIND should show size {expected_size} for multi-chunk file"
     );
 }
 
@@ -172,7 +168,7 @@ async fn test_propfind_after_put() {
 
     let (status1, body1) = server.propfind_body("/changing.txt", "0").await;
     assert!(status1 == StatusCode::MULTI_STATUS || status1.is_success());
-    assert!(body1.contains("7"), "Initial size should be 7, body: {}", body1);
+    assert!(body1.contains('7'), "Initial size should be 7, body: {body1}");
 
     // Overwrite with larger
     server.put_ok("/changing.txt", b"larger content here".to_vec()).await;
@@ -186,8 +182,7 @@ async fn test_propfind_after_put() {
     assert!(status2 == StatusCode::MULTI_STATUS || status2.is_success());
     assert!(
         body2.contains("19"),
-        "Updated size should be 19, body: {}",
-        body2
+        "Updated size should be 19, body: {body2}"
     );
 }
 
@@ -296,8 +291,7 @@ async fn test_propfind_empty_directory() {
         + body.matches("<response>").count();
     assert!(
         response_count <= 2,
-        "Empty directory should have minimal responses (got {})",
-        response_count
+        "Empty directory should have minimal responses (got {response_count})"
     );
 }
 

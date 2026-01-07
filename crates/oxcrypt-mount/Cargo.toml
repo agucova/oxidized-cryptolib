@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared utilities for Cryptomator vault mount backends (FUSE, FSKit, WebDAV)"
+readme = "README.md"
+keywords = ["cryptomator", "filesystem", "mount", "caching"]
+categories = ["filesystem", "cryptography"]
 
 [features]
 default = []
@@ -28,7 +31,13 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror.workspace = true
 tracing.workspace = true
+signal-hook = "0.4.1"
+parking_lot = "0.12.5"
+bitvec = "1.0.1"
 
 [dev-dependencies]
 proptest = "1.4"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

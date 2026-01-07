@@ -26,7 +26,14 @@ pub fn ErrorDialog(props: ErrorDialogProps) -> Element {
         // Backdrop
         div {
             class: "dialog-backdrop",
+            tabindex: "-1",
+            autofocus: true,
             onclick: move |_| props.on_dismiss.call(()),
+            onkeydown: move |e| {
+                if e.key() == Key::Escape {
+                    props.on_dismiss.call(());
+                }
+            },
 
             // Dialog
             div {

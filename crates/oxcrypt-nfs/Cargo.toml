@@ -28,11 +28,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nfsserve = "0.10"
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros", "net", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "macros", "net", "process", "time"] }
 async-trait = "0.1"
 
 # Concurrent data structures
 dashmap = "6"
+
+# Lazy static initialization
+once_cell = "1.19"
 
 # POSIX types
 libc = "0.2"
@@ -43,7 +46,13 @@ nix = { version = "0.30", features = ["signal", "fs", "mount"] }
 # Optional: tokio-console for async debugging
 console-subscriber = { workspace = true, optional = true }
 
+# High-performance allocator (optional, enabled by default)
+mimalloc = { version = "0.1", default-features = false, features = ["v3"], optional = true }
+
 [features]
+default = ["mimalloc"]
+# High-performance allocator for reduced allocation latency
+mimalloc = ["dep:mimalloc"]
 # Enable NFS integration tests
 nfs-tests = []
 # Enable tokio-console for async debugging (run `tokio-console` in another terminal)
@@ -53,3 +62,6 @@ tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 tempfile = "3"
 rand = "0.9"
 sha2 = "0.10"
+
+[lints]
+workspace = true

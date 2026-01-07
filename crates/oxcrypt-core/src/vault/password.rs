@@ -19,7 +19,7 @@
 //! let validated = validator.validate("password", Duration::from_secs(5))?;
 //!
 //! // Phase 2: Create operations (uses already-validated key)
-//! let ops = VaultOperationsAsync::from_validated(validated)?;
+//! let ops = VaultOperationsAsync::from_validated(validated);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
@@ -191,7 +191,7 @@ impl PasswordValidator {
         })?;
 
         let masterkey_uri = url::Url::parse(&kid).map_err(|e| {
-            PasswordValidationError::InvalidFormat(format!("Invalid masterkey URI: {}", e))
+            PasswordValidationError::InvalidFormat(format!("Invalid masterkey URI: {e}"))
         })?;
 
         if masterkey_uri.scheme() != "masterkeyfile" {
@@ -233,7 +233,7 @@ impl PasswordValidator {
 
         // Validate vault JWT signature (verifies vault integrity)
         let claims = validate_vault_claims(&vault_config_jwt, &master_key).map_err(|e| {
-            PasswordValidationError::InvalidFormat(format!("Vault JWT validation failed: {}", e))
+            PasswordValidationError::InvalidFormat(format!("Vault JWT validation failed: {e}"))
         })?;
 
         let cipher_combo = claims.cipher_combo().ok_or_else(|| {

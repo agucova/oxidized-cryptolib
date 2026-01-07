@@ -118,7 +118,7 @@ impl fmt::Debug for CtrMacFileHeader {
 pub fn decrypt_header(
     encrypted_header: &[u8],
     master_key: &MasterKey,
-    context: FileContext,
+    context: &FileContext,
 ) -> Result<CtrMacFileHeader, CtrMacError> {
     trace!("Decrypting CTRMAC file header");
 
@@ -134,7 +134,7 @@ pub fn decrypt_header(
                 HEADER_SIZE,
                 encrypted_header.len()
             ),
-            context,
+            context: context.clone(),
         });
     }
 
@@ -216,7 +216,7 @@ pub fn decrypt_content(
     content_key: &[u8; 32],
     header_nonce: &[u8; NONCE_SIZE],
     mac_key: &[u8],
-    base_context: FileContext,
+    base_context: &FileContext,
 ) -> Result<Vec<u8>, CtrMacError> {
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, mac_key);
 
@@ -241,6 +241,9 @@ pub fn decrypt_content(
         let chunk = &encrypted_content[offset..chunk_end];
 
         let chunk_context = FileContext {
+            // chunk_number is u64 but FileContext expects usize - safe cast since chunk numbers
+            // are always small (file would need to be 32 exabytes to exceed u32::MAX chunks)
+            #[allow(clippy::cast_possible_truncation)]
             chunk_number: Some(chunk_number as usize),
             ..base_context.clone()
         };
@@ -422,7 +425,7 @@ mod tests {
         let encrypted = encrypt_header(&content_key, &master_key).unwrap();
         assert_eq!(encrypted.len(), HEADER_SIZE);
 
-        let header = decrypt_header(&encrypted, &master_key, FileContext::new()).unwrap();
+        let header = decrypt_header(&encrypted, &master_key, &FileContext::new()).unwrap();
         assert_eq!(header.content_key.as_ref(), &content_key);
     }
 
@@ -440,7 +443,7 @@ mod tests {
         let encrypted = encrypt_content(plaintext, &content_key, &header_nonce, &mac_key).unwrap();
 
         let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new())
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
                 .unwrap();
         assert_eq!(decrypted, plaintext);
     }
@@ -456,13 +459,14 @@ mod tests {
         rand::rng().fill_bytes(&mut mac_key);
 
         // Create content larger than one chunk
+        // Safe cast: (i % 256) always produces values 0-255, fits safely in u8
         let plaintext: Vec<u8> = (0..PAYLOAD_SIZE + 1000).map(|i| (i % 256) as u8).collect();
 
         let encrypted =
             encrypt_content(&plaintext, &content_key, &header_nonce, &mac_key).unwrap();
 
         let decrypted =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new())
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new())
                 .unwrap();
         assert_eq!(decrypted, plaintext);
     }
@@ -478,7 +482,7 @@ mod tests {
         // Tamper with the MAC
         encrypted[HEADER_SIZE - 1] ^= 0xFF;
 
-        let result = decrypt_header(&encrypted, &master_key, FileContext::new());
+        let result = decrypt_header(&encrypted, &master_key, &FileContext::new());
         assert!(matches!(result, Err(CtrMacError::HmacVerification { .. })));
     }
 
@@ -501,7 +505,7 @@ mod tests {
         encrypted[last] ^= 0xFF;
 
         let result =
-            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, FileContext::new());
+            decrypt_content(&encrypted, &content_key, &header_nonce, &mac_key, &FileContext::new());
         assert!(matches!(result, Err(CtrMacError::HmacVerification { .. })));
     }
 }

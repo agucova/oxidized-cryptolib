@@ -10,6 +10,7 @@
 //! 2. **Get/GetMut**: Access the handle for read/write operations
 //! 3. **Remove**: Remove and return the handle when done
 
+use dashmap::mapref::entry::Entry;
 use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
 use std::hash::Hash;
@@ -79,13 +80,26 @@ impl<V> HandleTable<u64, V> {
     ///
     /// The auto-generated handle ID.
     pub fn insert_auto(&self, value: V) -> u64 {
-        let id = self
+        let next_id = self
             .next_id
             .as_ref()
-            .expect("insert_auto requires new_auto_id")
-            .fetch_add(1, Ordering::Relaxed);
-        self.handles.insert(id, value);
-        id
+            .expect("insert_auto requires new_auto_id");
+        let mut value = Some(value);
+        loop {
+            let id = next_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    let next = current.checked_add(1).unwrap_or(1);
+                    Some(next)
+                })
+                .expect("fetch_update always succeeds");
+            if id == 0 {
+                continue;
+            }
+            if let Entry::Vacant(entry) = self.handles.entry(id) {
+                entry.insert(value.take().expect("value already inserted"));
+                return id;
+            }
+        }
     }
 }
 
@@ -278,12 +292,12 @@ mod tests {
         let mut ids = Vec::new();
 
         for i in 0..100 {
-            ids.push(table.insert_auto(format!("file{}", i)));
+            ids.push(table.insert_auto(format!("file{i}")));
         }
 
         // All IDs should be unique
         let mut sorted = ids.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(ids.len(), sorted.len());
     }
@@ -407,24 +421,20 @@ mod tests {
     }
 
     #[test]
-    fn test_id_overflow_behavior_documented() {
-        // Bug class: ID counter wraps at u64::MAX
-        // This test DOCUMENTS the current buggy behavior:
-        // - After u64::MAX inserts, next ID would be 0 (reserved!)
-        // - After u64::MAX+1 inserts, ID would be 1 (collision!)
-        //
-        // We can't actually test this (would take forever), but we document:
-        // TODO: Fix by using saturating_add or checking for wrap
-        let table: HandleTable<u64, &str> = HandleTable::new_auto_id();
+    fn test_id_overflow_guarded() {
+        // Force the counter to wrap and ensure we never return 0 or overwrite.
+        let mut table: HandleTable<u64, &str> = HandleTable::new_auto_id();
 
-        // Insert a value at ID 1
-        let first_id = table.insert_auto("first");
-        assert_eq!(first_id, 1);
+        table.insert(1, "first");
+        table.next_id = Some(AtomicU64::new(u64::MAX));
 
-        // If we could insert u64::MAX times, we'd get:
-        // - ID 0 (should be reserved but would be returned)
-        // - ID 1 (collision with first entry, overwrites it!)
-        // This is a known bug that should be fixed.
+        let max_id = table.insert_auto("max");
+        assert_eq!(max_id, u64::MAX);
+
+        let next_id = table.insert_auto("after");
+        assert_ne!(next_id, 0);
+        assert_eq!(next_id, 2);
+        assert_eq!(*table.get(&1).unwrap(), "first");
     }
 
     #[test]

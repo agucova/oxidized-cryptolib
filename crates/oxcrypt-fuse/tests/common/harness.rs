@@ -29,26 +29,23 @@ static CLEANUP_ONCE: Once = Once::new();
 ///
 /// This function is called automatically before creating new mounts,
 /// and runs at most once per test process. It cleans up mounts with
-/// `cryptomator-test` in their fsname that are unresponsive.
+/// `cryptomator-test` or `cryptomator:test` in their fsname.
 fn cleanup_stale_test_mounts() {
     CLEANUP_ONCE.call_once(|| {
-        // Use a short timeout - if mount is unresponsive for 500ms, it's stale
-        let timeout = Duration::from_millis(500);
-        match cleanup_test_mounts(timeout) {
+        match cleanup_test_mounts() {
             Ok(results) => {
                 for result in results {
-                    if result.success {
-                        if let oxcrypt_mount::CleanupAction::Unmounted = result.action {
+                    if result.success
+                        && let oxcrypt_mount::CleanupAction::Unmounted = result.action {
                             eprintln!(
                                 "[test-harness] Cleaned stale test mount: {}",
                                 result.mountpoint.display()
                             );
                         }
-                    }
                 }
             }
             Err(e) => {
-                eprintln!("[test-harness] Warning: Failed to clean stale mounts: {}", e);
+                eprintln!("[test-harness] Warning: Failed to clean stale mounts: {e}");
             }
         }
     });
@@ -99,20 +96,25 @@ impl TestMount {
         cleanup_stale_test_mounts();
 
         let temp_vault = TempVault::new();
-        let temp_mount = TempDir::new().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        let temp_mount = TempDir::new().map_err(|e| format!("Failed to create temp dir: {e}"))?;
         let mount_path = temp_mount.path().join("mnt");
-        fs::create_dir(&mount_path).map_err(|e| format!("Failed to create mount point: {}", e))?;
+        fs::create_dir(&mount_path).map_err(|e| format!("Failed to create mount point: {e}"))?;
 
         let fs = CryptomatorFS::new(temp_vault.path(), TEST_PASSWORD)
-            .map_err(|e| format!("Failed to create CryptomatorFS: {}", e))?;
+            .map_err(|e| format!("Failed to create CryptomatorFS: {e}"))?;
 
-        let options = vec![
+        let mut options = vec![
             MountOption::FSName("cryptomator-test".to_string()),
             MountOption::AutoUnmount,
         ];
 
+        // On macOS, prevent AppleDouble files (._*) from being created.
+        // macOS creates these when xattr operations fail with ENOTSUP.
+        #[cfg(target_os = "macos")]
+        options.push(MountOption::CUSTOM("noappledouble".to_string()));
+
         let session = fuser::spawn_mount2(fs, &mount_path, &options)
-            .map_err(|e| format!("Failed to mount: {}", e))?;
+            .map_err(|e| format!("Failed to mount: {e}"))?;
 
         // Wait for mount to become ready
         Self::wait_for_mount(&mount_path)?;
@@ -153,12 +155,12 @@ impl TestMount {
         let vault_path = shared_vault_path()
             .ok_or_else(|| "test_vault not found in repository".to_string())?;
 
-        let temp_mount = TempDir::new().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        let temp_mount = TempDir::new().map_err(|e| format!("Failed to create temp dir: {e}"))?;
         let mount_path = temp_mount.path().join("mnt");
-        fs::create_dir(&mount_path).map_err(|e| format!("Failed to create mount point: {}", e))?;
+        fs::create_dir(&mount_path).map_err(|e| format!("Failed to create mount point: {e}"))?;
 
         let fs = CryptomatorFS::new(&vault_path, SHARED_VAULT_PASSWORD)
-            .map_err(|e| format!("Failed to create CryptomatorFS: {}", e))?;
+            .map_err(|e| format!("Failed to create CryptomatorFS: {e}"))?;
 
         let mut options = vec![
             MountOption::FSName("cryptomator-test".to_string()),
@@ -169,7 +171,7 @@ impl TestMount {
         }
 
         let session = fuser::spawn_mount2(fs, &mount_path, &options)
-            .map_err(|e| format!("Failed to mount: {}", e))?;
+            .map_err(|e| format!("Failed to mount: {e}"))?;
 
         // Wait for mount to become ready by checking for known vault content
         Self::wait_for_test_vault_content(&mount_path)?;
@@ -183,15 +185,29 @@ impl TestMount {
     }
 
     /// Wait for mount to become ready (for temp vaults).
+    ///
+    /// For empty vaults, we can't check for content. Instead, we verify that
+    /// the mount point has a different device ID than its parent directory,
+    /// which indicates a new filesystem is mounted there.
     fn wait_for_mount(mount_path: &Path) -> Result<(), String> {
+        use std::os::unix::fs::MetadataExt;
+
+        let parent_path = mount_path.parent().ok_or("mount_path has no parent")?;
+        let parent_dev = fs::metadata(parent_path)
+            .map_err(|e| format!("Failed to stat parent: {e}"))?
+            .dev();
+
         let deadline = Instant::now() + MOUNT_READY_TIMEOUT;
         while Instant::now() < deadline {
-            if fs::read_dir(mount_path).is_ok() {
-                return Ok(());
-            }
+            // Check if mount point has a different device ID than parent
+            // (indicating FUSE filesystem is now mounted)
+            if let Ok(mount_meta) = fs::metadata(mount_path)
+                && mount_meta.dev() != parent_dev {
+                    return Ok(());
+                }
             thread::sleep(MOUNT_CHECK_INTERVAL);
         }
-        Err("Mount did not become ready in time".to_string())
+        Err("Mount did not become ready in time (device ID unchanged)".to_string())
     }
 
     /// Wait for mount to become ready by checking for known test_vault content.
@@ -200,7 +216,7 @@ impl TestMount {
         while Instant::now() < deadline {
             if let Ok(entries) = fs::read_dir(mount_path) {
                 let names: Vec<_> = entries
-                    .filter_map(|e| e.ok())
+                    .filter_map(std::result::Result::ok)
                     .map(|e| e.file_name().to_string_lossy().to_string())
                     .collect();
                 // Check for known test vault files
@@ -366,7 +382,7 @@ impl TestMount {
     pub fn list(&self, path: &str) -> io::Result<Vec<String>> {
         let entries = fs::read_dir(self.path(path))?;
         let names: Vec<String> = entries
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         Ok(names)
