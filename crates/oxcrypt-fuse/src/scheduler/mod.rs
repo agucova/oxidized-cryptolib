@@ -36,12 +36,19 @@
 //! ```
 
 pub mod executor;
+pub mod lane;
+pub mod queue;
 pub mod request;
 
 pub use executor::{
     ExecutorConfig, ExecutorJob, ExecutorOperation, ExecutorResult, ExecutorStats,
     FsSyscallExecutor, SubmitError,
 };
+pub use lane::{
+    classify_metadata, classify_read, classify_structural, Lane, LaneCapacities, LaneDeadlines,
+    LaneReservations, BULK_READ_THRESHOLD,
+};
+pub use queue::{AdmissionError, AggregatedLaneStats, LaneQueues, LaneStats, QueuedRequest};
 pub use request::{
     CopyRangeRequest, CopyRangeResult, FuseRequest, FuseResult, ReadRequest, ReadResult,
     RequestId, RequestIdGenerator, RequestState,
@@ -65,15 +72,21 @@ pub const DEFAULT_READ_DEADLINE: Duration = Duration::from_secs(10);
 pub struct SchedulerConfig {
     /// Executor configuration.
     pub executor: ExecutorConfig,
-    /// Default deadline for read operations.
-    pub read_deadline: Duration,
+    /// Per-lane queue capacities.
+    pub lane_capacities: LaneCapacities,
+    /// Per-lane deadlines.
+    pub lane_deadlines: LaneDeadlines,
+    /// Reserved executor slots per lane.
+    pub lane_reservations: LaneReservations,
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             executor: ExecutorConfig::default(),
-            read_deadline: DEFAULT_READ_DEADLINE,
+            lane_capacities: LaneCapacities::default(),
+            lane_deadlines: LaneDeadlines::default(),
+            lane_reservations: LaneReservations::default(),
         }
     }
 }
@@ -85,9 +98,40 @@ impl SchedulerConfig {
         self
     }
 
-    /// Set read deadline.
-    pub fn with_read_deadline(mut self, deadline: Duration) -> Self {
-        self.read_deadline = deadline;
+    /// Set lane capacities.
+    pub fn with_lane_capacities(mut self, capacities: LaneCapacities) -> Self {
+        self.lane_capacities = capacities;
+        self
+    }
+
+    /// Set lane deadlines.
+    pub fn with_lane_deadlines(mut self, deadlines: LaneDeadlines) -> Self {
+        self.lane_deadlines = deadlines;
+        self
+    }
+
+    /// Get deadline for a read operation of given size.
+    pub fn read_deadline(&self, size: usize) -> Duration {
+        let lane = classify_read(size);
+        self.lane_deadlines.get(lane)
+    }
+
+    /// Set a base timeout that scales all lane deadlines.
+    ///
+    /// The provided timeout is used as the base for L2 (read foreground).
+    /// Other lanes are scaled relative to their default ratios:
+    /// - L1 Metadata: base * 0.2 (must be responsive)
+    /// - L2 ReadFg: base
+    /// - L3 WriteFg: base
+    /// - L4 Bulk: base * 3 (allow longer for large operations)
+    pub fn with_base_timeout(mut self, base: Duration) -> Self {
+        self.lane_deadlines = LaneDeadlines {
+            control: Duration::from_secs(5),
+            metadata: Duration::from_secs_f64(base.as_secs_f64() * 0.2).max(Duration::from_secs(1)),
+            read_foreground: base,
+            write_structural: base,
+            bulk: Duration::from_secs_f64(base.as_secs_f64() * 3.0),
+        };
         self
     }
 }
@@ -234,7 +278,8 @@ impl FuseScheduler {
         }
 
         let request_id = self.id_gen.next();
-        let deadline = Instant::now() + self.config.read_deadline;
+        let lane = classify_read(size);
+        let deadline = Instant::now() + self.config.lane_deadlines.get(lane);
         let state = Arc::new(RequestState::new());
 
         // Create oneshot for result
@@ -282,7 +327,7 @@ impl FuseScheduler {
             return Err(EnqueueError::Shutdown);
         }
 
-        trace!(?request_id, fh, offset, size, "Read request enqueued");
+        trace!(?request_id, fh, offset, size, ?lane, "Read request enqueued");
 
         Ok(request_id)
     }
@@ -473,9 +518,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scheduler_config_defaults() {
-        let config = SchedulerConfig::default();
-        assert_eq!(config.read_deadline, DEFAULT_READ_DEADLINE);
+    fn test_lane_classification() {
+        // Small reads go to L2 (ReadForeground)
+        assert_eq!(classify_read(4096), Lane::ReadForeground);
+        // Large reads go to L4 (Bulk)
+        assert_eq!(classify_read(512 * 1024), Lane::Bulk);
     }
 
     #[test]

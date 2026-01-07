@@ -281,7 +281,7 @@ impl CryptomatorFS {
 
         // Create scheduler (but don't start yet - started in init())
         let scheduler = FuseScheduler::with_config(
-            SchedulerConfig::default().with_read_deadline(default_timeout),
+            SchedulerConfig::default().with_base_timeout(default_timeout),
             Arc::clone(&handle_table),
         );
 
