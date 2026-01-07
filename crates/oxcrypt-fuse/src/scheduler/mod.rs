@@ -72,6 +72,7 @@ pub use stats::{SchedulerSnapshot, SchedulerStats};
 use crate::attr::AttrCache;
 use crate::handles::{FuseHandle, FuseHandleTable};
 use dashmap::DashMap;
+use event_listener::{Event, Listener};
 use fuser::{ReplyData, ReplyWrite};
 use oxcrypt_mount::VaultStats;
 use std::sync::Arc;
@@ -524,6 +525,9 @@ pub struct FuseScheduler {
     write_bytes_by_file: Arc<DashMap<u64, AtomicU64>>,
     /// Shutdown flag.
     shutdown: Arc<AtomicBool>,
+    /// Event for waking the dispatcher when work is enqueued.
+    /// Uses eventcount pattern for efficient notification without polling.
+    dispatcher_event: Arc<Event>,
     /// Dispatcher thread handle.
     dispatcher_handle: Option<JoinHandle<()>>,
     /// Receiver for completed results.
@@ -584,6 +588,7 @@ impl FuseScheduler {
         let write_bytes_global = Arc::new(AtomicU64::new(0));
         let write_bytes_by_file = Arc::new(DashMap::new());
         let shutdown = Arc::new(AtomicBool::new(false));
+        let dispatcher_event = Arc::new(Event::new());
 
         info!("FUSE scheduler created with lane queues and fairness dispatcher");
 
@@ -611,6 +616,7 @@ impl FuseScheduler {
             write_bytes_global,
             write_bytes_by_file,
             shutdown,
+            dispatcher_event,
             dispatcher_handle: None,
             result_rx: Some(result_rx),
             result_tx,
@@ -650,6 +656,7 @@ impl FuseScheduler {
         let write_bytes_by_file = Arc::clone(&self.write_bytes_by_file);
         let writes_complete_notify = Arc::clone(&self.writes_complete_notify);
         let shutdown = Arc::clone(&self.shutdown);
+        let dispatcher_event = Arc::clone(&self.dispatcher_event);
         let result_tx = self.result_tx.clone();
 
         let handle = thread::Builder::new()
@@ -680,6 +687,7 @@ impl FuseScheduler {
                     write_bytes_by_file,
                     writes_complete_notify,
                     shutdown,
+                    dispatcher_event,
                 );
             })
             .expect("failed to spawn dispatcher thread");
@@ -849,6 +857,9 @@ impl FuseScheduler {
             "Read request enqueued to lane queue"
         );
 
+        // Wake dispatcher immediately
+        self.dispatcher_event.notify(1);
+
         Ok(request_id)
     }
 
@@ -910,6 +921,9 @@ impl FuseScheduler {
             ?lane,
             "Hazardous request enqueued to lane queue"
         );
+
+        // Wake dispatcher immediately
+        self.dispatcher_event.notify(1);
 
         Ok(request_id)
     }
@@ -1030,6 +1044,9 @@ impl FuseScheduler {
             len,
             "copy_file_range request enqueued to lane queue"
         );
+
+        // Wake dispatcher immediately
+        self.dispatcher_event.notify(1);
 
         Ok(request_id)
     }
@@ -1159,6 +1176,9 @@ impl FuseScheduler {
             ?lane,
             "Structural request enqueued to lane queue"
         );
+
+        // Wake dispatcher immediately
+        self.dispatcher_event.notify(1);
 
         Ok(request_id)
     }
@@ -1465,6 +1485,7 @@ fn dispatcher_loop(
     write_bytes_by_file: Arc<DashMap<u64, AtomicU64>>,
     writes_complete_notify: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     shutdown: Arc<AtomicBool>,
+    dispatcher_event: Arc<Event>,
 ) {
     debug!("Dispatcher loop started with fairness dispatch");
 
@@ -2026,14 +2047,22 @@ fn dispatcher_loop(
             }
         }
 
-        // Small sleep to avoid busy-waiting
-        // Sleep less if there are jobs in queues to dispatch
-        if !queues_empty {
-            thread::sleep(Duration::from_micros(50));
+        // Eventcount pattern: wait for work notification or timeout
+        // Create listener BEFORE checking state to avoid race condition
+        let listener = dispatcher_event.listen();
+
+        // Re-check if queues have work after creating listener
+        let queues_empty_now = lane_queues.total_stats().total_depth == 0;
+        if !queues_empty_now {
+            // Work arrived, don't wait - just do a quick yield
+            drop(listener);
+            thread::yield_now();
         } else if receivers.is_empty() {
-            thread::sleep(Duration::from_millis(10));
+            // No in-flight work, wait longer for new work (up to 100ms)
+            listener.wait_timeout(Duration::from_millis(100));
         } else {
-            thread::sleep(Duration::from_micros(100));
+            // Jobs in-flight, wait shorter for results (up to 1ms)
+            listener.wait_timeout(Duration::from_millis(1));
         }
     }
 

@@ -80,6 +80,10 @@ const DEFAULT_FILE_PERM: u16 = 0o644;
 const DEFAULT_DIR_PERM: u16 = 0o755;
 
 struct HazardousHandler {
+    /// Sync vault operations for direct blocking I/O in executor threads.
+    /// Per the runtime spec, executor threads should NOT use tokio.
+    sync_ops: Arc<oxcrypt_core::vault::VaultOperations>,
+    /// Async vault operations (kept for write operations that need async locks).
     ops: Arc<VaultOperationsAsync>,
     handle: Handle,
     stats: Arc<crate::async_bridge::BridgeStats>,
@@ -100,6 +104,7 @@ struct HazardousHandler {
 impl HazardousHandler {
     #[allow(clippy::too_many_arguments)]
     fn new(
+        sync_ops: Arc<oxcrypt_core::vault::VaultOperations>,
         ops: Arc<VaultOperationsAsync>,
         handle: Handle,
         stats: Arc<crate::async_bridge::BridgeStats>,
@@ -117,6 +122,7 @@ impl HazardousHandler {
         gid: u32,
     ) -> Self {
         Self {
+            sync_ops,
             ops,
             handle,
             stats,
@@ -230,11 +236,11 @@ impl HazardousHandler {
     }
 
     fn list_directory(&self, dir_id: &DirId) -> FuseResult<Vec<DirListingEntry>> {
-        let ops = Arc::clone(&self.ops);
-        let dir_id = dir_id.clone();
+        // Use sync ops directly - we're in an executor thread, no tokio needed
         let (files, dirs, symlinks) = self
-            .exec(async move { ops.list_all(&dir_id).await })
-            .map_err(FuseError::Bridge)??;
+            .sync_ops
+            .list_all(dir_id)
+            .map_err(|e| FuseError::Vault(Box::new(e)))?;
 
         let entries: Vec<DirListingEntry> = dirs
             .into_iter()
@@ -570,22 +576,15 @@ impl HazardousHandler {
             .and_then(|parent| self.inodes.get_inode(&parent))
             .unwrap_or(crate::inode::ROOT_INODE);
 
-        let ops = Arc::clone(&self.ops);
-        let dir_id_clone = dir_id.clone();
-        let (files, dirs, symlinks) =
-            match self.exec(async move { ops.list_all(&dir_id_clone).await }) {
-                Ok(Ok(result)) => result,
-                Ok(Err(e)) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    return Err(crate::error::vault_error_to_errno(&e));
-                }
-                Err(exec_err) => {
-                    self.vault_stats.record_error();
-                    self.vault_stats.record_metadata_latency(start.elapsed());
-                    return Err(exec_err.to_errno());
-                }
-            };
+        // Use sync ops directly - we're in an executor thread, no tokio needed
+        let (files, dirs, symlinks) = match self.sync_ops.list_all(&dir_id) {
+            Ok(result) => result,
+            Err(e) => {
+                self.vault_stats.record_error();
+                self.vault_stats.record_metadata_latency(start.elapsed());
+                return Err(crate::error::vault_error_to_errno(&e));
+            }
+        };
 
         let mut all_entries: Vec<(String, FileType, u64, Option<DirId>)> = [
             (".".to_string(), FileType::Directory, 0, None),
@@ -879,6 +878,13 @@ impl CryptomatorFS {
             })?
             .into_shared();
 
+        // Create sync ops for HazardousHandler (executor threads use sync I/O per spec)
+        let sync_ops = Arc::new(ops.as_sync().map_err(|e| {
+            FuseError::Io(std::io::Error::other(format!(
+                "Failed to create sync operations: {e}"
+            )))
+        })?);
+
         // Get current user/group
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
@@ -925,6 +931,7 @@ impl CryptomatorFS {
         let open_handle_tracker = Arc::new(crate::handles::OpenHandleTracker::new());
         let hazardous_handler: Option<Arc<dyn HazardousOpHandler>> =
             Some(Arc::new(HazardousHandler::new(
+                Arc::clone(&sync_ops),
                 Arc::clone(&ops),
                 handle.clone(),
                 Arc::clone(&stats),
@@ -1554,17 +1561,16 @@ impl CryptomatorFS {
         // This reduces 3 sequential network round-trips to 1 parallel operation
         // Uses async bridge to prevent slow cloud storage from blocking FUSE thread
         let dir_id_for_lookup = dir_id.clone();
-        let (file_result, dir_result, symlink_result) = self
-            .exec(async move {
-                tokio::join!(
-                    ops.find_file(&dir_id_for_lookup, &name_owned),
-                    ops.find_directory(&dir_id_for_lookup, &name_owned),
-                    ops.find_symlink(&dir_id_for_lookup, &name_owned)
-                )
-            })
-            .map_err(FuseError::Bridge)?;
+        let (file_result, dir_result, symlink_result) = self.exec(async move {
+            tokio::join!(
+                ops.find_file(&dir_id_for_lookup, &name_owned),
+                ops.find_directory(&dir_id_for_lookup, &name_owned),
+                ops.find_symlink(&dir_id_for_lookup, &name_owned)
+            )
+        }).map_err(FuseError::Bridge)?;
 
         // Check file result first (most common case)
+
         if let Ok(Some(file_info)) = file_result {
             let inode = self.inodes.get_or_insert(
                 &child_path,
@@ -2359,19 +2365,100 @@ impl Filesystem for CryptomatorFS {
     ///
     /// Uses `get_or_insert_no_lookup_inc()` which allocates or retrieves inodes WITHOUT
     /// incrementing the nlookup count, as required by the FUSE specification.
-    fn readdir(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        fh: u64,
-        offset: i64,
-        reply: ReplyDirectory,
-    ) {
-        trace!(
-            inode = ino,
-            offset = offset,
-            "readdir (enqueuing to hazardous lane)"
-        );
+            fn readdir(
+                &mut self,
+                _req: &Request<'_>,
+                ino: u64,
+                fh: u64,
+                offset: i64,
+                mut reply: ReplyDirectory,
+            ) {
+        // FAST PATH: Check dir_cache before enqueueing to scheduler.
+        // This avoids scheduler overhead for cached directory listings.
+        if let Some(cached_entries) = self.dir_cache.get(ino) {
+            trace!(inode = ino, offset = offset, entries = cached_entries.len(), "readdir cache hit - fast path");
+
+            // Look up parent inode for ".." entry
+            let parent_inode = self.inodes.get(ino)
+                .and_then(|entry| entry.path.parent())
+                .and_then(|parent| self.inodes.get_inode(&parent))
+                .unwrap_or(crate::inode::ROOT_INODE);
+
+            // Get dir_id for "." entry
+            let dir_id = self.inodes.get(ino)
+                .and_then(|entry| entry.dir_id());
+
+            // Build full entry list with "." and ".."
+            let mut all_entries: Vec<(String, FileType, Option<DirId>)> = vec![
+                (".".to_string(), FileType::Directory, dir_id),
+                ("..".to_string(), FileType::Directory, None),
+            ];
+            all_entries.extend(cached_entries.iter().map(|e| {
+                (e.name.clone(), e.file_type, e.dir_id.clone())
+            }));
+            all_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+            // Find starting position based on offset
+            let start_idx = if offset == 0 {
+                0
+            } else {
+                all_entries
+                    .iter()
+                    .position(|e| Self::name_to_offset(&e.0) == offset)
+                    .map_or(0, |idx| idx + 1)
+            };
+
+            // Build response
+            for (name, file_type, maybe_subdir_id) in all_entries.into_iter().skip(start_idx) {
+                let entry_inode = if name == "." {
+                    ino
+                } else if name == ".." {
+                    parent_inode
+                } else {
+                    // Get or create inode for entry (no nlookup increment for readdir)
+                    let entry_path = self.inodes.get(ino)
+                        .map(|e| e.path.join(&name))
+                        .unwrap_or_else(VaultPath::root);
+                    let kind = match file_type {
+                        FileType::Directory => InodeKind::Directory {
+                            dir_id: maybe_subdir_id.unwrap_or_else(DirId::root),
+                        },
+                        FileType::Symlink => {
+                            // For symlinks we need to look up the dir_id from parent
+                            let parent_dir_id = self.inodes.get(ino)
+                                .and_then(|e| e.dir_id())
+                                .unwrap_or_else(DirId::root);
+                            InodeKind::Symlink {
+                                dir_id: parent_dir_id,
+                                name: name.clone(),
+                            }
+                        }
+                        _ => {
+                            let parent_dir_id = self.inodes.get(ino)
+                                .and_then(|e| e.dir_id())
+                                .unwrap_or_else(DirId::root);
+                            InodeKind::File {
+                                dir_id: parent_dir_id,
+                                name: name.clone(),
+                            }
+                        }
+                    };
+                    self.inodes.get_or_insert_no_lookup_inc(&entry_path, &kind)
+                };
+
+                let next_offset = Self::name_to_offset(&name);
+                if reply.add(entry_inode, next_offset, file_type, &name) {
+                    break; // Buffer full
+                }
+            }
+
+            reply.ok();
+            self.vault_stats.record_metadata_op();
+            return;
+        }
+
+        // SLOW PATH: Cache miss - enqueue to scheduler
+        trace!(inode = ino, offset = offset, "readdir cache miss - enqueuing to scheduler");
 
         let op = HazardousOp::Readdir { ino, fh, offset };
         let reply_handle = HazardousReply::Directory(reply);
@@ -2406,20 +2493,16 @@ impl Filesystem for CryptomatorFS {
     ///
     /// - Correctly increments nlookup via `get_or_insert()` for non-. entries
     /// - "." and ".." use existing inodes without incrementing nlookup
-    fn readdirplus(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        fh: u64,
-        offset: i64,
-        reply: ReplyDirectoryPlus,
-    ) {
-        trace!(
-            inode = ino,
-            offset = offset,
-            "readdirplus (enqueuing to hazardous lane)"
-        );
-
+            fn readdirplus(
+                &mut self,
+                _req: &Request<'_>,
+                ino: u64,
+                fh: u64,
+                offset: i64,
+                reply: ReplyDirectoryPlus,
+            ) {
+                trace!(inode = ino, offset = offset, "readdirplus (enqueuing to hazardous lane)");
+        
         let op = HazardousOp::ReaddirPlus { ino, fh, offset };
         let reply_handle = HazardousReply::DirectoryPlus(reply);
 

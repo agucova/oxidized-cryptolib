@@ -40,6 +40,7 @@ crossbeam-channel = "0.5"
 bytes = "1.11.0"
 moka = { version = "0.12.12", features = ["sync"] }
 parking_lot = "0.12.5"
+event-listener = "5.4.1"
 
 # fuser: pure-rust on Linux, libfuse on macOS
 # Using abi-7-23 for FUSE_WRITEBACK_CACHE support (mmap compatibility)

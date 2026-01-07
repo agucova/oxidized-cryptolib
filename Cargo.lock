@@ -5758,6 +5758,7 @@ dependencies = [
  "crossbeam-channel",
  "ctrlc",
  "dashmap",
+ "event-listener",
  "filetime",
  "fuser",
  "git2",

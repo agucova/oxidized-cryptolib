@@ -1046,6 +1046,45 @@ impl VaultOperations {
         Ok(entries)
     }
 
+    /// List all files, directories, and symlinks in a single operation.
+    ///
+    /// This is designed for FUSE `readdir`/`readdirplus` operations which need
+    /// to search across all entry types. Returns separate vectors for each type
+    /// to allow efficient inode assignment and attribute building.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The directory to list
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (files, directories, symlinks).
+    #[allow(clippy::type_complexity)] // Return tuple is self-documenting
+    #[instrument(level = "debug", skip(self), fields(dir_id = %directory_id.as_str()))]
+    pub fn list_all(
+        &self,
+        directory_id: &DirId,
+    ) -> Result<
+        (
+            Vec<VaultFileInfo>,
+            Vec<VaultDirectoryInfo>,
+            Vec<VaultSymlinkInfo>,
+        ),
+        VaultOperationError,
+    > {
+        let files = self.list_files(directory_id)?;
+        let directories = self.list_directories(directory_id)?;
+        let symlinks = self.list_symlinks(directory_id)?;
+
+        debug!(
+            file_count = files.len(),
+            dir_count = directories.len(),
+            symlink_count = symlinks.len(),
+            "Listed all entries"
+        );
+        Ok((files, directories, symlinks))
+    }
+
     /// List all entries at a given path.
     ///
     /// This is a path-based convenience wrapper around `list()` that accepts

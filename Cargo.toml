@@ -85,6 +85,6 @@ lto = "thin"         # Faster than "fat", still good optimization
 codegen-units = 16   # Faster compilation than 1
 strip = "debuginfo"  # Remove debug info but keep symbols
 
-# macOS rename fix: Use fuser 0.16+ with macfuse-4-compat feature
-# See: https://github.com/cberner/fuser/pull/342
-# The macfuse-4-compat feature adds flags/padding to fuse_rename_in for macFUSE 5.x compatibility
+[profile.profiling]
+inherits = "release"
+debug = true
