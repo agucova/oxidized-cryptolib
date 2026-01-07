@@ -283,6 +283,7 @@ impl CryptomatorFS {
         let scheduler = FuseScheduler::with_config(
             SchedulerConfig::default().with_base_timeout(default_timeout),
             Arc::clone(&handle_table),
+            Arc::clone(&vault_stats),
         );
 
         Ok(Self {
@@ -332,6 +333,15 @@ impl CryptomatorFS {
     /// the notifier for kernel cache invalidation.
     pub fn notifier_cell(&self) -> &OnceLock<fuser::Notifier> {
         &self.notifier
+    }
+
+    /// Returns a scheduler stats collector for monitoring scheduler health.
+    ///
+    /// The collector holds Arc references to scheduler components and can produce
+    /// snapshots even after the filesystem is moved into a FUSE session.
+    /// Returns `None` if the scheduler hasn't been initialized.
+    pub fn scheduler_stats_collector(&self) -> Option<crate::scheduler::SchedulerStatsCollector> {
+        self.scheduler.as_ref().map(|s| s.stats_collector())
     }
 
     /// Creates a new CryptomatorFS with custom UID/GID.
@@ -493,6 +503,15 @@ impl CryptomatorFS {
                             && let Some(buffer) = handle.as_write_buffer_mut() {
                                 buffer.restore_content(returned_content);
                             }
+
+                        // Release all tracked write budget now that data is persisted.
+                        // We must release exactly what was tracked (via add_write_bytes),
+                        // not the full content_len, to prevent counter underflow when
+                        // a buffer accumulates writes across multiple flush cycles.
+                        if let Some(ref scheduler) = self.scheduler {
+                            scheduler.release_all_file_write_bytes(ino);
+                        }
+
                         self.attr_cache.invalidate(ino);
                         return Ok(Some(encrypted_path));
                     }
@@ -1460,7 +1479,7 @@ impl Filesystem for CryptomatorFS {
                 let size_usize = usize::try_from(size).unwrap_or(0);
 
                 self.vault_stats.start_read();
-                match scheduler.try_enqueue_read(fh, reader, offset_u64, size_usize, reply) {
+                match scheduler.try_enqueue_read(ino, fh, reader, offset_u64, size_usize, reply) {
                     Ok(request_id) => {
                         trace!(?request_id, fh, offset_u64, size_usize, "Read enqueued to scheduler");
                         // Return immediately - scheduler will reply asynchronously
@@ -2101,6 +2120,20 @@ impl Filesystem for CryptomatorFS {
     fn flush(&mut self, _req: &Request<'_>, ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
         trace!(inode = ino, fh = fh, "flush");
 
+        // Wait for any pending async writes (copy_file_range) to complete
+        // before flushing, to ensure all data is visible in the buffer.
+        if let Some(ref scheduler) = self.scheduler {
+            if scheduler.has_pending_writes(ino) {
+                trace!(ino, "Waiting for pending async writes before flush");
+                if !scheduler.wait_pending_writes(ino, self.write_timeout) {
+                    // Timeout waiting for pending writes - might have stale data
+                    warn!(ino, "Timeout waiting for pending async writes in flush");
+                    reply.error(libc::ETIMEDOUT);
+                    return;
+                }
+            }
+        }
+
         // Flush writes data to the vault (kernel buffer cache).
         // We don't sync to disk here - that's fsync's job.
         match self.flush_handle(ino, fh) {
@@ -2111,6 +2144,20 @@ impl Filesystem for CryptomatorFS {
 
     fn fsync(&mut self, _req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         trace!(inode = ino, fh = fh, datasync = datasync, "fsync");
+
+        // Wait for any pending async writes (copy_file_range) to complete
+        // before syncing, to ensure all data is visible in the buffer.
+        if let Some(ref scheduler) = self.scheduler {
+            if scheduler.has_pending_writes(ino) {
+                trace!(ino, "Waiting for pending async writes before fsync");
+                if !scheduler.wait_pending_writes(ino, self.write_timeout) {
+                    // Timeout waiting for pending writes - might have stale data
+                    warn!(ino, "Timeout waiting for pending async writes in fsync");
+                    reply.error(libc::ETIMEDOUT);
+                    return;
+                }
+            }
+        }
 
         // First, flush any dirty data to the vault
         if let Err(errno) = self.flush_handle(ino, fh) {
@@ -2763,6 +2810,25 @@ impl Filesystem for CryptomatorFS {
             return;
         };
 
+        // Check write budget before proceeding
+        // This prevents unbounded dirty data accumulation under slow backends
+        if let Some(ref scheduler) = self.scheduler {
+            let write_size = data.len() as u64;
+            if scheduler.check_write_budget(ino, write_size).is_err() {
+                trace!(
+                    ino,
+                    write_size,
+                    "Write rejected due to budget limit (EAGAIN)"
+                );
+                drop(handle); // Release lock before replying
+                reply.error(libc::EAGAIN);
+                return;
+            }
+        }
+
+        // Track buffer size before write for delta calculation
+        let old_size = buffer.len();
+
         // Write data at offset (WriteBuffer handles buffer expansion)
         self.vault_stats.start_write();
         // FUSE guarantees offset is non-negative (it's from kernel write requests)
@@ -2775,6 +2841,14 @@ impl Filesystem for CryptomatorFS {
 
         // Track buffer size for mmap consistency (getattr must see current size)
         self.update_buffer_size(ino, new_size);
+
+        // Track write bytes for budget enforcement
+        // Only track the delta (new bytes added), not overwrites
+        if let Some(ref scheduler) = self.scheduler {
+            if new_size > old_size {
+                scheduler.add_write_bytes(ino, (new_size - old_size) as u64);
+            }
+        }
 
         // Invalidate attr cache for this inode (will be recalculated with effective_file_size)
         self.attr_cache.invalidate(ino);

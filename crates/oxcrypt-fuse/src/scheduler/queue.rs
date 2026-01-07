@@ -143,13 +143,14 @@ impl<T> LaneQueues<T> {
 
     /// Try to enqueue a request in the specified lane.
     ///
-    /// Returns `Err(AdmissionError::QueueFull)` if the lane is at capacity.
+    /// Returns `Err((AdmissionError, data))` if the lane is at capacity or shutdown,
+    /// returning the data so it can be recovered (e.g., to restore a borrowed reader).
     pub fn try_enqueue(
         &self,
         lane: Lane,
         id: RequestId,
         data: T,
-    ) -> Result<(), AdmissionError> {
+    ) -> Result<(), (AdmissionError, T)> {
         let queue = self.queue(lane);
         let request = QueuedRequest { id, lane, data };
 
@@ -158,15 +159,20 @@ impl<T> LaneQueues<T> {
                 queue.stats.record_enqueue();
                 Ok(())
             }
-            Err(TrySendError::Full(_)) => {
+            Err(TrySendError::Full(rejected)) => {
                 queue.stats.record_reject();
-                Err(AdmissionError::QueueFull {
-                    lane,
-                    capacity: queue.capacity,
-                    depth: queue.stats.current_depth(),
-                })
+                Err((
+                    AdmissionError::QueueFull {
+                        lane,
+                        capacity: queue.capacity,
+                        depth: queue.stats.current_depth(),
+                    },
+                    rejected.data,
+                ))
             }
-            Err(TrySendError::Disconnected(_)) => Err(AdmissionError::Shutdown),
+            Err(TrySendError::Disconnected(rejected)) => {
+                Err((AdmissionError::Shutdown, rejected.data))
+            }
         }
     }
 
@@ -228,6 +234,29 @@ impl<T> LaneQueues<T> {
                 + self.write_structural.stats.depth.load(Ordering::Relaxed)
                 + self.bulk.stats.depth.load(Ordering::Relaxed),
         }
+    }
+
+    /// Drain all items from all lanes.
+    ///
+    /// Used during shutdown to retrieve queued jobs that need cleanup.
+    /// Returns all queued requests across all lanes.
+    pub fn drain_all(&self) -> Vec<QueuedRequest<T>> {
+        let mut items = Vec::new();
+
+        // Drain each lane
+        for lane in [
+            Lane::Control,
+            Lane::Metadata,
+            Lane::ReadForeground,
+            Lane::WriteStructural,
+            Lane::Bulk,
+        ] {
+            while let Some(request) = self.try_dequeue(lane) {
+                items.push(request);
+            }
+        }
+
+        items
     }
 }
 
@@ -291,15 +320,18 @@ mod tests {
             .try_enqueue(Lane::Metadata, RequestId::new(2), 2)
             .unwrap();
 
-        // Third should fail
+        // Third should fail and return the data
         let result = queues.try_enqueue(Lane::Metadata, RequestId::new(3), 3);
         assert!(matches!(
             result,
-            Err(AdmissionError::QueueFull {
-                lane: Lane::Metadata,
-                capacity: 2,
-                ..
-            })
+            Err((
+                AdmissionError::QueueFull {
+                    lane: Lane::Metadata,
+                    capacity: 2,
+                    ..
+                },
+                3 // The rejected data is returned
+            ))
         ));
     }
 

@@ -2,11 +2,12 @@
 //!
 //! Provides a unified mounting interface for FUSE-based filesystem mounts.
 
+use crate::scheduler::SchedulerStatsCollector;
 use crate::{CryptomatorFS, MountConfig};
 use fuser::{BackgroundSession, MountOption};
 use oxcrypt_mount::{
     find_available_mountpoint, BackendType, MountBackend, MountError, MountHandle, MountOptions,
-    VaultStats,
+    SchedulerStatsSnapshot, VaultStats,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -23,6 +24,8 @@ pub struct FuseMountHandle {
     stats: Arc<VaultStats>,
     /// Lock contention metrics for profiling
     lock_metrics: Arc<oxcrypt_core::vault::lock_metrics::LockMetrics>,
+    /// Scheduler stats collector for detailed scheduler metrics
+    scheduler_collector: Option<SchedulerStatsCollector>,
 }
 
 impl FuseMountHandle {
@@ -83,6 +86,10 @@ impl MountHandle for FuseMountHandle {
 
     fn lock_metrics(&self) -> Option<Arc<oxcrypt_core::vault::lock_metrics::LockMetrics>> {
         Some(Arc::clone(&self.lock_metrics))
+    }
+
+    fn scheduler_stats(&self) -> Option<SchedulerStatsSnapshot> {
+        self.scheduler_collector.as_ref().map(|c| c.to_mount_snapshot())
     }
 
     fn unmount(mut self: Box<Self>) -> Result<(), MountError> {
@@ -365,9 +372,11 @@ impl MountBackend for FuseBackend {
         let fs = CryptomatorFS::new(vault_path, password)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
-        // Capture stats and lock metrics before spawning (spawn_mount2 takes ownership of fs)
+        // Capture stats, lock metrics, and scheduler collector before spawning
+        // (spawn_mount2 takes ownership of fs)
         let stats = fs.stats();
         let lock_metrics = Arc::clone(fs.lock_metrics());
+        let scheduler_collector = fs.scheduler_stats_collector();
         // Get pointer to notifier cell that we can use after fs is moved
         let notifier_cell_ptr: *const std::sync::OnceLock<fuser::Notifier> = fs.notifier_cell();
 
@@ -419,6 +428,7 @@ impl MountBackend for FuseBackend {
             mountpoint: actual_mountpoint,
             stats,
             lock_metrics,
+            scheduler_collector,
         }))
     }
 
@@ -485,9 +495,11 @@ impl MountBackend for FuseBackend {
         let fs = CryptomatorFS::with_config(vault_path, password, config)
             .map_err(|e| MountError::FilesystemCreation(e.to_string()))?;
 
-        // Capture stats and lock metrics before spawning (spawn_mount2 takes ownership of fs)
+        // Capture stats, lock metrics, and scheduler collector before spawning
+        // (spawn_mount2 takes ownership of fs)
         let stats = fs.stats();
         let lock_metrics = Arc::clone(fs.lock_metrics());
+        let scheduler_collector = fs.scheduler_stats_collector();
         // Get pointer to notifier cell that we can use after fs is moved
         let notifier_cell_ptr: *const std::sync::OnceLock<fuser::Notifier> = fs.notifier_cell();
 
@@ -538,6 +550,7 @@ impl MountBackend for FuseBackend {
             mountpoint: actual_mountpoint,
             stats,
             lock_metrics,
+            scheduler_collector,
         }))
     }
 }

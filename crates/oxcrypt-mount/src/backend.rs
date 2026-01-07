@@ -32,7 +32,7 @@
 //! handle.unmount()?;
 //! ```
 
-use crate::VaultStats;
+use crate::{SchedulerStatsSnapshot, VaultStats};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -298,6 +298,21 @@ pub trait MountHandle: Send {
     ///
     /// Returns `None` if the backend doesn't support lock metrics.
     fn lock_metrics(&self) -> Option<Arc<oxcrypt_core::vault::lock_metrics::LockMetrics>> {
+        None
+    }
+
+    /// Get scheduler statistics for backends with async I/O schedulers (optional).
+    ///
+    /// Returns a snapshot of scheduler health and performance metrics including:
+    /// - Admission control (accept/reject rates)
+    /// - Timeout tracking
+    /// - Executor utilization
+    /// - Read cache and deduplication efficiency
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `None` if the backend doesn't have a scheduler (e.g., WebDAV, NFS).
+    fn scheduler_stats(&self) -> Option<SchedulerStatsSnapshot> {
         None
     }
 

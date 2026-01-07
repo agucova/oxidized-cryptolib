@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, trace, warn};
 
-use super::request::{ReadResult, RequestId};
+use oxcrypt_core::vault::VaultOperationsAsync;
+
+use super::request::{ReadResult, RequestId, StructuralOp, StructuralResult};
 
 /// Default number of I/O worker threads.
 pub const DEFAULT_IO_THREADS: usize = 16;
@@ -70,6 +72,13 @@ pub enum ExecutorOperation {
         /// Number of bytes to read.
         size: usize,
     },
+    /// Execute a structural operation (unlink, mkdir, rename, etc.).
+    Structural {
+        /// The structural operation to execute.
+        op: StructuralOp,
+        /// Vault operations for executing the operation.
+        ops: Arc<VaultOperationsAsync>,
+    },
 }
 
 impl std::fmt::Debug for ExecutorOperation {
@@ -80,6 +89,11 @@ impl std::fmt::Debug for ExecutorOperation {
                 .field("offset", offset)
                 .field("size", size)
                 .finish_non_exhaustive(),
+            ExecutorOperation::Structural { op, .. } => f
+                .debug_struct("Structural")
+                .field("op", &op.name())
+                .field("inode", &op.primary_inode())
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -88,6 +102,8 @@ impl std::fmt::Debug for ExecutorOperation {
 pub enum ExecutorResult {
     /// Read completed.
     Read(ReadResult),
+    /// Structural operation completed.
+    Structural(StructuralResult),
 }
 
 impl ExecutorResult {
@@ -95,6 +111,7 @@ impl ExecutorResult {
     pub fn request_id(&self) -> RequestId {
         match self {
             ExecutorResult::Read(r) => r.id,
+            ExecutorResult::Structural(r) => r.id(),
         }
     }
 }
@@ -392,18 +409,13 @@ fn worker_loop(
                 }
 
                 // Execute the operation
-                let outcome = rt.block_on(execute_operation(job.operation));
+                let executor_result = rt.block_on(execute_operation(request_id, job.fh, job.operation));
                 let elapsed = start.elapsed();
 
-                let success = outcome.result.is_ok();
-
-                // Send result with reader for restoration
-                let executor_result = ExecutorResult::Read(ReadResult {
-                    id: request_id,
-                    fh: job.fh,
-                    result: outcome.result,
-                    reader: outcome.reader,
-                });
+                let success = match &executor_result {
+                    ExecutorResult::Read(r) => r.result.is_ok(),
+                    ExecutorResult::Structural(r) => r.error().is_none(),
+                };
 
                 // Try to send result; if receiver is dropped (timeout occurred), that's fine
                 if job.result_tx.send(executor_result).is_err() {
@@ -437,14 +449,12 @@ fn worker_loop(
     debug!(worker_id, "Executor worker exiting");
 }
 
-/// Result of executing an operation, including the reader for restoration.
-struct ExecutionOutcome {
-    result: Result<Bytes, i32>,
-    reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
-}
-
-/// Execute an operation and return the result along with the reader.
-async fn execute_operation(operation: ExecutorOperation) -> ExecutionOutcome {
+/// Execute an operation and return the result.
+async fn execute_operation(
+    request_id: RequestId,
+    fh: u64,
+    operation: ExecutorOperation,
+) -> ExecutorResult {
     match operation {
         ExecutorOperation::Read {
             mut reader,
@@ -466,7 +476,116 @@ async fn execute_operation(operation: ExecutorOperation) -> ExecutionOutcome {
                     Err(errno)
                 }
             };
-            ExecutionOutcome { result, reader }
+            ExecutorResult::Read(ReadResult {
+                id: request_id,
+                fh,
+                offset,
+                result,
+                reader,
+            })
+        }
+        ExecutorOperation::Structural { op, ops } => {
+            let result = execute_structural_op(&op, &ops).await;
+            ExecutorResult::Structural(StructuralResult::Empty {
+                id: request_id,
+                result,
+            })
+        }
+    }
+}
+
+/// Execute a structural operation against the vault.
+async fn execute_structural_op(
+    op: &StructuralOp,
+    ops: &VaultOperationsAsync,
+) -> Result<(), i32> {
+    match op {
+        StructuralOp::Unlink { dir_id, name, .. } => {
+            // Try file first, then symlink
+            match ops.delete_file(dir_id, name).await {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    // Try symlink
+                    ops.delete_symlink(dir_id, name)
+                        .await
+                        .map_err(|e| {
+                            warn!(error = %e, name, "Failed to delete file/symlink");
+                            libc::EIO
+                        })
+                }
+            }
+        }
+        StructuralOp::Rmdir { dir_id, name, .. } => {
+            ops.delete_directory(dir_id, name)
+                .await
+                .map_err(|e| {
+                    warn!(error = %e, name, "Failed to delete directory");
+                    libc::EIO
+                })
+        }
+        StructuralOp::Mkdir { dir_id, name, .. } => {
+            ops.create_directory(dir_id, name)
+                .await
+                .map(|_| ()) // Discard the DirId for now - we'll handle this in results
+                .map_err(|e| {
+                    warn!(error = %e, name, "Failed to create directory");
+                    libc::EIO
+                })
+        }
+        StructuralOp::Create { dir_id, name, .. } => {
+            ops.create_file(dir_id, name)
+                .await
+                .map(|_writer| ()) // Discard the writer - caller will re-open
+                .map_err(|e| {
+                    warn!(error = %e, name, "Failed to create file");
+                    libc::EIO
+                })
+        }
+        StructuralOp::Rename {
+            src_dir_id,
+            name,
+            dst_dir_id,
+            newname,
+            ..
+        } => {
+            // Check if same directory rename or cross-directory move
+            if src_dir_id == dst_dir_id {
+                ops.rename_file(src_dir_id, name, newname)
+                    .await
+                    .map_err(|e| {
+                        warn!(error = %e, name, newname, "Failed to rename file");
+                        libc::EIO
+                    })
+            } else {
+                ops.move_and_rename_file(src_dir_id, name, dst_dir_id, newname)
+                    .await
+                    .map_err(|e| {
+                        warn!(error = %e, name, newname, "Failed to move file");
+                        libc::EIO
+                    })
+            }
+        }
+        StructuralOp::Symlink {
+            dir_id,
+            link_target,
+            name,
+            ..
+        } => {
+            ops.create_symlink(dir_id, name, link_target)
+                .await
+                .map_err(|e| {
+                    warn!(error = %e, name, "Failed to create symlink");
+                    libc::EIO
+                })
+        }
+        StructuralOp::Setattr { .. } => {
+            // Setattr is handled in-memory (attr cache), no vault operation needed
+            // This is a placeholder - the actual setattr logic is in filesystem.rs
+            Ok(())
+        }
+        StructuralOp::Link { .. } => {
+            // Hard links are not supported in Cryptomator vaults
+            Err(libc::ENOTSUP)
         }
     }
 }

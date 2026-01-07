@@ -124,6 +124,51 @@ impl DeadlineHeap {
     pub fn clear(&self) {
         self.heap.lock().unwrap().clear();
     }
+
+    /// Compact the heap by removing entries that fail the validity predicate.
+    ///
+    /// This is an expensive O(n log n) operation but prevents unbounded heap growth
+    /// from stale entries (requests that completed before their deadline).
+    ///
+    /// Returns the number of entries removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `is_valid` - Predicate that returns true if the entry is still valid
+    ///               (i.e., the request is still pending). Called with (request_id, generation).
+    pub fn compact<F>(&self, is_valid: F) -> usize
+    where
+        F: Fn(RequestId, u64) -> bool,
+    {
+        let mut heap = self.heap.lock().unwrap();
+        let old_len = heap.len();
+
+        // Drain heap and filter valid entries
+        let valid_entries: Vec<_> = heap
+            .drain()
+            .filter(|Reverse(entry)| is_valid(entry.request_id, entry.generation))
+            .collect();
+
+        // Rebuild heap with only valid entries
+        *heap = valid_entries.into_iter().collect();
+
+        old_len - heap.len()
+    }
+
+    /// Get the ratio of heap size to total generations issued.
+    ///
+    /// A high ratio (close to 1.0) indicates few stale entries.
+    /// A low ratio indicates many stale entries that should be compacted.
+    ///
+    /// Returns `None` if no entries have been issued yet.
+    pub fn fill_ratio(&self) -> Option<f64> {
+        let total_gen = *self.generation.lock().unwrap();
+        if total_gen == 0 {
+            return None;
+        }
+        let len = self.heap.lock().unwrap().len();
+        Some(len as f64 / total_gen as f64)
+    }
 }
 
 impl Default for DeadlineHeap {

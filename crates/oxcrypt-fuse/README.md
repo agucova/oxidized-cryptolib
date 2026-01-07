@@ -206,27 +206,6 @@ cargo test -p oxcrypt-fuse
 cargo bench -p oxcrypt-fuse
 ```
 
-### macOS Build Note
-
-If you encounter pkg-config errors for fuse, set the path to macFUSE:
-
-```bash
-PKG_CONFIG_PATH=/usr/local/lib/pkgconfig cargo build -p oxcrypt-fuse
-```
-
-## Testing
-
-```bash
-# Unit tests
-cargo test -p oxcrypt-fuse --lib
-
-# Integration tests (requires FUSE)
-cargo test -p oxcrypt-fuse --features fuse-tests
-
-# All tests
-cargo test -p oxcrypt-fuse
-```
-
 ## Debugging with tokio-console
 
 For async debugging during development, the FUSE backend supports [tokio-console](https://github.com/tokio-rs/console):

@@ -10,19 +10,23 @@ use std::time::Duration;
 
 /// Key for cached read data.
 ///
-/// Uses inode + byte offset as the key since file handles can be reused.
+/// Uses inode + byte offset + size as the key since file handles can be reused
+/// and reads of different sizes at the same offset must be distinguished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReadCacheKey {
     /// Inode number of the file.
     pub inode: u64,
     /// Starting byte offset of this cached chunk.
     pub offset: u64,
+    /// Size of the cached data in bytes.
+    /// Two reads at the same offset with different sizes are distinct cache entries.
+    pub size: usize,
 }
 
 impl ReadCacheKey {
     /// Create a new cache key.
-    pub fn new(inode: u64, offset: u64) -> Self {
-        Self { inode, offset }
+    pub fn new(inode: u64, offset: u64, size: usize) -> Self {
+        Self { inode, offset, size }
     }
 }
 
@@ -204,14 +208,14 @@ mod tests {
     #[test]
     fn test_cache_hit_miss() {
         let cache = ReadCache::new();
-        let key = ReadCacheKey::new(1, 0);
+        let data = Bytes::from_static(b"hello world");
+        let key = ReadCacheKey::new(1, 0, data.len());
 
         // Miss
         assert!(cache.get(&key).is_none());
         assert_eq!(cache.stats.misses.load(Ordering::Relaxed), 1);
 
         // Insert
-        let data = Bytes::from_static(b"hello world");
         cache.insert(key, data.clone());
 
         // Hit
@@ -223,10 +227,11 @@ mod tests {
     #[test]
     fn test_cache_invalidate_specific() {
         let cache = ReadCache::new();
-        let key = ReadCacheKey::new(1, 0);
+        let data = Bytes::from_static(b"data");
+        let key = ReadCacheKey::new(1, 0, data.len());
 
         // Insert and verify
-        cache.insert(key, Bytes::from_static(b"data"));
+        cache.insert(key, data);
         assert!(cache.get(&key).is_some());
 
         // Invalidate specific key
@@ -239,19 +244,48 @@ mod tests {
     #[test]
     fn test_hit_ratio() {
         let cache = ReadCache::new();
-        let key = ReadCacheKey::new(1, 0);
+        let data = Bytes::from_static(b"data");
+        let key = ReadCacheKey::new(1, 0, data.len());
 
         // Insert data
-        cache.insert(key, Bytes::from_static(b"data"));
+        cache.insert(key, data);
 
         // 3 hits, 2 misses
         cache.get(&key);
         cache.get(&key);
         cache.get(&key);
-        cache.get(&ReadCacheKey::new(2, 0));
-        cache.get(&ReadCacheKey::new(3, 0));
+        cache.get(&ReadCacheKey::new(2, 0, 100)); // Miss - different inode
+        cache.get(&ReadCacheKey::new(3, 0, 100)); // Miss - different inode
 
         let ratio = cache.stats.hit_ratio();
         assert!((ratio - 0.6).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_different_sizes_are_distinct() {
+        // Regression test: reads at same offset with different sizes must be distinct
+        let cache = ReadCache::new();
+        let small_data = Bytes::from_static(b"small");
+        let large_data = Bytes::from_static(b"large data here");
+
+        let small_key = ReadCacheKey::new(1, 0, small_data.len());
+        let large_key = ReadCacheKey::new(1, 0, large_data.len());
+
+        // Insert small read
+        cache.insert(small_key, small_data.clone());
+
+        // Large read at same offset should miss (different size)
+        assert!(cache.get(&large_key).is_none());
+
+        // Small read should still hit
+        let cached = cache.get(&small_key).unwrap();
+        assert_eq!(cached, small_data);
+
+        // Insert large read
+        cache.insert(large_key, large_data.clone());
+
+        // Both should now hit with correct data
+        assert_eq!(cache.get(&small_key).unwrap(), small_data);
+        assert_eq!(cache.get(&large_key).unwrap(), large_data);
     }
 }

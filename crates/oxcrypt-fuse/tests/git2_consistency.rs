@@ -44,6 +44,8 @@ fn test_git2_init_and_commit() {
 
     // Create a test repository directory
     let repo_path = mount_point.join("test_repo");
+    // Clean up any leftover test data from previous runs
+    let _ = fs::remove_dir_all(&repo_path);
     fs::create_dir_all(&repo_path).expect("Failed to create repo directory");
 
     // Create some test files
@@ -105,6 +107,8 @@ fn test_git2_multiple_iterations() {
         let (mount_point, handle) = mount_test_vault();
 
         let repo_path = mount_point.join(format!("iter{}_repo", iteration));
+        // Clean up any leftover test data from previous runs
+        let _ = fs::remove_dir_all(&repo_path);
         fs::create_dir_all(&repo_path).unwrap();
 
         // Create test files
@@ -162,6 +166,8 @@ fn test_ripgrep_extraction_then_git() {
     let (mount_point, _handle) = mount_test_vault();
 
     let repo_path = mount_point.join("ripgrep_test");
+    // Clean up any leftover test data from previous runs
+    let _ = fs::remove_dir_all(&repo_path);
     fs::create_dir_all(&repo_path).expect("Failed to create repo directory");
 
     // Download or use cached ripgrep zip

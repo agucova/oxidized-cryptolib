@@ -878,6 +878,129 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Backend-agnostic scheduler statistics snapshot.
+///
+/// This represents a point-in-time view of scheduler health and performance,
+/// abstracting over backend-specific implementations (FUSE, WebDAV, NFS, etc.).
+///
+/// Not all backends have schedulers, so this is optional in the `MountHandle` trait.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SchedulerStatsSnapshot {
+    // Admission control
+    /// Total requests accepted by the scheduler.
+    pub requests_accepted: u64,
+    /// Total requests rejected (queue full, shutdown, etc.).
+    pub requests_rejected: u64,
+    /// Rejection rate (rejected / total attempts).
+    pub rejection_rate: f64,
+
+    // Timeout tracking
+    /// Requests that timed out before completion.
+    pub timeouts: u64,
+    /// Timeout rate (timeouts / accepted).
+    pub timeout_rate: f64,
+    /// Late completions (arrived after timeout).
+    pub late_completions: u64,
+
+    // Current state
+    /// Total requests currently in-flight.
+    pub in_flight_total: u64,
+    /// In-flight requests per lane [L0-Control, L1-Metadata, L2-ReadFg, L3-WriteFg, L4-Bulk].
+    pub in_flight_by_lane: [u64; 5],
+
+    // Executor stats
+    /// Jobs submitted to the executor.
+    pub executor_jobs_submitted: u64,
+    /// Jobs completed by the executor.
+    pub executor_jobs_completed: u64,
+    /// Jobs failed in the executor.
+    pub executor_jobs_failed: u64,
+    /// Jobs rejected by the executor (queue full).
+    pub executor_jobs_rejected: u64,
+    /// Current executor queue depth.
+    pub executor_queue_depth: u64,
+    /// Average execution time in microseconds.
+    pub executor_avg_time_us: u64,
+
+    // Read cache stats (decrypted content cache, distinct from attribute cache)
+    /// Read cache hits.
+    pub read_cache_hits: u64,
+    /// Read cache misses.
+    pub read_cache_misses: u64,
+    /// Read cache hit ratio.
+    pub read_cache_hit_ratio: f64,
+    /// Read cache entries.
+    pub read_cache_entries: u64,
+    /// Read cache size in bytes.
+    pub read_cache_bytes: u64,
+
+    // Single-flight deduplication stats
+    /// Single-flight leaders (actual reads performed).
+    pub dedup_leaders: u64,
+    /// Single-flight waiters (deduplicated reads).
+    pub dedup_waiters: u64,
+    /// Deduplication ratio (waiters / total).
+    pub dedup_ratio: f64,
+
+    // Per-file ordering stats
+    /// Operations that waited for ordering.
+    pub per_file_ops_waited: u64,
+    /// Operations that proceeded immediately.
+    pub per_file_ops_immediate: u64,
+    /// Barrier waits.
+    pub per_file_barrier_waits: u64,
+    /// Errors propagated to barriers.
+    pub per_file_errors_propagated: u64,
+}
+
+impl SchedulerStatsSnapshot {
+    /// Create an empty snapshot (all zeros).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Format as a human-readable summary.
+    pub fn summary(&self) -> String {
+        format!(
+            "Scheduler: {} accepted, {} rejected ({:.1}% rate), {} timeouts ({:.1}% rate)\n\
+             In-flight: {} total, Executor: {} submitted, {} completed, queue depth {}\n\
+             Read cache: {:.1}% hit rate ({} hits, {} misses), {} entries, {}\n\
+             Dedup: {:.1}% ratio ({} leaders, {} waiters)",
+            self.requests_accepted,
+            self.requests_rejected,
+            self.rejection_rate * 100.0,
+            self.timeouts,
+            self.timeout_rate * 100.0,
+            self.in_flight_total,
+            self.executor_jobs_submitted,
+            self.executor_jobs_completed,
+            self.executor_queue_depth,
+            self.read_cache_hit_ratio * 100.0,
+            self.read_cache_hits,
+            self.read_cache_misses,
+            self.read_cache_entries,
+            format_bytes(self.read_cache_bytes),
+            self.dedup_ratio * 100.0,
+            self.dedup_leaders,
+            self.dedup_waiters,
+        )
+    }
+
+    /// Check if the scheduler is healthy (not overloaded).
+    ///
+    /// Returns `true` if rejection rate < 5% and timeout rate < 1%.
+    pub fn is_healthy(&self) -> bool {
+        self.rejection_rate < 0.05 && self.timeout_rate < 0.01
+    }
+
+    /// Check if the scheduler is experiencing backpressure.
+    ///
+    /// Returns `true` if rejection rate >= 5% or queue depth > 100.
+    pub fn is_backpressured(&self) -> bool {
+        self.rejection_rate >= 0.05 || self.executor_queue_depth > 100
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

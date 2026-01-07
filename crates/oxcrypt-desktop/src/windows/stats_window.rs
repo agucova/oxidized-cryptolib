@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::backend::{mount_manager, ActivityStatus, VaultStats};
+use crate::backend::{mount_manager, ActivityStatus, SchedulerStatsSnapshot, VaultStats};
 use crate::state::ThemePreference;
 
 /// Number of samples to keep in history (120 samples * 500ms = 60 seconds)
@@ -329,6 +329,7 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
 
     // Get stats from mount manager
     let stats = mount_manager().get_stats(&vault_id);
+    let scheduler_stats = mount_manager().get_scheduler_stats(&vault_id);
 
     // Throughput history for chart
     let mut history = use_signal(ThroughputHistory::default);
@@ -380,7 +381,7 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
                 style: "max-height: calc(100vh - 80px);",
 
                 if let Some(stats) = &stats {
-                    {StatsContent(stats, &mut history, is_dark)}
+                    {StatsContent(stats, scheduler_stats.as_ref(), &mut history, is_dark)}
                 } else {
                     div {
                         class: "text-center py-8 text-gray-600 dark:text-gray-300",
@@ -394,7 +395,12 @@ pub fn StatsWindow(vault_id: String, vault_name: String) -> Element {
 
 /// Stats content - extracts data from Arc<VaultStats> and renders UI
 #[allow(non_snake_case)]
-fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>, is_dark: bool) -> Element {
+fn StatsContent(
+    stats: &Arc<VaultStats>,
+    scheduler_stats: Option<&SchedulerStatsSnapshot>,
+    history: &mut Signal<ThroughputHistory>,
+    is_dark: bool,
+) -> Element {
     // Extract current values
     let activity = stats.activity_status(Duration::from_secs(3));
     let session_duration = stats.session_duration();
@@ -550,6 +556,214 @@ fn StatsContent(stats: &Arc<VaultStats>, history: &mut Signal<ThroughputHistory>
             hit_rate: hit_rate,
             hits: hits,
             misses: misses,
+        }
+
+        // Scheduler Stats (only shown for backends that support it, e.g., FUSE)
+        if let Some(sched) = scheduler_stats {
+            SchedulerStatsView { stats: sched.clone() }
+        }
+    }
+}
+
+/// Scheduler statistics view showing I/O scheduling details
+#[component]
+fn SchedulerStatsView(stats: SchedulerStatsSnapshot) -> Element {
+    // Extract key metrics
+    let in_flight = stats.in_flight_total;
+    let rejection_rate_pct = (stats.rejection_rate * 100.0).min(100.0);
+    let timeout_rate_pct = (stats.timeout_rate * 100.0).min(100.0);
+
+    // Read cache dedup stats
+    let cache_hits = stats.read_cache_hits;
+    let cache_misses = stats.read_cache_misses;
+    let cache_total = cache_hits + cache_misses;
+    let cache_hit_rate = if cache_total > 0 {
+        (cache_hits as f64 / cache_total as f64 * 100.0) as u32
+    } else {
+        0
+    };
+
+    // Single-flight dedup (concurrent identical reads)
+    let dedup_saved = stats.dedup_waiters;
+    let dedup_total = stats.dedup_leaders + dedup_saved;
+    let dedup_rate = if dedup_total > 0 {
+        (dedup_saved as f64 / dedup_total as f64 * 100.0) as u32
+    } else {
+        0
+    };
+
+    // Lane stats [L0-Control, L1-Metadata, L2-ReadFg, L3-WriteFg, L4-Bulk]
+    let lanes = stats.in_flight_by_lane;
+
+    rsx! {
+        div {
+            class: "bg-gray-100 dark:bg-gray-800 rounded-lg p-3 mt-4",
+
+            div {
+                class: "flex items-center justify-between mb-3",
+                span {
+                    class: "text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide",
+                    "I/O Scheduler"
+                }
+                span {
+                    class: "text-xs text-gray-500 dark:text-gray-400",
+                    "In-flight: {in_flight}"
+                }
+            }
+
+            // Metrics grid
+            div {
+                class: "grid grid-cols-2 gap-2",
+
+                // Read Cache Hit Rate
+                SchedulerMetric {
+                    label: "Read Cache",
+                    value: "{cache_hit_rate}%",
+                    detail: "{cache_hits}/{cache_total}",
+                    good: cache_hit_rate >= 70,
+                }
+
+                // Single-flight Dedup Rate
+                SchedulerMetric {
+                    label: "Dedup Savings",
+                    value: "{dedup_rate}%",
+                    detail: "{dedup_saved} saved",
+                    good: dedup_rate >= 10,
+                }
+
+                // Timeout Rate
+                SchedulerMetric {
+                    label: "Timeouts",
+                    value: format!("{timeout_rate_pct:.1}%"),
+                    detail: format!("{} ops", stats.timeouts),
+                    good: timeout_rate_pct < 1.0,
+                }
+
+                // Rejection Rate (admission control)
+                SchedulerMetric {
+                    label: "Rejections",
+                    value: format!("{rejection_rate_pct:.1}%"),
+                    detail: format!("{} ops", stats.requests_rejected),
+                    good: rejection_rate_pct < 5.0,
+                }
+            }
+
+            // Lane distribution bar (below metrics, only when there's activity)
+            if in_flight > 0 {
+                LaneDistributionBar { lanes: lanes, total: in_flight }
+            }
+        }
+    }
+}
+
+/// Lane distribution visualization as a stacked bar
+#[component]
+fn LaneDistributionBar(lanes: [u64; 5], total: u64) -> Element {
+    // Lane names and colors (matching priority order)
+    // L0-Control (highest), L1-Metadata, L2-ReadFg, L3-WriteFg, L4-Bulk (lowest)
+    let lane_info: [(&str, &str); 5] = [
+        ("Ctrl", "bg-red-500"),      // L0 - Control (rare, high priority)
+        ("Meta", "bg-purple-500"),   // L1 - Metadata ops
+        ("Read", "bg-blue-500"),     // L2 - Foreground reads
+        ("Write", "bg-amber-500"),   // L3 - Foreground writes
+        ("Bulk", "bg-gray-500"),     // L4 - Bulk/background
+    ];
+
+    // Calculate percentages (avoid division by zero)
+    let total_f = if total > 0 { total as f64 } else { 1.0 };
+
+    rsx! {
+        div {
+            class: "mt-3 pt-3 border-t border-gray-200 dark:border-gray-700",
+
+            // Header
+            div {
+                class: "flex items-center justify-between mb-2",
+                span {
+                    class: "text-xs text-gray-500 dark:text-gray-400",
+                    "Lane Distribution"
+                }
+            }
+
+            // Stacked bar
+            div {
+                class: "h-1.5 w-full rounded-full overflow-hidden flex bg-gray-200 dark:bg-gray-600",
+
+                for (i, &count) in lanes.iter().enumerate() {
+                    if count > 0 {
+                        {
+                            let pct = (count as f64 / total_f * 100.0).max(3.0); // min 3% for visibility
+                            let (_, color) = lane_info[i];
+                            rsx! {
+                                div {
+                                    class: "{color}",
+                                    style: "width: {pct}%;",
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Legend (compact, only show non-zero lanes)
+            div {
+                class: "flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs",
+
+                for (i, &count) in lanes.iter().enumerate() {
+                    if count > 0 {
+                        {
+                            let (name, color) = lane_info[i];
+                            rsx! {
+                                div {
+                                    class: "flex items-center",
+                                    span {
+                                        class: "w-2 h-2 rounded-full {color} mr-1",
+                                    }
+                                    span {
+                                        class: "text-gray-600 dark:text-gray-300",
+                                        "{name}: {count}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Individual scheduler metric display
+#[component]
+fn SchedulerMetric(
+    label: &'static str,
+    value: String,
+    detail: String,
+    good: bool,
+) -> Element {
+    let value_color = if good {
+        "text-green-600 dark:text-green-400"
+    } else {
+        "text-amber-600 dark:text-amber-400"
+    };
+
+    rsx! {
+        div {
+            // Use slightly lighter/darker shade than parent container for subtle depth
+            class: "text-center p-2 bg-gray-50 dark:bg-gray-700 rounded",
+            span {
+                class: "text-xs text-gray-500 dark:text-gray-400 block",
+                "{label}"
+            }
+            span {
+                class: "text-sm font-semibold {value_color} block",
+                "{value}"
+            }
+            span {
+                // Secondary text - darker in light mode, lighter in dark mode
+                class: "text-xs text-gray-500 dark:text-gray-400",
+                "{detail}"
+            }
         }
     }
 }

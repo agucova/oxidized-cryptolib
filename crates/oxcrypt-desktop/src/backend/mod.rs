@@ -33,7 +33,7 @@ pub use webdav::WebDavBackend;
 // Re-export traits and types from mount-common
 pub use oxcrypt_mount::{
     ActivityStatus, BackendInfo, BackendType, MountBackend, MountError, MountHandle, MountOptions,
-    VaultStats, first_available_backend, list_backend_info, select_backend,
+    SchedulerStatsSnapshot, VaultStats, first_available_backend, list_backend_info, select_backend,
 };
 
 use std::collections::HashMap;
@@ -317,6 +317,15 @@ impl MountManager {
     pub fn get_stats(&self, vault_id: &str) -> Option<Arc<VaultStats>> {
         let mounts = self.mounts.lock();
         mounts.get(vault_id).and_then(|h| h.stats())
+    }
+
+    /// Get scheduler-specific statistics for a mounted vault
+    ///
+    /// Returns None if the vault is not mounted or the backend doesn't support
+    /// scheduler stats (e.g., WebDAV doesn't have a scheduler).
+    pub fn get_scheduler_stats(&self, vault_id: &str) -> Option<SchedulerStatsSnapshot> {
+        let mounts = self.mounts.lock();
+        mounts.get(vault_id).and_then(|h| h.scheduler_stats())
     }
 
     /// Register a FileProvider domain with the recovery service (if available).

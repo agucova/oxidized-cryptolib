@@ -143,7 +143,7 @@ pub use stale_detection::canonicalize_with_timeout;
 // Implementation utility exports
 pub use error_category::{io_error_to_errno, VaultErrorCategory};
 pub use handle_table::HandleTable;
-pub use stats::{ActivityStatus, CacheStats, VaultStats, VaultStatsSnapshot, format_bytes};
+pub use stats::{ActivityStatus, CacheStats, SchedulerStatsSnapshot, VaultStats, VaultStatsSnapshot, format_bytes};
 pub use moka_cache::{
     CacheHealth, CacheHealthThresholds, CacheWarning, CachedEntry, NegativeEntry,
     DEFAULT_NEGATIVE_TTL, DEFAULT_TTL, LOCAL_NEGATIVE_TTL, LOCAL_TTL,

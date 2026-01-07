@@ -5,9 +5,11 @@
 //! so they can be safely moved to worker threads for delayed replies.
 
 use bytes::Bytes;
-use fuser::{ReplyData, ReplyWrite};
+use fuser::{FileAttr, ReplyAttr, ReplyCreate, ReplyData, ReplyEmpty, ReplyEntry, ReplyWrite};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
+
+use oxcrypt_core::vault::DirId;
 
 /// Unique identifier for a request in the scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -140,6 +142,8 @@ pub struct ReadResult {
     pub id: RequestId,
     /// File handle ID for reader restoration.
     pub fh: u64,
+    /// Byte offset that was read (for cache key construction).
+    pub offset: u64,
     /// The read data, or error code.
     pub result: Result<Bytes, i32>,
     /// The reader to restore to the handle table.
@@ -151,6 +155,7 @@ impl std::fmt::Debug for ReadResult {
         f.debug_struct("ReadResult")
             .field("id", &self.id)
             .field("fh", &self.fh)
+            .field("offset", &self.offset)
             .field("result", &self.result.as_ref().map(Bytes::len))
             .finish_non_exhaustive()
     }
@@ -199,6 +204,407 @@ pub struct CopyRangeResult {
     pub result: Result<u64, i32>,
 }
 
+// ============================================================================
+// Structural Operations (unlink, rmdir, mkdir, create, rename, setattr, etc.)
+// ============================================================================
+
+/// Parameters for a setattr operation.
+#[derive(Debug, Clone)]
+pub struct SetattrParams {
+    /// New mode (permissions) if set.
+    pub mode: Option<u32>,
+    /// New user ID if set.
+    pub uid: Option<u32>,
+    /// New group ID if set.
+    pub gid: Option<u32>,
+    /// New size if set (truncate).
+    pub size: Option<u64>,
+    /// New access time if set.
+    pub atime: Option<fuser::TimeOrNow>,
+    /// New modification time if set.
+    pub mtime: Option<fuser::TimeOrNow>,
+    /// New creation time if set (macOS).
+    pub ctime: Option<std::time::SystemTime>,
+    /// New flags if set (macOS).
+    pub flags: Option<u32>,
+}
+
+/// A structural operation with its parameters.
+///
+/// Structural operations modify the filesystem structure (create, delete, rename)
+/// and must be serialized per-file to prevent race conditions.
+#[derive(Debug, Clone)]
+pub enum StructuralOp {
+    /// Delete a file.
+    Unlink {
+        /// Parent directory inode.
+        parent: u64,
+        /// Parent directory ID for vault operations.
+        dir_id: DirId,
+        /// Name of the file to delete.
+        name: String,
+    },
+    /// Delete a directory.
+    Rmdir {
+        /// Parent directory inode.
+        parent: u64,
+        /// Parent directory ID for vault operations.
+        dir_id: DirId,
+        /// Name of the directory to delete.
+        name: String,
+    },
+    /// Create a directory.
+    Mkdir {
+        /// Parent directory inode.
+        parent: u64,
+        /// Parent directory ID for vault operations.
+        dir_id: DirId,
+        /// Name of the new directory.
+        name: String,
+        /// Permissions mode.
+        mode: u32,
+    },
+    /// Create a file.
+    Create {
+        /// Parent directory inode.
+        parent: u64,
+        /// Parent directory ID for vault operations.
+        dir_id: DirId,
+        /// Name of the new file.
+        name: String,
+        /// Permissions mode.
+        mode: u32,
+        /// Open flags.
+        flags: i32,
+    },
+    /// Rename a file or directory.
+    Rename {
+        /// Source parent directory inode.
+        parent: u64,
+        /// Source parent directory ID.
+        src_dir_id: DirId,
+        /// Source name.
+        name: String,
+        /// Destination parent directory inode.
+        newparent: u64,
+        /// Destination parent directory ID.
+        dst_dir_id: DirId,
+        /// Destination name.
+        newname: String,
+        /// Rename flags (e.g., RENAME_NOREPLACE).
+        flags: u32,
+    },
+    /// Set file attributes.
+    Setattr {
+        /// Target inode.
+        ino: u64,
+        /// File handle (if from open file).
+        fh: Option<u64>,
+        /// Attributes to set.
+        params: SetattrParams,
+    },
+    /// Create a symbolic link.
+    Symlink {
+        /// Parent directory inode.
+        parent: u64,
+        /// Parent directory ID.
+        dir_id: DirId,
+        /// Link target path.
+        link_target: String,
+        /// Name of the symlink.
+        name: String,
+    },
+    /// Create a hard link.
+    Link {
+        /// Source inode.
+        ino: u64,
+        /// New parent directory inode.
+        newparent: u64,
+        /// New parent directory ID.
+        dir_id: DirId,
+        /// New name.
+        newname: String,
+    },
+}
+
+impl StructuralOp {
+    /// Get the primary inode affected by this operation.
+    ///
+    /// For operations that affect a parent directory (create, delete),
+    /// this returns the parent inode. For operations that affect a file
+    /// directly (setattr), this returns that inode.
+    pub fn primary_inode(&self) -> u64 {
+        match self {
+            StructuralOp::Unlink { parent, .. }
+            | StructuralOp::Rmdir { parent, .. }
+            | StructuralOp::Mkdir { parent, .. }
+            | StructuralOp::Create { parent, .. }
+            | StructuralOp::Symlink { parent, .. } => *parent,
+            StructuralOp::Rename { parent, .. } => *parent,
+            StructuralOp::Setattr { ino, .. } | StructuralOp::Link { ino, .. } => *ino,
+        }
+    }
+
+    /// Get all inodes affected by this operation (for rename).
+    pub fn affected_inodes(&self) -> Vec<u64> {
+        match self {
+            StructuralOp::Rename {
+                parent, newparent, ..
+            } => {
+                if parent == newparent {
+                    vec![*parent]
+                } else {
+                    vec![*parent, *newparent]
+                }
+            }
+            StructuralOp::Link { ino, newparent, .. } => vec![*ino, *newparent],
+            _ => vec![self.primary_inode()],
+        }
+    }
+
+    /// Get the operation name for logging.
+    pub fn name(&self) -> &'static str {
+        match self {
+            StructuralOp::Unlink { .. } => "unlink",
+            StructuralOp::Rmdir { .. } => "rmdir",
+            StructuralOp::Mkdir { .. } => "mkdir",
+            StructuralOp::Create { .. } => "create",
+            StructuralOp::Rename { .. } => "rename",
+            StructuralOp::Setattr { .. } => "setattr",
+            StructuralOp::Symlink { .. } => "symlink",
+            StructuralOp::Link { .. } => "link",
+        }
+    }
+}
+
+/// Reply handle for structural operations.
+///
+/// Wraps the different FUSE reply types in a single enum.
+pub enum StructuralReply {
+    /// Reply for unlink, rmdir, rename.
+    Empty(ReplyEmpty),
+    /// Reply for mkdir, symlink, link.
+    Entry(ReplyEntry),
+    /// Reply for create (includes file handle).
+    Create(ReplyCreate),
+    /// Reply for setattr.
+    Attr(ReplyAttr),
+}
+
+impl StructuralReply {
+    /// Send an error reply.
+    pub fn error(self, errno: i32) {
+        match self {
+            StructuralReply::Empty(r) => r.error(errno),
+            StructuralReply::Entry(r) => r.error(errno),
+            StructuralReply::Create(r) => r.error(errno),
+            StructuralReply::Attr(r) => r.error(errno),
+        }
+    }
+}
+
+impl std::fmt::Debug for StructuralReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StructuralReply::Empty(_) => write!(f, "StructuralReply::Empty"),
+            StructuralReply::Entry(_) => write!(f, "StructuralReply::Entry"),
+            StructuralReply::Create(_) => write!(f, "StructuralReply::Create"),
+            StructuralReply::Attr(_) => write!(f, "StructuralReply::Attr"),
+        }
+    }
+}
+
+/// A structural request waiting for async completion.
+pub struct StructuralRequest {
+    /// Unique request identifier.
+    pub id: RequestId,
+    /// The operation to perform.
+    pub op: StructuralOp,
+    /// Deadline for this request.
+    pub deadline: Instant,
+    /// Reply handle.
+    pub reply: StructuralReply,
+}
+
+impl std::fmt::Debug for StructuralRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StructuralRequest")
+            .field("id", &self.id)
+            .field("op", &self.op)
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Result of a completed structural operation.
+#[derive(Debug)]
+pub enum StructuralResult {
+    /// Result for unlink, rmdir, rename (success or error).
+    Empty {
+        /// Request ID.
+        id: RequestId,
+        /// Success or error code.
+        result: Result<(), i32>,
+    },
+    /// Result for mkdir, symlink, link.
+    Entry {
+        /// Request ID.
+        id: RequestId,
+        /// File attributes and generation, or error.
+        result: Result<(FileAttr, u64), i32>,
+    },
+    /// Result for create.
+    Create {
+        /// Request ID.
+        id: RequestId,
+        /// File attributes, generation, and file handle, or error.
+        result: Result<(FileAttr, u64, u64, u32), i32>,
+    },
+    /// Result for setattr.
+    Attr {
+        /// Request ID.
+        id: RequestId,
+        /// File attributes or error.
+        result: Result<FileAttr, i32>,
+    },
+}
+
+impl StructuralResult {
+    /// Get the request ID.
+    pub fn id(&self) -> RequestId {
+        match self {
+            StructuralResult::Empty { id, .. }
+            | StructuralResult::Entry { id, .. }
+            | StructuralResult::Create { id, .. }
+            | StructuralResult::Attr { id, .. } => *id,
+        }
+    }
+
+    /// Get the error code if this was an error.
+    pub fn error(&self) -> Option<i32> {
+        match self {
+            StructuralResult::Empty { result, .. } => result.as_ref().err().copied(),
+            StructuralResult::Entry { result, .. } => result.as_ref().err().copied(),
+            StructuralResult::Create { result, .. } => result.as_ref().err().copied(),
+            StructuralResult::Attr { result, .. } => result.as_ref().err().copied(),
+        }
+    }
+}
+
+/// A structural job waiting in a lane queue.
+pub struct QueuedStructuralJob {
+    /// The operation to perform.
+    pub op: StructuralOp,
+    /// Vault operations for executing the operation.
+    pub ops: std::sync::Arc<oxcrypt_core::vault::VaultOperationsAsync>,
+    /// Deadline for this request.
+    pub deadline: Instant,
+}
+
+impl std::fmt::Debug for QueuedStructuralJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedStructuralJob")
+            .field("op", &self.op.name())
+            .field("primary_inode", &self.op.primary_inode())
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A read job waiting in a lane queue.
+///
+/// This is the payload type for `LaneQueues<QueuedReadJob>`.
+/// When dequeued by the fairness dispatcher, it's submitted to the executor.
+pub struct QueuedReadJob {
+    /// File handle ID.
+    pub fh: u64,
+    /// The reader to use.
+    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    /// Byte offset to read from.
+    pub offset: u64,
+    /// Number of bytes to read.
+    pub size: usize,
+    /// Deadline for this request.
+    pub deadline: Instant,
+}
+
+impl std::fmt::Debug for QueuedReadJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedReadJob")
+            .field("fh", &self.fh)
+            .field("offset", &self.offset)
+            .field("size", &self.size)
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A copy_file_range job waiting in a lane queue.
+///
+/// This is the payload type for queued copy operations.
+pub struct QueuedCopyRangeJob {
+    /// Source file handle.
+    pub fh_in: u64,
+    /// Source reader.
+    pub reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    /// Source offset.
+    pub offset_in: u64,
+    /// Destination file handle.
+    pub fh_out: u64,
+    /// Destination inode (for cache invalidation and barrier tracking).
+    pub ino_out: u64,
+    /// Destination offset.
+    pub offset_out: u64,
+    /// Number of bytes to copy.
+    pub len: usize,
+    /// Deadline for this request.
+    pub deadline: Instant,
+}
+
+impl std::fmt::Debug for QueuedCopyRangeJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedCopyRangeJob")
+            .field("fh_in", &self.fh_in)
+            .field("offset_in", &self.offset_in)
+            .field("fh_out", &self.fh_out)
+            .field("offset_out", &self.offset_out)
+            .field("len", &self.len)
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A queued job waiting in a lane queue (union type for dispatch).
+pub enum QueuedJob {
+    /// A read operation.
+    Read(QueuedReadJob),
+    /// A copy_file_range operation.
+    CopyRange(QueuedCopyRangeJob),
+    /// A structural operation (unlink, mkdir, rename, etc.).
+    Structural(QueuedStructuralJob),
+}
+
+impl QueuedJob {
+    /// Get the deadline for this job.
+    pub fn deadline(&self) -> Instant {
+        match self {
+            QueuedJob::Read(job) => job.deadline,
+            QueuedJob::CopyRange(job) => job.deadline,
+            QueuedJob::Structural(job) => job.deadline,
+        }
+    }
+}
+
+impl std::fmt::Debug for QueuedJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueuedJob::Read(r) => write!(f, "QueuedJob::Read({r:?})"),
+            QueuedJob::CopyRange(r) => write!(f, "QueuedJob::CopyRange({r:?})"),
+            QueuedJob::Structural(s) => write!(f, "QueuedJob::Structural({s:?})"),
+        }
+    }
+}
+
 /// Enumeration of all async FUSE requests.
 ///
 /// This allows the scheduler to handle different request types
@@ -208,6 +614,8 @@ pub enum FuseRequest {
     Read(ReadRequest),
     /// A copy_file_range request.
     CopyRange(CopyRangeRequest),
+    /// A structural request.
+    Structural(StructuralRequest),
 }
 
 impl FuseRequest {
@@ -216,6 +624,7 @@ impl FuseRequest {
         match self {
             FuseRequest::Read(r) => r.id,
             FuseRequest::CopyRange(r) => r.id,
+            FuseRequest::Structural(r) => r.id,
         }
     }
 
@@ -224,6 +633,7 @@ impl FuseRequest {
         match self {
             FuseRequest::Read(r) => r.deadline,
             FuseRequest::CopyRange(r) => r.deadline,
+            FuseRequest::Structural(r) => r.deadline,
         }
     }
 }
@@ -233,6 +643,7 @@ impl std::fmt::Debug for FuseRequest {
         match self {
             FuseRequest::Read(r) => write!(f, "FuseRequest::Read({r:?})"),
             FuseRequest::CopyRange(r) => write!(f, "FuseRequest::CopyRange({r:?})"),
+            FuseRequest::Structural(r) => write!(f, "FuseRequest::Structural({r:?})"),
         }
     }
 }
@@ -243,6 +654,8 @@ pub enum FuseResult {
     Read(ReadResult),
     /// Result of a copy_file_range request.
     CopyRange(CopyRangeResult),
+    /// Result of a structural request.
+    Structural(StructuralResult),
 }
 
 impl FuseResult {
@@ -251,6 +664,7 @@ impl FuseResult {
         match self {
             FuseResult::Read(r) => r.id,
             FuseResult::CopyRange(r) => r.id,
+            FuseResult::Structural(r) => r.id(),
         }
     }
 }
