@@ -401,7 +401,8 @@ impl CryptomatorFS {
 
         // Ensure positive by masking off the sign bit (top bit = 0)
         // This gives us 2^63 possible offsets, which is more than enough
-        let offset = (hash & 0x7FFF_FFFF_FFFF_FFFF) as i64;
+        let masked = hash & 0x7FFF_FFFF_FFFF_FFFF;
+        let offset = i64::from_ne_bytes(masked.to_ne_bytes());
 
         // Ensure offset is never 0, since offset=0 means "start from beginning"
         // If hash happens to be 0, use 1 instead
@@ -936,6 +937,45 @@ impl CryptomatorFS {
             .collect();
 
         Ok(entries)
+    }
+
+    /// Helper for copy_file_range: write data to destination and reply.
+    ///
+    /// Used for synchronous copy paths (ReadBuffer/WriteBuffer sources).
+    fn copy_file_range_write_dest(
+        &mut self,
+        ino_out: u64,
+        fh_out: u64,
+        offset_out: i64,
+        data: &[u8],
+        reply: ReplyWrite,
+    ) {
+        let Some(mut handle) = self.handle_table.get_mut(&fh_out) else {
+            reply.error(libc::EBADF);
+            return;
+        };
+
+        let Some(buffer) = handle.as_write_buffer_mut() else {
+            // Destination must be opened for writing
+            reply.error(libc::EBADF);
+            return;
+        };
+
+        // FUSE guarantees offset_out is non-negative
+        #[allow(clippy::cast_sign_loss)]
+        let bytes_written = buffer.write(offset_out as u64, data);
+        let new_size = buffer.len();
+        drop(handle);
+
+        // Track buffer size for mmap consistency
+        self.update_buffer_size(ino_out, new_size);
+        // Invalidate attr cache for destination
+        self.attr_cache.invalidate(ino_out);
+
+        // FUSE kernel caps request sizes well below u32::MAX in practice.
+        // Truncation here would cause offset desync, but kernel limits prevent this.
+        #[allow(clippy::cast_possible_truncation)]
+        reply.written(bytes_written as u32);
     }
 }
 
@@ -1767,34 +1807,36 @@ impl Filesystem for CryptomatorFS {
             let found = all_entries
                 .iter()
                 .position(|e| Self::name_to_offset(&e.name) == offset)
-                .map(|idx| {
-                    debug!(
-                        "readdir resume: found offset {} at idx {}, name={}, starting from idx {}",
-                        offset,
-                        idx,
-                        all_entries[idx].name,
+                .map_or_else(
+                    || {
+                        // Offset not found - the entry with this offset was likely deleted during iteration
+                        // (directory cache was invalidated and rebuilt without it).
+                        //
+                        // We can't reliably determine our position in the iteration because:
+                        // 1. Hashes don't preserve lexicographic ordering
+                        // 2. We don't know which entries were already returned before the deletion
+                        //
+                        // Conservative strategy: restart from the beginning.
+                        // This ensures we don't skip entries, though we may return duplicates.
+                        // The kernel/client handles duplicates correctly by tracking seen entries.
+                        warn!(
+                            "readdir resume: offset {} NOT FOUND in {} entries (entry deleted during iteration), restarting from beginning",
+                            offset,
+                            all_entries.len()
+                        );
+                        0 // Restart from beginning instead of returning empty
+                    },
+                    |idx| {
+                        debug!(
+                            "readdir resume: found offset {} at idx {}, name={}, starting from idx {}",
+                            offset,
+                            idx,
+                            all_entries[idx].name,
+                            idx + 1
+                        );
                         idx + 1
-                    );
-                    idx + 1
-                })
-                .unwrap_or_else(|| {
-                    // Offset not found - the entry with this offset was likely deleted during iteration
-                    // (directory cache was invalidated and rebuilt without it).
-                    //
-                    // We can't reliably determine our position in the iteration because:
-                    // 1. Hashes don't preserve lexicographic ordering
-                    // 2. We don't know which entries were already returned before the deletion
-                    //
-                    // Conservative strategy: restart from the beginning.
-                    // This ensures we don't skip entries, though we may return duplicates.
-                    // The kernel/client handles duplicates correctly by tracking seen entries.
-                    warn!(
-                        "readdir resume: offset {} NOT FOUND in {} entries (entry deleted during iteration), restarting from beginning",
-                        offset,
-                        all_entries.len()
-                    );
-                    0  // Restart from beginning instead of returning empty
-                });
+                    },
+                );
             found
         };
 
@@ -1947,26 +1989,28 @@ impl Filesystem for CryptomatorFS {
             all_entries
                 .iter()
                 .position(|e| Self::name_to_offset(&e.0) == offset)
-                .map(|idx| {
-                    debug!(
-                        "readdirplus resume: found offset {} at idx {}, name={}, starting from idx {}",
-                        offset,
-                        idx,
-                        all_entries[idx].0,
+                .map_or_else(
+                    || {
+                        // Offset not found - entry was deleted during iteration.
+                        // Restart from beginning to avoid skipping entries (see readdir for detailed explanation).
+                        warn!(
+                            "readdirplus resume: offset {} NOT FOUND in {} entries (entry deleted during iteration), restarting from beginning",
+                            offset,
+                            all_entries.len()
+                        );
+                        0 // Restart from beginning instead of returning empty
+                    },
+                    |idx| {
+                        debug!(
+                            "readdirplus resume: found offset {} at idx {}, name={}, starting from idx {}",
+                            offset,
+                            idx,
+                            all_entries[idx].0,
+                            idx + 1
+                        );
                         idx + 1
-                    );
-                    idx + 1
-                })
-                .unwrap_or_else(|| {
-                    // Offset not found - entry was deleted during iteration.
-                    // Restart from beginning to avoid skipping entries (see readdir for detailed explanation).
-                    warn!(
-                        "readdirplus resume: offset {} NOT FOUND in {} entries (entry deleted during iteration), restarting from beginning",
-                        offset,
-                        all_entries.len()
-                    );
-                    0  // Restart from beginning instead of returning empty
-                })
+                    },
+                )
         };
 
         // Return entries starting from start_idx with attributes
@@ -4261,85 +4305,105 @@ impl Filesystem for CryptomatorFS {
             "copy_file_range"
         );
 
-        // Read from source
-        let data = {
-            let Some(mut handle) = self.handle_table.get_mut(&fh_in) else {
-                reply.error(libc::EBADF);
-                return;
-            };
+        // Get source handle
+        let Some(mut handle_in) = self.handle_table.get_mut(&fh_in) else {
+            reply.error(libc::EBADF);
+            return;
+        };
 
-            match &mut *handle {
-                FuseHandle::Reader(reader) => {
-                    // FUSE guarantees offset_in is non-negative (it's from kernel requests)
-                    // len is u64 from FUSE API, may truncate on 32-bit but will fail earlier
-                    // TODO: Route through scheduler in Phase 1 completion
-                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    match self
-                        .handle
-                        .block_on(reader.read_range(offset_in as u64, len as usize))
-                    {
-                        Ok(data) => data,
-                        Err(e) => {
-                            error!(error = %e, "copy_file_range read failed");
-                            reply.error(libc::EIO);
-                            return;
-                        }
+        match &mut *handle_in {
+            FuseHandle::Reader(_) => {
+                // Async copy path: loan reader to scheduler, return immediately
+                // Take the reader by replacing with ReaderLoaned placeholder
+                let old_handle = std::mem::replace(&mut *handle_in, FuseHandle::ReaderLoaned);
+                let reader = match old_handle {
+                    FuseHandle::Reader(r) => r,
+                    _ => unreachable!("just matched Reader variant"),
+                };
+
+                // Drop the handle lock before enqueuing to avoid deadlock
+                drop(handle_in);
+
+                // Enqueue to scheduler - it will read, write to dest, and reply
+                let scheduler = self
+                    .scheduler
+                    .as_ref()
+                    .expect("scheduler not initialized");
+
+                // FUSE guarantees offsets are non-negative
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let offset_in_u64 = offset_in as u64;
+                #[allow(clippy::cast_sign_loss)]
+                let offset_out_u64 = offset_out as u64;
+                #[allow(clippy::cast_possible_truncation)]
+                let len_usize = len as usize;
+
+                match scheduler.try_enqueue_copy_range(
+                    fh_in,
+                    reader,
+                    offset_in_u64,
+                    fh_out,
+                    ino_out,
+                    offset_out_u64,
+                    len_usize,
+                    reply,
+                ) {
+                    Ok(request_id) => {
+                        trace!(
+                            ?request_id,
+                            fh_in,
+                            fh_out,
+                            offset_in_u64,
+                            offset_out_u64,
+                            len_usize,
+                            "copy_file_range enqueued to scheduler"
+                        );
+                        // Return immediately - scheduler will reply asynchronously
+                    }
+                    Err(e) => {
+                        // Enqueue failed - scheduler already replied with error.
+                        // The reader is consumed, handle remains in ReaderLoaned state.
+                        warn!(
+                            error = %e,
+                            fh_in,
+                            fh_out,
+                            "Failed to enqueue copy_file_range (scheduler replied with error)"
+                        );
                     }
                 }
-                FuseHandle::ReaderLoaned => {
-                    // Reader is busy with async read - return EAGAIN
-                    trace!(fh_in, "copy_file_range while reader is loaned, returning EAGAIN");
-                    reply.error(libc::EAGAIN);
-                    return;
-                }
-                FuseHandle::ReadBuffer(content) => {
-                    // FUSE guarantees offset_in is non-negative
-                    // On 32-bit: offsets beyond 4GB would fail earlier in VFS layer
-                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    let offset = offset_in as usize;
-                    #[allow(clippy::cast_possible_truncation)]
-                    let end = std::cmp::min(offset + len as usize, content.len());
-                    if offset < content.len() {
-                        content[offset..end].to_vec()
-                    } else {
-                        Vec::new()
-                    }
-                }
-                FuseHandle::WriteBuffer(buffer) => {
-                    // FUSE guarantees offset_in is non-negative, len may truncate on 32-bit
-                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    buffer.read(offset_in as u64, len as usize).to_vec()
-                }
+                return;
             }
-        };
-
-        // Write to destination
-        let (bytes_written, new_size) = {
-            let Some(mut handle) = self.handle_table.get_mut(&fh_out) else {
-                reply.error(libc::EBADF);
+            FuseHandle::ReaderLoaned => {
+                // Reader is busy with async operation - return EAGAIN
+                trace!(fh_in, "copy_file_range while reader is loaned, returning EAGAIN");
+                reply.error(libc::EAGAIN);
                 return;
-            };
-
-            let Some(buffer) = handle.as_write_buffer_mut() else {
-                // Destination must be opened for writing
-                reply.error(libc::EBADF);
+            }
+            FuseHandle::ReadBuffer(content) => {
+                // Synchronous path for in-memory buffers (fast)
+                // FUSE guarantees offset_in is non-negative
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let offset = offset_in as usize;
+                #[allow(clippy::cast_possible_truncation)]
+                let end = std::cmp::min(offset + len as usize, content.len());
+                let data = if offset < content.len() {
+                    content[offset..end].to_vec()
+                } else {
+                    Vec::new()
+                };
+                drop(handle_in);
+                self.copy_file_range_write_dest(ino_out, fh_out, offset_out, &data, reply);
                 return;
-            };
-
-            // FUSE guarantees offset_out is non-negative
-            #[allow(clippy::cast_sign_loss)]
-            let written = buffer.write(offset_out as u64, &data);
-            (written, buffer.len())
-        };
-
-        // Track buffer size for mmap consistency
-        self.update_buffer_size(ino_out, new_size);
-        // Invalidate attr cache for destination
-        self.attr_cache.invalidate(ino_out);
-        // bytes_written is limited by buffer.write() which is limited by data.len()
-        // data.len() is bounded by len (u64), but will fit in u32 for practical file operations
-        #[allow(clippy::cast_possible_truncation)]
-        reply.written(bytes_written as u32);
+            }
+            FuseHandle::WriteBuffer(buffer) => {
+                // Synchronous path for in-memory buffers (fast)
+                // FUSE guarantees offset_in is non-negative
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let data = buffer.read(offset_in as u64, len as usize).to_vec();
+                drop(handle_in);
+                self.copy_file_range_write_dest(ino_out, fh_out, offset_out, &data, reply);
+            }
+        }
     }
 
     fn lseek(

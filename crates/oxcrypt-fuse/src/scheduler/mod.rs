@@ -62,7 +62,7 @@ pub use single_flight::{AttachResult, InFlightReads, ReadKey, SingleFlightStats}
 
 use crate::handles::{FuseHandle, FuseHandleTable};
 use dashmap::DashMap;
-use fuser::ReplyData;
+use fuser::{ReplyData, ReplyWrite};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -196,6 +196,26 @@ struct PendingRead {
     generation: u64,
 }
 
+/// Pending copy_file_range request awaiting executor result.
+///
+/// The executor performs the read, then the dispatcher writes to destination.
+struct PendingCopyRange {
+    /// Destination file handle.
+    fh_out: u64,
+    /// Destination inode (for cache invalidation).
+    /// TODO: Pass attr_cache to dispatcher and invalidate on completion.
+    #[allow(dead_code)]
+    ino_out: u64,
+    /// Destination offset.
+    offset_out: u64,
+    /// The FUSE reply handle.
+    reply: ReplyWrite,
+    /// Request state for exactly-once reply.
+    state: Arc<RequestState>,
+    /// Generation counter for deadline heap entry validation.
+    generation: u64,
+}
+
 /// The main scheduler for async FUSE operations.
 ///
 /// Manages request submission, result dispatching, and reply handling.
@@ -206,6 +226,8 @@ pub struct FuseScheduler {
     id_gen: RequestIdGenerator,
     /// Pending read requests awaiting results.
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
+    /// Pending copy_file_range requests awaiting results.
+    pending_copy_ranges: Arc<DashMap<RequestId, PendingCopyRange>>,
     /// Deadline heap for timeout tracking.
     deadline_heap: Arc<DeadlineHeap>,
     /// Handle table for restoring readers after async completion.
@@ -233,6 +255,7 @@ impl FuseScheduler {
         let executor = Arc::new(FsSyscallExecutor::with_config(config.executor.clone()));
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let pending_reads = Arc::new(DashMap::new());
+        let pending_copy_ranges = Arc::new(DashMap::new());
         let deadline_heap = Arc::new(DeadlineHeap::new());
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -242,6 +265,7 @@ impl FuseScheduler {
             executor,
             id_gen: RequestIdGenerator::new(),
             pending_reads,
+            pending_copy_ranges,
             deadline_heap,
             handle_table,
             shutdown,
@@ -263,6 +287,7 @@ impl FuseScheduler {
 
         let result_rx = self.result_rx.take().expect("result_rx already taken");
         let pending_reads = Arc::clone(&self.pending_reads);
+        let pending_copy_ranges = Arc::clone(&self.pending_copy_ranges);
         let deadline_heap = Arc::clone(&self.deadline_heap);
         let handle_table = Arc::clone(&self.handle_table);
         let shutdown = Arc::clone(&self.shutdown);
@@ -270,7 +295,14 @@ impl FuseScheduler {
         let handle = thread::Builder::new()
             .name("fuse-scheduler-dispatch".to_string())
             .spawn(move || {
-                dispatcher_loop(result_rx, pending_reads, deadline_heap, handle_table, shutdown);
+                dispatcher_loop(
+                    result_rx,
+                    pending_reads,
+                    pending_copy_ranges,
+                    deadline_heap,
+                    handle_table,
+                    shutdown,
+                );
             })
             .expect("failed to spawn dispatcher thread");
 
@@ -370,6 +402,109 @@ impl FuseScheduler {
         Ok(request_id)
     }
 
+    /// Try to enqueue a copy_file_range request (source read portion).
+    ///
+    /// The executor reads from the source, then the dispatcher writes to the
+    /// destination and replies. This allows the FUSE callback to return immediately.
+    ///
+    /// # Arguments
+    ///
+    /// * `fh_in` - Source file handle ID
+    /// * `reader` - The VaultFileReader to read from (ownership transferred)
+    /// * `offset_in` - Source byte offset
+    /// * `fh_out` - Destination file handle ID
+    /// * `ino_out` - Destination inode (for cache invalidation)
+    /// * `offset_out` - Destination byte offset
+    /// * `len` - Number of bytes to copy
+    /// * `reply` - FUSE reply handle (ownership transferred)
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(request_id)` - Request enqueued, scheduler will complete and reply
+    /// - `Err(EnqueueError)` - Failed, scheduler already replied with error
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_enqueue_copy_range(
+        &self,
+        fh_in: u64,
+        reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+        offset_in: u64,
+        fh_out: u64,
+        ino_out: u64,
+        offset_out: u64,
+        len: usize,
+        reply: ReplyWrite,
+    ) -> Result<RequestId, EnqueueError> {
+        if self.shutdown.load(Ordering::Acquire) {
+            reply.error(libc::ESHUTDOWN);
+            return Err(EnqueueError::Shutdown);
+        }
+
+        let request_id = self.id_gen.next();
+        // copy_file_range is classified as L3 WriteStructural
+        let lane = Lane::WriteStructural;
+        let deadline = Instant::now() + self.config.lane_deadlines.get(lane);
+        let state = Arc::new(RequestState::new());
+
+        // Create oneshot for result
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // Create executor job (read from source)
+        let job = ExecutorJob {
+            request_id,
+            fh: fh_in,
+            operation: ExecutorOperation::Read {
+                reader,
+                offset: offset_in,
+                size: len,
+            },
+            result_tx,
+            deadline,
+        };
+
+        // Submit to executor
+        if let Err(e) = self.executor.try_submit(job) {
+            reply.error(libc::EAGAIN);
+            warn!(?request_id, fh_in, fh_out, "Executor rejected copy_file_range: {}", e);
+            return Err(EnqueueError::from(e));
+        }
+
+        // Insert into deadline heap for timeout tracking
+        let generation = self.deadline_heap.insert(request_id, deadline);
+
+        // Store pending copy range with destination info
+        self.pending_copy_ranges.insert(
+            request_id,
+            PendingCopyRange {
+                fh_out,
+                ino_out,
+                offset_out,
+                reply,
+                state,
+                generation,
+            },
+        );
+
+        // Send result receiver to dispatcher
+        if self.result_tx.send((request_id, result_rx)).is_err() {
+            if let Some((_, pending)) = self.pending_copy_ranges.remove(&request_id) {
+                pending.reply.error(libc::ESHUTDOWN);
+            }
+            return Err(EnqueueError::Shutdown);
+        }
+
+        trace!(
+            ?request_id,
+            fh_in,
+            fh_out,
+            offset_in,
+            offset_out,
+            len,
+            "copy_file_range request enqueued"
+        );
+
+        Ok(request_id)
+    }
+
     /// Get executor statistics.
     pub fn executor_stats(&self) -> &ExecutorStats {
         self.executor.stats()
@@ -422,6 +557,7 @@ impl Drop for FuseScheduler {
 fn dispatcher_loop(
     rx: std::sync::mpsc::Receiver<(RequestId, oneshot::Receiver<ExecutorResult>)>,
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
+    pending_copy_ranges: Arc<DashMap<RequestId, PendingCopyRange>>,
     deadline_heap: Arc<DeadlineHeap>,
     handle_table: Arc<FuseHandleTable>,
     shutdown: Arc<AtomicBool>,
@@ -440,23 +576,29 @@ fn dispatcher_loop(
 
         // Process expired deadlines from heap (efficient O(log n) per expiration)
         for (request_id, generation) in deadline_heap.pop_expired() {
-            // Verify generation matches to detect stale entries
-            // (DashMap Ref doesn't support filter, so we check separately)
-            let Some(pending) = pending_reads.get(&request_id) else {
-                continue;
-            };
-            if pending.generation != generation {
-                // Stale entry - request completed or cancelled
+            // Check pending reads first
+            if let Some(pending) = pending_reads.get(&request_id) {
+                if pending.generation == generation && pending.state.claim_reply() {
+                    warn!(?request_id, "Read request timed out");
+                    drop(pending);
+                    if let Some((_, pending)) = pending_reads.remove(&request_id) {
+                        pending.reply.error(libc::ETIMEDOUT);
+                    }
+                }
                 continue;
             }
-            // Valid timeout - claim reply and respond
-            if pending.state.claim_reply() {
-                warn!(?request_id, "Request timed out via deadline heap");
-                drop(pending);
-                if let Some((_, pending)) = pending_reads.remove(&request_id) {
-                    pending.reply.error(libc::ETIMEDOUT);
+
+            // Check pending copy ranges
+            if let Some(pending) = pending_copy_ranges.get(&request_id) {
+                if pending.generation == generation && pending.state.claim_reply() {
+                    warn!(?request_id, "copy_file_range request timed out");
+                    drop(pending);
+                    if let Some((_, pending)) = pending_copy_ranges.remove(&request_id) {
+                        pending.reply.error(libc::ETIMEDOUT);
+                    }
                 }
             }
+            // If not found in either map, entry is stale (already completed)
         }
 
         // Try to receive new result receivers (non-blocking)
@@ -496,57 +638,32 @@ fn dispatcher_loop(
         for (i, request_id, result) in completed.into_iter().rev() {
             receivers.swap_remove(i);
 
-            // Get pending read and reply
+            // Check if this is a pending read
             if let Some((_, pending)) = pending_reads.remove(&request_id) {
-                // Try to claim reply
                 if pending.state.claim_reply() {
-                    match result {
-                        Some(ExecutorResult::Read(read_result)) => {
-                            let fh = read_result.fh;
-                            let reader = read_result.reader;
-
-                            // Issue FUSE reply
-                            match read_result.result {
-                                Ok(data) => {
-                                    trace!(?request_id, bytes = data.len(), "Replying with data");
-                                    pending.reply.data(&data);
-                                }
-                                Err(errno) => {
-                                    trace!(?request_id, errno, "Replying with error");
-                                    pending.reply.error(errno);
-                                }
-                            }
-
-                            // Restore reader to handle table
-                            if let Some(mut handle) = handle_table.get_mut(&fh) {
-                                if matches!(*handle, FuseHandle::ReaderLoaned) {
-                                    *handle = FuseHandle::Reader(reader);
-                                    trace!(?request_id, fh, "Reader restored to handle table");
-                                } else {
-                                    // Handle was modified (closed?) while read was in flight
-                                    warn!(
-                                        ?request_id,
-                                        fh,
-                                        "Handle modified during async read, discarding reader"
-                                    );
-                                }
-                            } else {
-                                // Handle was removed (file closed) while read was in flight
-                                trace!(
-                                    ?request_id,
-                                    fh,
-                                    "Handle removed during async read, discarding reader"
-                                );
-                            }
-                        }
-                        None => {
-                            // Timeout or error - no reader to restore
-                            trace!(?request_id, "Replying with timeout");
-                            pending.reply.error(libc::ETIMEDOUT);
-                        }
-                    }
+                    handle_read_completion(
+                        request_id,
+                        result,
+                        pending.reply,
+                        &handle_table,
+                    );
                 } else {
-                    trace!(?request_id, "Reply already claimed (timeout race)");
+                    trace!(?request_id, "Read reply already claimed (timeout race)");
+                }
+                continue;
+            }
+
+            // Check if this is a pending copy range
+            if let Some((_, pending)) = pending_copy_ranges.remove(&request_id) {
+                if pending.state.claim_reply() {
+                    handle_copy_range_completion(
+                        request_id,
+                        result,
+                        pending,
+                        &handle_table,
+                    );
+                } else {
+                    trace!(?request_id, "copy_file_range reply already claimed (timeout race)");
                 }
             }
         }
@@ -559,14 +676,174 @@ fn dispatcher_loop(
         }
     }
 
-    // Reply to any remaining pending requests with timeout
+    // Reply to any remaining pending requests with shutdown error
     for entry in pending_reads.iter() {
         let request_id = *entry.key();
-        warn!(?request_id, "Replying with shutdown error to pending request");
+        warn!(?request_id, "Replying with shutdown error to pending read");
     }
     pending_reads.clear();
 
+    for entry in pending_copy_ranges.iter() {
+        let request_id = *entry.key();
+        warn!(?request_id, "Replying with shutdown error to pending copy_file_range");
+    }
+    pending_copy_ranges.clear();
+
     debug!("Dispatcher loop exited");
+}
+
+/// Handle completion of a read request.
+fn handle_read_completion(
+    request_id: RequestId,
+    result: Option<ExecutorResult>,
+    reply: ReplyData,
+    handle_table: &FuseHandleTable,
+) {
+    match result {
+        Some(ExecutorResult::Read(read_result)) => {
+            let fh = read_result.fh;
+            let reader = read_result.reader;
+
+            // Issue FUSE reply
+            match read_result.result {
+                Ok(data) => {
+                    trace!(?request_id, bytes = data.len(), "Replying with data");
+                    reply.data(&data);
+                }
+                Err(errno) => {
+                    trace!(?request_id, errno, "Replying with error");
+                    reply.error(errno);
+                }
+            }
+
+            // Restore reader to handle table
+            if let Some(mut handle) = handle_table.get_mut(&fh) {
+                if matches!(*handle, FuseHandle::ReaderLoaned) {
+                    *handle = FuseHandle::Reader(reader);
+                    trace!(?request_id, fh, "Reader restored to handle table");
+                } else {
+                    warn!(
+                        ?request_id,
+                        fh,
+                        "Handle modified during async read, discarding reader"
+                    );
+                }
+            } else {
+                trace!(
+                    ?request_id,
+                    fh,
+                    "Handle removed during async read, discarding reader"
+                );
+            }
+        }
+        None => {
+            trace!(?request_id, "Replying with EIO (sender dropped)");
+            reply.error(libc::EIO);
+        }
+    }
+}
+
+/// Handle completion of a copy_file_range request.
+///
+/// Writes the read data to the destination buffer and replies with bytes written.
+fn handle_copy_range_completion(
+    request_id: RequestId,
+    result: Option<ExecutorResult>,
+    pending: PendingCopyRange,
+    handle_table: &FuseHandleTable,
+) {
+    match result {
+        Some(ExecutorResult::Read(read_result)) => {
+            let fh_in = read_result.fh;
+            let reader = read_result.reader;
+
+            match read_result.result {
+                Ok(data) => {
+                    // Write to destination buffer
+                    let bytes_written = {
+                        let Some(mut handle) = handle_table.get_mut(&pending.fh_out) else {
+                            // Destination handle was closed during async operation
+                            warn!(
+                                ?request_id,
+                                fh_out = pending.fh_out,
+                                "Destination handle closed during copy_file_range"
+                            );
+                            pending.reply.error(libc::EBADF);
+                            // Still restore the source reader
+                            restore_reader(request_id, fh_in, reader, handle_table);
+                            return;
+                        };
+
+                        let Some(buffer) = handle.as_write_buffer_mut() else {
+                            warn!(
+                                ?request_id,
+                                fh_out = pending.fh_out,
+                                "Destination not opened for writing"
+                            );
+                            pending.reply.error(libc::EBADF);
+                            drop(handle);
+                            restore_reader(request_id, fh_in, reader, handle_table);
+                            return;
+                        };
+
+                        buffer.write(pending.offset_out, &data)
+                    };
+
+                    trace!(
+                        ?request_id,
+                        bytes_written,
+                        "copy_file_range completed"
+                    );
+
+                    // Reply with bytes written
+                    // bytes_written is from WriteBuffer::write which returns usize
+                    // FUSE expects u32, but practical file ops fit in u32
+                    #[allow(clippy::cast_possible_truncation)]
+                    pending.reply.written(bytes_written as u32);
+
+                    // Restore source reader
+                    restore_reader(request_id, fh_in, reader, handle_table);
+                }
+                Err(errno) => {
+                    trace!(?request_id, errno, "copy_file_range read failed");
+                    pending.reply.error(errno);
+                    // Still restore the source reader
+                    restore_reader(request_id, fh_in, reader, handle_table);
+                }
+            }
+        }
+        None => {
+            trace!(?request_id, "copy_file_range EIO (sender dropped)");
+            pending.reply.error(libc::EIO);
+        }
+    }
+}
+
+/// Restore a reader to the handle table after async operation.
+fn restore_reader(
+    request_id: RequestId,
+    fh: u64,
+    reader: Box<oxcrypt_core::fs::streaming::VaultFileReader>,
+    handle_table: &FuseHandleTable,
+) {
+    if let Some(mut handle) = handle_table.get_mut(&fh) {
+        if matches!(*handle, FuseHandle::ReaderLoaned) {
+            *handle = FuseHandle::Reader(reader);
+            trace!(?request_id, fh, "Reader restored to handle table");
+        } else {
+            warn!(
+                ?request_id,
+                fh,
+                "Handle modified during async operation, discarding reader"
+            );
+        }
+    } else {
+        trace!(
+            ?request_id,
+            fh,
+            "Handle removed during async operation, discarding reader"
+        );
+    }
 }
 
 #[cfg(test)]
