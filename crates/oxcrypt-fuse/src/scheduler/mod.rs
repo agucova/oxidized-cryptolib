@@ -38,6 +38,7 @@
 pub mod deadline;
 pub mod executor;
 pub mod lane;
+pub mod per_file;
 pub mod queue;
 pub mod read_cache;
 pub mod request;
@@ -59,6 +60,7 @@ pub use request::{
     RequestId, RequestIdGenerator, RequestState,
 };
 pub use single_flight::{AttachResult, InFlightReads, ReadKey, SingleFlightStats};
+pub use per_file::{FileState, PerFileOrdering, PerFileStats};
 
 use crate::handles::{FuseHandle, FuseHandleTable};
 use dashmap::DashMap;
@@ -232,6 +234,8 @@ pub struct FuseScheduler {
     deadline_heap: Arc<DeadlineHeap>,
     /// Handle table for restoring readers after async completion.
     handle_table: Arc<FuseHandleTable>,
+    /// Per-file ordering for structural operations.
+    per_file: Arc<PerFileOrdering>,
     /// Shutdown flag.
     shutdown: Arc<AtomicBool>,
     /// Dispatcher thread handle.
@@ -257,6 +261,7 @@ impl FuseScheduler {
         let pending_reads = Arc::new(DashMap::new());
         let pending_copy_ranges = Arc::new(DashMap::new());
         let deadline_heap = Arc::new(DeadlineHeap::new());
+        let per_file = Arc::new(PerFileOrdering::new());
         let shutdown = Arc::new(AtomicBool::new(false));
 
         info!("FUSE scheduler created");
@@ -268,6 +273,7 @@ impl FuseScheduler {
             pending_copy_ranges,
             deadline_heap,
             handle_table,
+            per_file,
             shutdown,
             dispatcher_handle: None,
             result_rx: Some(result_rx),
@@ -513,6 +519,14 @@ impl FuseScheduler {
     /// Get the number of pending reads.
     pub fn pending_read_count(&self) -> usize {
         self.pending_reads.len()
+    }
+
+    /// Get the per-file ordering manager.
+    ///
+    /// Used for serializing structural operations on the same file
+    /// and implementing barrier semantics for flush/fsync.
+    pub fn per_file(&self) -> &Arc<PerFileOrdering> {
+        &self.per_file
     }
 
     /// Check if the scheduler is healthy.

@@ -5769,6 +5769,7 @@ dependencies = [
  "once_cell",
  "oxcrypt-core",
  "oxcrypt-mount",
+ "parking_lot",
  "reqwest 0.13.1",
  "rpassword",
  "tempfile",
