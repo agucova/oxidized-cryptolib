@@ -35,11 +35,13 @@
 //! // Return immediately - scheduler will reply asynchronously
 //! ```
 
+pub mod deadline;
 pub mod executor;
 pub mod lane;
 pub mod queue;
 pub mod request;
 
+pub use deadline::DeadlineHeap;
 pub use executor::{
     ExecutorConfig, ExecutorJob, ExecutorOperation, ExecutorResult, ExecutorStats,
     FsSyscallExecutor, SubmitError,
@@ -162,8 +164,8 @@ struct PendingRead {
     reply: ReplyData,
     /// Request state for exactly-once reply.
     state: Arc<RequestState>,
-    /// Deadline for this request.
-    deadline: Instant,
+    /// Generation counter for deadline heap entry validation.
+    generation: u64,
 }
 
 /// The main scheduler for async FUSE operations.
@@ -176,6 +178,8 @@ pub struct FuseScheduler {
     id_gen: RequestIdGenerator,
     /// Pending read requests awaiting results.
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
+    /// Deadline heap for timeout tracking.
+    deadline_heap: Arc<DeadlineHeap>,
     /// Handle table for restoring readers after async completion.
     handle_table: Arc<FuseHandleTable>,
     /// Shutdown flag.
@@ -201,6 +205,7 @@ impl FuseScheduler {
         let executor = Arc::new(FsSyscallExecutor::with_config(config.executor.clone()));
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let pending_reads = Arc::new(DashMap::new());
+        let deadline_heap = Arc::new(DeadlineHeap::new());
         let shutdown = Arc::new(AtomicBool::new(false));
 
         info!("FUSE scheduler created");
@@ -209,6 +214,7 @@ impl FuseScheduler {
             executor,
             id_gen: RequestIdGenerator::new(),
             pending_reads,
+            deadline_heap,
             handle_table,
             shutdown,
             dispatcher_handle: None,
@@ -229,13 +235,14 @@ impl FuseScheduler {
 
         let result_rx = self.result_rx.take().expect("result_rx already taken");
         let pending_reads = Arc::clone(&self.pending_reads);
+        let deadline_heap = Arc::clone(&self.deadline_heap);
         let handle_table = Arc::clone(&self.handle_table);
         let shutdown = Arc::clone(&self.shutdown);
 
         let handle = thread::Builder::new()
             .name("fuse-scheduler-dispatch".to_string())
             .spawn(move || {
-                dispatcher_loop(result_rx, pending_reads, handle_table, shutdown);
+                dispatcher_loop(result_rx, pending_reads, deadline_heap, handle_table, shutdown);
             })
             .expect("failed to spawn dispatcher thread");
 
@@ -307,13 +314,16 @@ impl FuseScheduler {
             return Err(EnqueueError::from(e));
         }
 
+        // Insert into deadline heap for timeout tracking
+        let generation = self.deadline_heap.insert(request_id, deadline);
+
         // Store pending read
         self.pending_reads.insert(
             request_id,
             PendingRead {
                 reply,
                 state,
-                deadline,
+                generation,
             },
         );
 
@@ -379,9 +389,11 @@ impl Drop for FuseScheduler {
 ///
 /// Receives result receivers and issues FUSE replies when results arrive.
 /// Also restores readers to the handle table after completion.
+/// Uses deadline heap for efficient timeout detection.
 fn dispatcher_loop(
     rx: std::sync::mpsc::Receiver<(RequestId, oneshot::Receiver<ExecutorResult>)>,
     pending_reads: Arc<DashMap<RequestId, PendingRead>>,
+    deadline_heap: Arc<DeadlineHeap>,
     handle_table: Arc<FuseHandleTable>,
     shutdown: Arc<AtomicBool>,
 ) {
@@ -395,6 +407,24 @@ fn dispatcher_loop(
         if shutdown.load(Ordering::Acquire) && receivers.is_empty() {
             debug!("Dispatcher shutting down");
             break;
+        }
+
+        // Process expired deadlines from heap (efficient O(log n) per expiration)
+        for (request_id, generation) in deadline_heap.pop_expired() {
+            // Verify generation matches to detect stale entries
+            if let Some(pending) = pending_reads.get(&request_id) {
+                if pending.generation == generation {
+                    // Valid timeout - claim reply and respond
+                    if pending.state.claim_reply() {
+                        warn!(?request_id, "Request timed out via deadline heap");
+                        drop(pending);
+                        if let Some((_, pending)) = pending_reads.remove(&request_id) {
+                            pending.reply.error(libc::ETIMEDOUT);
+                        }
+                    }
+                }
+                // If generation doesn't match, entry is stale (request completed or cancelled)
+            }
         }
 
         // Try to receive new result receivers (non-blocking)
@@ -420,13 +450,7 @@ fn dispatcher_loop(
                     completed.push((i, *request_id, Some(result)));
                 }
                 Err(oneshot::error::TryRecvError::Empty) => {
-                    // Check deadline
-                    if let Some(pending) = pending_reads.get(request_id) {
-                        if Instant::now() > pending.deadline {
-                            warn!(?request_id, "Request timed out");
-                            completed.push((i, *request_id, None)); // Timeout
-                        }
-                    }
+                    // Deadline expiration is handled by the heap above
                 }
                 Err(oneshot::error::TryRecvError::Closed) => {
                     // Sender dropped without sending - executor crashed?
