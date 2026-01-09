@@ -314,32 +314,44 @@ impl HazardousHandler {
         Ok(None)
     }
 
-    fn sync_handle_to_disk(&self, fh: u64, datasync: bool) -> Result<(), c_int> {
-        let handle = self.handle_table.get(&fh).ok_or(libc::EBADF)?;
+    fn sync_handle_to_disk(
+        &self,
+        fh: u64,
+        datasync: bool,
+        known_path: Option<PathBuf>,
+    ) -> Result<(), c_int> {
+        // If we already have the encrypted path from a preceding flush, use it directly
+        let encrypted_path = if let Some(path) = known_path {
+            path
+        } else {
+            // Need to look up the file - this path is taken when fsync is called
+            // without a preceding write (e.g., fsync on a read-only handle)
+            let handle = self.handle_table.get(&fh).ok_or(libc::EBADF)?;
 
-        let (dir_id, filename) = match handle.value() {
-            FuseHandle::WriteBuffer(buffer) => {
-                (buffer.dir_id().clone(), buffer.filename().to_string())
+            let (dir_id, filename) = match handle.value() {
+                FuseHandle::WriteBuffer(buffer) => {
+                    (buffer.dir_id().clone(), buffer.filename().to_string())
+                }
+                _ => return Ok(()),
+            };
+            drop(handle);
+
+            let ops = Arc::clone(&self.ops);
+
+            let find_result = self.exec_with_timeout(
+                async move { ops.find_file(&dir_id, &filename).await },
+                self.default_timeout,
+            );
+
+            match find_result {
+                Ok(Ok(Some(info))) => info.encrypted_path,
+                Ok(Ok(None)) => return Ok(()),
+                Ok(Err(_)) => return Err(libc::EIO),
+                Err(e) => return Err(e.to_errno()),
             }
-            _ => return Ok(()),
         };
-        drop(handle);
 
-        let ops = Arc::clone(&self.ops);
         let ops_for_sync = Arc::clone(&self.ops);
-
-        let find_result = self.exec_with_timeout(
-            async move { ops.find_file(&dir_id, &filename).await },
-            self.default_timeout,
-        );
-
-        let encrypted_path = match find_result {
-            Ok(Ok(Some(info))) => info.encrypted_path,
-            Ok(Ok(None)) => return Ok(()),
-            Ok(Err(_)) => return Err(libc::EIO),
-            Err(e) => return Err(e.to_errno()),
-        };
-
         let sync_result = self.exec_with_timeout(
             async move {
                 ops_for_sync
@@ -448,8 +460,8 @@ impl HazardousHandler {
 
     fn op_fsync(&self, ino: u64, fh: u64, datasync: bool) -> Result<(), i32> {
         self.wait_pending_writes(ino)?;
-        self.flush_handle(ino, fh)?;
-        self.sync_handle_to_disk(fh, datasync)
+        let encrypted_path = self.flush_handle(ino, fh)?;
+        self.sync_handle_to_disk(fh, datasync, encrypted_path)
     }
 
     fn op_readdir(&self, ino: u64, offset: i64) -> Result<Vec<DirectoryEntry>, i32> {
