@@ -4,7 +4,9 @@
 # macOS ARM (Apple Silicon)
 [target.aarch64-apple-darwin]
 rustflags = [
-  "--cfg", "tokio_unstable"  # Enable tokio-console task introspection
+  "--cfg", "tokio_unstable",  # Enable tokio-console task introspection
+  "--cfg", "aes_armv8",       # Enable hardware AES (ARMv8 Crypto Extensions)
+  "--cfg", "polyval_armv8",   # Enable hardware POLYVAL (PMULL instructions)
 ]
 # Note: macOS clang doesn't support -fuse-ld flag
 # Using Apple's default linker (ld64) which is already quite fast on macOS 15+
@@ -22,4 +24,8 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 # Linux ARM64 - mold works great here
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = [
+  "-C", "link-arg=-fuse-ld=mold",
+  "--cfg", "aes_armv8",       # Enable hardware AES (ARMv8 Crypto Extensions)
+  "--cfg", "polyval_armv8",   # Enable hardware POLYVAL (PMULL instructions)
+]
