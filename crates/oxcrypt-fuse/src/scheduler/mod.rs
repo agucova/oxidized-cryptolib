@@ -85,11 +85,14 @@ use tracing::{debug, error, info, trace, warn};
 /// Default deadline for read operations.
 pub const DEFAULT_READ_DEADLINE: Duration = Duration::from_secs(10);
 
-/// Default global write budget (256 MiB).
-pub const DEFAULT_WRITE_BUDGET_GLOBAL: u64 = 256 * 1024 * 1024;
+/// Default global write budget (512 MiB).
+/// This limits total dirty memory across all open files.
+pub const DEFAULT_WRITE_BUDGET_GLOBAL: u64 = 512 * 1024 * 1024;
 
-/// Default per-file write budget (32 MiB).
-pub const DEFAULT_WRITE_BUDGET_PER_FILE: u64 = 32 * 1024 * 1024;
+/// Default per-file write budget (64 MiB).
+/// When exceeded, an auto-flush is triggered to write dirty data to disk
+/// and release budget, allowing the write to continue.
+pub const DEFAULT_WRITE_BUDGET_PER_FILE: u64 = 64 * 1024 * 1024;
 
 fn classify_hazardous(op: &HazardousOp) -> Lane {
     match op {

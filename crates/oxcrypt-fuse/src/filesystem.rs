@@ -3272,15 +3272,52 @@ impl Filesystem for CryptomatorFS {
         if let Some(ref scheduler) = self.scheduler {
             let write_size = data.len() as u64;
             if scheduler.check_write_budget(ino, write_size).is_err() {
-                trace!(
+                // Budget exceeded - auto-flush to release budget before rejecting
+                debug!(
                     ino,
-                    write_size, "Write rejected due to budget limit (EAGAIN)"
+                    write_size,
+                    "Write budget exceeded, auto-flushing to release budget"
                 );
-                drop(handle); // Release lock before replying
-                reply.error(libc::EAGAIN);
-                return;
+                drop(handle); // Release lock before flushing
+
+                // Flush the buffer to disk - this releases the write budget
+                match self.flush_handle(ino, fh) {
+                    Ok(_) => {
+                        // Flush succeeded, budget released. Re-acquire handle and continue.
+                        debug!(ino, "Auto-flush succeeded, continuing write");
+                    }
+                    Err(errno) => {
+                        // Flush failed - can't continue with write
+                        warn!(ino, errno, "Auto-flush failed during write budget recovery");
+                        reply.error(errno);
+                        return;
+                    }
+                }
+
+                // Re-acquire handle after flush
+                let Some(reacquired) = self.handle_table.get_mut(&fh) else {
+                    reply.error(libc::EBADF);
+                    return;
+                };
+                handle = reacquired;
+
+                // Re-check that we still have a write buffer
+                let Some(rebuffer) = handle.as_write_buffer_mut() else {
+                    reply.error(libc::EBADF);
+                    return;
+                };
+
+                // Rebind buffer for the rest of the function
+                // (We need to shadow the outer `buffer` binding)
+                drop(rebuffer);
             }
         }
+
+        // Re-get buffer reference (may have been invalidated by auto-flush path)
+        let Some(buffer) = handle.as_write_buffer_mut() else {
+            reply.error(libc::EBADF);
+            return;
+        };
 
         // Track buffer size before write for delta calculation
         let old_size = buffer.len();
