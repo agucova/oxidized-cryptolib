@@ -61,7 +61,7 @@ use fuser::{
 };
 use libc::c_int;
 use oxcrypt_core::fs::encrypted_to_plaintext_size_or_zero;
-use oxcrypt_core::vault::{DirId, VaultOperationsAsync, VaultPath};
+use oxcrypt_core::vault::{DirId, SyncFirstResult, VaultOperationsAsync, VaultPath};
 use oxcrypt_mount::VaultStats;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -1140,6 +1140,57 @@ impl CryptomatorFS {
         crate::async_bridge::execute(&self.handle, timeout, Some(&self.stats), future)
     }
 
+    /// Execute operation with sync-first pattern for reduced async overhead.
+    ///
+    /// This method implements the sync-first optimization: it first attempts the
+    /// synchronous operation (which avoids task spawn + channel allocation overhead).
+    /// If the sync path would block (e.g., lock contention), it falls back to the
+    /// async path via `exec()`.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The success type of the operation
+    /// * `E` - The error type of the operation (must implement `ToErrno`)
+    /// * `F` - The async fallback future type
+    ///
+    /// # Arguments
+    ///
+    /// * `sync_result` - Result of the sync-first attempt
+    /// * `async_fallback` - Closure producing an async future for fallback
+    ///
+    /// # Returns
+    ///
+    /// Returns the operation result or an errno on failure.
+    #[allow(dead_code)]
+    fn sync_first_exec<T, E, F, Fut>(
+        &self,
+        sync_result: SyncFirstResult<T, E>,
+        async_fallback: F,
+    ) -> Result<T, i32>
+    where
+        E: ToErrno + Send + 'static,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: Send + 'static,
+    {
+        match sync_result {
+            SyncFirstResult::Done(result) => {
+                // Fast path: completed synchronously
+                self.vault_stats.record_sync_first_hit();
+                result.map_err(|e| e.to_errno())
+            }
+            SyncFirstResult::WouldBlock => {
+                // Slow path: fall back to async
+                self.vault_stats.record_sync_first_miss();
+                match self.exec(async_fallback()) {
+                    Ok(Ok(value)) => Ok(value),
+                    Ok(Err(e)) => Err(e.to_errno()),
+                    Err(bridge_err) => Err(bridge_err.to_errno()),
+                }
+            }
+        }
+    }
+
     /// Flush a write buffer to the vault without closing the handle.
     ///
     /// This is used by both `flush()` and `fsync()` FUSE operations.
@@ -1550,8 +1601,12 @@ impl CryptomatorFS {
         if let Some(result) =
             self.try_lookup_child_sync(parent_inode, name, &parent_path, &dir_id)?
         {
+            self.vault_stats.record_sync_first_hit();
             return Ok(result);
         }
+
+        // Sync path was contended, fall back to async
+        self.vault_stats.record_sync_first_miss();
 
         // Clone ops for async use
         let ops = self.ops_clone();
@@ -1936,14 +1991,35 @@ impl Filesystem for CryptomatorFS {
         let attr = match &entry.kind {
             InodeKind::Root | InodeKind::Directory { .. } => self.make_dir_attr(ino, None),
             InodeKind::File { dir_id, name } => {
-                // Get file size from vault using O(1) lookup instead of O(n) list+search
-                let ops = self.ops_clone();
+                // Try sync-first pattern to avoid async overhead
+                let sync_result = self.ops.try_find_file_sync(dir_id, name);
                 let dir_id = dir_id.clone();
                 let name = name.clone();
                 drop(entry);
 
-                match self.exec(async move { ops.find_file(&dir_id, &name).await }) {
-                    Ok(Ok(Some(info))) => {
+                let result = match sync_result {
+                    SyncFirstResult::Done(result) => {
+                        self.vault_stats.record_sync_first_hit();
+                        result
+                    }
+                    SyncFirstResult::WouldBlock => {
+                        // Fall back to async path
+                        self.vault_stats.record_sync_first_miss();
+                        let ops = self.ops_clone();
+                        match self.exec(async move { ops.find_file(&dir_id, &name).await }) {
+                            Ok(r) => r,
+                            Err(exec_err) => {
+                                self.vault_stats.record_error();
+                                self.vault_stats.record_metadata_latency(start.elapsed());
+                                reply.error(exec_err.to_errno());
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                match result {
+                    Ok(Some(info)) => {
                         let disk_size = encrypted_to_plaintext_size_or_zero(info.encrypted_size);
                         // Use effective size to account for in-memory buffer (mmap consistency)
                         let effective_size = self.effective_file_size(ino, disk_size);
@@ -1958,7 +2034,7 @@ impl Filesystem for CryptomatorFS {
                         let mtime = Self::get_mtime(&info.encrypted_path);
                         self.make_file_attr(ino, effective_size, mtime)
                     }
-                    Ok(Ok(None)) => {
+                    Ok(None) => {
                         // File not found in vault, but might be newly created
                         // (exists only in WriteBuffer, not yet flushed to disk)
                         // Check if there's an active write buffer for this inode
@@ -1977,48 +2053,57 @@ impl Filesystem for CryptomatorFS {
                             return;
                         }
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         self.vault_stats.record_error();
                         self.vault_stats.record_metadata_latency(start.elapsed());
                         reply.error(crate::error::vault_error_to_errno(&e));
-                        return;
-                    }
-                    Err(exec_err) => {
-                        self.vault_stats.record_error();
-                        self.vault_stats.record_metadata_latency(start.elapsed());
-                        reply.error(exec_err.to_errno());
                         return;
                     }
                 }
             }
             InodeKind::Symlink { dir_id, name } => {
-                // Get symlink info including encrypted_path for mtime
-                let ops = self.ops_clone();
+                // Try sync-first pattern to avoid async overhead
+                let sync_result = self.ops.try_find_symlink_sync(dir_id, name);
                 let dir_id = dir_id.clone();
                 let name = name.clone();
                 drop(entry);
 
-                match self.exec(async move { ops.find_symlink(&dir_id, &name).await }) {
-                    Ok(Ok(Some(info))) => {
+                let result = match sync_result {
+                    SyncFirstResult::Done(result) => {
+                        self.vault_stats.record_sync_first_hit();
+                        result
+                    }
+                    SyncFirstResult::WouldBlock => {
+                        // Fall back to async path
+                        self.vault_stats.record_sync_first_miss();
+                        let ops = self.ops_clone();
+                        match self.exec(async move { ops.find_symlink(&dir_id, &name).await }) {
+                            Ok(r) => r,
+                            Err(exec_err) => {
+                                self.vault_stats.record_error();
+                                self.vault_stats.record_metadata_latency(start.elapsed());
+                                reply.error(exec_err.to_errno());
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                match result {
+                    Ok(Some(info)) => {
                         let mtime = Self::get_mtime(&info.encrypted_path);
                         self.make_symlink_attr(ino, info.target.len() as u64, mtime)
                     }
-                    Ok(Ok(None)) => {
+                    Ok(None) => {
                         self.vault_stats.record_error();
                         self.vault_stats.record_metadata_latency(start.elapsed());
                         reply.error(libc::ENOENT);
                         return;
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         self.vault_stats.record_error();
                         self.vault_stats.record_metadata_latency(start.elapsed());
                         reply.error(crate::error::vault_error_to_errno(&e));
-                        return;
-                    }
-                    Err(exec_err) => {
-                        self.vault_stats.record_error();
-                        self.vault_stats.record_metadata_latency(start.elapsed());
-                        reply.error(exec_err.to_errno());
                         return;
                     }
                 }

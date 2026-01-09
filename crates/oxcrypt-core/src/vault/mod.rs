@@ -23,7 +23,9 @@ pub use handles::{OpenHandle, VaultHandleTable};
 #[cfg(feature = "async")]
 pub use locks::{VaultLockManager, VaultLockRegistry};
 #[cfg(feature = "async")]
-pub use operations_async::{ChangePasswordAsyncError, VaultOperationsAsync, change_password_async};
+pub use operations_async::{
+    ChangePasswordAsyncError, SyncFirstResult, VaultOperationsAsync, change_password_async,
+};
 
 // Re-export commonly used types
 pub use cache::{CacheStats, VaultCache};

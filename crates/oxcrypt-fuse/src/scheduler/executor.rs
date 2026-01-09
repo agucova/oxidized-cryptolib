@@ -19,6 +19,7 @@
 
 use bytes::Bytes;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use event_listener::Event;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
@@ -194,12 +195,25 @@ impl ExecutorStats {
 }
 
 /// Configuration for the executor.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExecutorConfig {
     /// Number of worker threads.
     pub io_threads: usize,
     /// Capacity of the submission queue.
     pub queue_capacity: usize,
+    /// Optional event to notify when jobs complete.
+    /// This allows the scheduler to wake immediately instead of polling.
+    pub completion_event: Option<Arc<Event>>,
+}
+
+impl std::fmt::Debug for ExecutorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutorConfig")
+            .field("io_threads", &self.io_threads)
+            .field("queue_capacity", &self.queue_capacity)
+            .field("completion_event", &self.completion_event.is_some())
+            .finish()
+    }
 }
 
 impl Default for ExecutorConfig {
@@ -207,6 +221,7 @@ impl Default for ExecutorConfig {
         Self {
             io_threads: DEFAULT_IO_THREADS,
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
+            completion_event: None,
         }
     }
 }
@@ -223,6 +238,16 @@ impl ExecutorConfig {
     #[must_use]
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.queue_capacity = capacity;
+        self
+    }
+
+    /// Set the completion event for notifying when jobs finish.
+    ///
+    /// When set, workers will notify this event after sending results,
+    /// allowing the scheduler to wake immediately instead of polling.
+    #[must_use]
+    pub fn with_completion_event(mut self, event: Arc<Event>) -> Self {
+        self.completion_event = Some(event);
         self
     }
 }
@@ -266,6 +291,7 @@ impl FsSyscallExecutor {
         let (submit_tx, submit_rx) = bounded(config.queue_capacity);
         let shutdown = Arc::new(AtomicBool::new(false));
         let stats = ExecutorStats::new();
+        let completion_event = config.completion_event.clone();
 
         let mut workers = Vec::with_capacity(config.io_threads);
 
@@ -273,11 +299,12 @@ impl FsSyscallExecutor {
             let rx = submit_rx.clone();
             let shutdown = Arc::clone(&shutdown);
             let stats = Arc::clone(&stats);
+            let completion_event = completion_event.clone();
 
             let handle = thread::Builder::new()
                 .name(format!("fs-executor-{worker_id}"))
                 .spawn(move || {
-                    worker_loop(worker_id, rx, shutdown, stats);
+                    worker_loop(worker_id, rx, shutdown, stats, completion_event);
                 })
                 .expect("failed to spawn executor worker thread");
 
@@ -395,6 +422,7 @@ fn worker_loop(
     rx: Receiver<ExecutorJob>,
     shutdown: Arc<AtomicBool>,
     stats: Arc<ExecutorStats>,
+    completion_event: Option<Arc<Event>>,
 ) {
     debug!(worker_id, "Executor worker started");
 
@@ -433,6 +461,10 @@ fn worker_loop(
                                 reader,
                             });
                             let _ = job.result_tx.send(result);
+                            // Notify dispatcher that a result is ready
+                            if let Some(ref event) = completion_event {
+                                event.notify(1);
+                            }
                         }
                         // For other ops, dropping is fine as they don't hold loaned resources
                         _ => {}
@@ -468,6 +500,11 @@ fn worker_loop(
                         ?request_id,
                         "Result receiver dropped (timeout or cancellation)"
                     );
+                }
+
+                // Notify dispatcher that a result is ready
+                if let Some(ref event) = completion_event {
+                    event.notify(1);
                 }
 
                 stats.record_complete(success, elapsed);

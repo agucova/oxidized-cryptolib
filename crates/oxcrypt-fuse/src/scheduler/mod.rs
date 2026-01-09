@@ -566,7 +566,16 @@ impl FuseScheduler {
         attr_cache: Arc<AttrCache>,
         buffer_sizes: Arc<DashMap<u64, u64>>,
     ) -> Self {
-        let executor = Arc::new(FsSyscallExecutor::with_config(config.executor.clone()));
+        // Create dispatcher_event first so executor workers can notify it on completion
+        let dispatcher_event = Arc::new(Event::new());
+
+        // Configure executor with completion notification event
+        let executor_config = config
+            .executor
+            .clone()
+            .with_completion_event(Arc::clone(&dispatcher_event));
+        let executor = Arc::new(FsSyscallExecutor::with_config(executor_config));
+
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let lane_queues = Arc::new(LaneQueues::new(&config.lane_capacities));
         let dispatch_config = config
@@ -591,7 +600,6 @@ impl FuseScheduler {
         let write_bytes_global = Arc::new(AtomicU64::new(0));
         let write_bytes_by_file = Arc::new(DashMap::new());
         let shutdown = Arc::new(AtomicBool::new(false));
-        let dispatcher_event = Arc::new(Event::new());
 
         info!("FUSE scheduler created with lane queues and fairness dispatcher");
 
@@ -2064,8 +2072,9 @@ fn dispatcher_loop(
             // No in-flight work, wait longer for new work (up to 100ms)
             listener.wait_timeout(Duration::from_millis(100));
         } else {
-            // Jobs in-flight, wait shorter for results (up to 1ms)
-            listener.wait_timeout(Duration::from_millis(1));
+            // Jobs in-flight: executor workers notify on completion, so this
+            // timeout is just for periodic deadline housekeeping.
+            listener.wait_timeout(Duration::from_millis(10));
         }
     }
 

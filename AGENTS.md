@@ -195,6 +195,7 @@ Userspace NFSv3 server. No kernel extensions required.
 - **Minimal `pub use`**: Avoid `pub use` on imports unless you're intentionally re-exporting a dependency so downstream crates don't need to depend on it directly.
 - **Explicit context over global state**: Skip `lazy_static!`, `OnceLock`, or similar global patterns; prefer passing explicit context structs for shared state.
 - **Strong types over strings**: Use enums and newtypes when the domain is closed or requires validation, rather than raw strings.
+- **Evergreen comments**: Comments never reference the history of the code. Instead, they should be evergreen: only relevant to the current version at hand, and not transient.
 
 ## Cryptomator Protocol Reference
 

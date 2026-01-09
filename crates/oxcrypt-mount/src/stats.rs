@@ -391,6 +391,12 @@ pub struct VaultStats {
     /// Total number of errors encountered.
     pub total_errors: AtomicU64,
 
+    // === Sync-First Optimization Tracking ===
+    /// Operations that completed synchronously (fast path).
+    pub sync_first_hits: AtomicU64,
+    /// Operations that fell back to async (slow path).
+    pub sync_first_misses: AtomicU64,
+
     // === Inode/Entry Tracking ===
     /// Current number of inodes/entries in the filesystem table.
     /// This is updated by the mount backend to track memory usage.
@@ -430,6 +436,8 @@ impl VaultStats {
             metadata_latency: LatencyStats::new(),
             total_metadata_ops: AtomicU64::new(0),
             total_errors: AtomicU64::new(0),
+            sync_first_hits: AtomicU64::new(0),
+            sync_first_misses: AtomicU64::new(0),
             inode_count: AtomicU64::new(0),
             session_start: SystemTime::now(),
         }
@@ -582,6 +590,39 @@ impl VaultStats {
     #[inline]
     pub fn record_error(&self) {
         self.total_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a sync-first hit (operation completed synchronously).
+    ///
+    /// This tracks when the sync-first optimization successfully avoids
+    /// async task spawn overhead by completing the operation on the calling thread.
+    #[inline]
+    pub fn record_sync_first_hit(&self) {
+        self.sync_first_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a sync-first miss (operation fell back to async).
+    ///
+    /// This tracks when the sync-first optimization had to fall back to
+    /// the async path, typically due to lock contention.
+    #[inline]
+    pub fn record_sync_first_miss(&self) {
+        self.sync_first_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get the sync-first hit rate as a percentage.
+    ///
+    /// Returns 0.0 if no sync-first operations have been performed.
+    #[inline]
+    pub fn sync_first_hit_rate(&self) -> f64 {
+        let hits = self.sync_first_hits.load(Ordering::Relaxed);
+        let misses = self.sync_first_misses.load(Ordering::Relaxed);
+        let total = hits + misses;
+        if total == 0 {
+            0.0
+        } else {
+            (hits as f64 / total as f64) * 100.0
+        }
     }
 
     /// Update the inode/entry count.
@@ -770,6 +811,8 @@ impl VaultStats {
             read_latency_avg_ms: self.avg_read_latency_ms(),
             write_latency_avg_ms: self.avg_write_latency_ms(),
             metadata_latency_avg_ms: self.avg_metadata_latency_ms(),
+            sync_first_hits: self.sync_first_hits.load(Ordering::Relaxed),
+            sync_first_misses: self.sync_first_misses.load(Ordering::Relaxed),
             session_start: self.session_start,
         }
     }
@@ -796,6 +839,8 @@ impl VaultStats {
             read_latency_avg_ms: self.avg_read_latency_ms(),
             write_latency_avg_ms: self.avg_write_latency_ms(),
             metadata_latency_avg_ms: self.avg_metadata_latency_ms(),
+            sync_first_hits: self.sync_first_hits.load(Ordering::Relaxed),
+            sync_first_misses: self.sync_first_misses.load(Ordering::Relaxed),
             session_start: self.session_start,
         }
     }
@@ -836,6 +881,10 @@ pub struct VaultStatsSnapshot {
     pub write_latency_avg_ms: f64,
     /// Average metadata latency in milliseconds.
     pub metadata_latency_avg_ms: f64,
+    /// Sync-first optimization hits (operations completed synchronously).
+    pub sync_first_hits: u64,
+    /// Sync-first optimization misses (operations fell back to async).
+    pub sync_first_misses: u64,
     /// When this session started.
     #[serde(with = "humantime_serde")]
     pub session_start: SystemTime,
@@ -855,6 +904,18 @@ impl VaultStatsSnapshot {
     /// Get cache health warnings.
     pub fn cache_warnings(&self) -> &[CacheWarning] {
         &self.cache_health.warnings
+    }
+
+    /// Get the sync-first hit rate as a percentage.
+    ///
+    /// Returns 0.0 if no sync-first operations have been performed.
+    pub fn sync_first_hit_rate(&self) -> f64 {
+        let total = self.sync_first_hits + self.sync_first_misses;
+        if total == 0 {
+            0.0
+        } else {
+            (self.sync_first_hits as f64 / total as f64) * 100.0
+        }
     }
 }
 

@@ -85,6 +85,57 @@ impl From<VaultOperationError> for AsyncVaultError {
     }
 }
 
+/// Result of a sync-first operation attempt.
+///
+/// Used by the sync-first optimization pattern where callers first attempt
+/// a non-blocking synchronous operation, falling back to async only when
+/// the sync path would block (e.g., lock contention).
+///
+/// # Example
+///
+/// ```ignore
+/// match ops.try_find_file_sync(&dir_id, "file.txt") {
+///     SyncFirstResult::Done(result) => {
+///         // Fast path: completed synchronously
+///         result?
+///     }
+///     SyncFirstResult::WouldBlock => {
+///         // Slow path: use async
+///         ops.find_file(&dir_id, "file.txt").await?
+///     }
+/// }
+/// ```
+#[derive(Debug)]
+pub enum SyncFirstResult<T, E> {
+    /// Operation completed synchronously with the given result.
+    Done(Result<T, E>),
+    /// Sync path would block (e.g., lock contended). Caller should use async.
+    WouldBlock,
+}
+
+impl<T, E> SyncFirstResult<T, E> {
+    /// Returns `true` if the operation completed synchronously.
+    #[inline]
+    pub fn is_done(&self) -> bool {
+        matches!(self, SyncFirstResult::Done(_))
+    }
+
+    /// Returns `true` if the sync path would block.
+    #[inline]
+    pub fn is_would_block(&self) -> bool {
+        matches!(self, SyncFirstResult::WouldBlock)
+    }
+
+    /// Unwraps the result, panicking if this is `WouldBlock`.
+    #[inline]
+    pub fn unwrap(self) -> Result<T, E> {
+        match self {
+            SyncFirstResult::Done(result) => result,
+            SyncFirstResult::WouldBlock => panic!("called unwrap on WouldBlock"),
+        }
+    }
+}
+
 /// Asynchronous interface for vault operations.
 ///
 /// Provides the same functionality as [`VaultOperations`] with async methods.
@@ -489,6 +540,179 @@ impl VaultOperationsAsync {
     ) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
         let lock = self.lock_manager.directory_lock(dir_id);
         lock.try_read_owned().ok()
+    }
+
+    // ========================================================================
+    // Sync-First Methods
+    //
+    // These methods attempt synchronous execution first, returning WouldBlock
+    // if the operation would need to wait (e.g., lock contention).
+    // Callers should fall back to the async versions when WouldBlock is returned.
+    // ========================================================================
+
+    /// Try to find a file synchronously.
+    ///
+    /// Attempts to find a file without blocking. Returns `SyncFirstResult::Done`
+    /// if the lock was available (regardless of whether the file was found),
+    /// or `SyncFirstResult::WouldBlock` if the directory lock is contended.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory_id` - The directory to search in
+    /// * `filename` - The name of the file to find
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// match ops.try_find_file_sync(&dir_id, "file.txt") {
+    ///     SyncFirstResult::Done(Ok(Some(info))) => { /* file found */ }
+    ///     SyncFirstResult::Done(Ok(None)) => { /* file not found */ }
+    ///     SyncFirstResult::Done(Err(e)) => { /* error */ }
+    ///     SyncFirstResult::WouldBlock => {
+    ///         // Fall back to async
+    ///         ops.find_file(&dir_id, "file.txt").await?
+    ///     }
+    /// }
+    /// ```
+    pub fn try_find_file_sync(
+        &self,
+        directory_id: &DirId,
+        filename: &str,
+    ) -> SyncFirstResult<Option<VaultFileInfo>, VaultOperationError> {
+        // Try to acquire directory lock without blocking
+        let Some(_guard) = self.try_directory_read_sync(directory_id) else {
+            return SyncFirstResult::WouldBlock;
+        };
+
+        // Lock acquired - use sync operations
+        let sync_ops = match self.as_sync() {
+            Ok(ops) => ops,
+            Err(e) => {
+                return SyncFirstResult::Done(Err(VaultOperationError::KeyAccess { source: e }))
+            }
+        };
+
+        SyncFirstResult::Done(sync_ops.find_file(directory_id, filename).map_err(Into::into))
+    }
+
+    /// Try to find a directory synchronously.
+    ///
+    /// Attempts to find a subdirectory without blocking. Returns `SyncFirstResult::Done`
+    /// if the lock was available, or `SyncFirstResult::WouldBlock` if contended.
+    pub fn try_find_directory_sync(
+        &self,
+        parent_directory_id: &DirId,
+        dir_name: &str,
+    ) -> SyncFirstResult<Option<VaultDirectoryInfo>, VaultOperationError> {
+        let Some(_guard) = self.try_directory_read_sync(parent_directory_id) else {
+            return SyncFirstResult::WouldBlock;
+        };
+
+        let sync_ops = match self.as_sync() {
+            Ok(ops) => ops,
+            Err(e) => {
+                return SyncFirstResult::Done(Err(VaultOperationError::KeyAccess { source: e }))
+            }
+        };
+
+        SyncFirstResult::Done(
+            sync_ops
+                .find_directory(parent_directory_id, dir_name)
+                .map_err(Into::into),
+        )
+    }
+
+    /// Try to find a symlink synchronously.
+    ///
+    /// Attempts to find a symlink without blocking. Returns `SyncFirstResult::Done`
+    /// if the lock was available, or `SyncFirstResult::WouldBlock` if contended.
+    pub fn try_find_symlink_sync(
+        &self,
+        directory_id: &DirId,
+        symlink_name: &str,
+    ) -> SyncFirstResult<Option<VaultSymlinkInfo>, VaultOperationError> {
+        let Some(_guard) = self.try_directory_read_sync(directory_id) else {
+            return SyncFirstResult::WouldBlock;
+        };
+
+        let sync_ops = match self.as_sync() {
+            Ok(ops) => ops,
+            Err(e) => {
+                return SyncFirstResult::Done(Err(VaultOperationError::KeyAccess { source: e }))
+            }
+        };
+
+        SyncFirstResult::Done(
+            sync_ops
+                .find_symlink(directory_id, symlink_name)
+                .map_err(Into::into),
+        )
+    }
+
+    /// Try to list files synchronously.
+    ///
+    /// Attempts to list all files in a directory without blocking. Returns
+    /// `SyncFirstResult::Done` if the lock was available, or `WouldBlock` if contended.
+    pub fn try_list_files_sync(
+        &self,
+        directory_id: &DirId,
+    ) -> SyncFirstResult<Vec<VaultFileInfo>, VaultOperationError> {
+        let Some(_guard) = self.try_directory_read_sync(directory_id) else {
+            return SyncFirstResult::WouldBlock;
+        };
+
+        let sync_ops = match self.as_sync() {
+            Ok(ops) => ops,
+            Err(e) => {
+                return SyncFirstResult::Done(Err(VaultOperationError::KeyAccess { source: e }))
+            }
+        };
+
+        SyncFirstResult::Done(sync_ops.list_files(directory_id).map_err(Into::into))
+    }
+
+    /// Try to list directories synchronously.
+    ///
+    /// Attempts to list all subdirectories without blocking. Returns
+    /// `SyncFirstResult::Done` if the lock was available, or `WouldBlock` if contended.
+    pub fn try_list_directories_sync(
+        &self,
+        parent_id: &DirId,
+    ) -> SyncFirstResult<Vec<VaultDirectoryInfo>, VaultOperationError> {
+        let Some(_guard) = self.try_directory_read_sync(parent_id) else {
+            return SyncFirstResult::WouldBlock;
+        };
+
+        let sync_ops = match self.as_sync() {
+            Ok(ops) => ops,
+            Err(e) => {
+                return SyncFirstResult::Done(Err(VaultOperationError::KeyAccess { source: e }))
+            }
+        };
+
+        SyncFirstResult::Done(sync_ops.list_directories(parent_id).map_err(Into::into))
+    }
+
+    /// Try to list symlinks synchronously.
+    ///
+    /// Attempts to list all symlinks without blocking. Returns
+    /// `SyncFirstResult::Done` if the lock was available, or `WouldBlock` if contended.
+    pub fn try_list_symlinks_sync(
+        &self,
+        directory_id: &DirId,
+    ) -> SyncFirstResult<Vec<VaultSymlinkInfo>, VaultOperationError> {
+        let Some(_guard) = self.try_directory_read_sync(directory_id) else {
+            return SyncFirstResult::WouldBlock;
+        };
+
+        let sync_ops = match self.as_sync() {
+            Ok(ops) => ops,
+            Err(e) => {
+                return SyncFirstResult::Done(Err(VaultOperationError::KeyAccess { source: e }))
+            }
+        };
+
+        SyncFirstResult::Done(sync_ops.list_symlinks(directory_id).map_err(Into::into))
     }
 
     /// Encrypt a filename with caching.
