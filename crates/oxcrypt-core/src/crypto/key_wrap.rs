@@ -346,6 +346,62 @@ mod tests {
         assert_eq!(&key_data, &unwrapped_key.as_slice());
     }
 
+    /// Test wrapping and unwrapping a 512-bit key (64 bytes) with a 256-bit KEK.
+    ///
+    /// This is the actual Cryptomator use case: the master key consists of
+    /// a 256-bit AES key + 256-bit MAC key = 512 bits total.
+    #[test]
+    fn test_wrap_unwrap_512_key_with_256_kek() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        // 512-bit key (64 bytes) - simulates AES key (32 bytes) + MAC key (32 bytes)
+        let key_data = hex!(
+            "00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F"
+            "101112131415161718191A1B1C1D1E1F202122232425262728292A2B2C2D2E2F"
+        );
+
+        // Wrap the 512-bit key
+        let wrapped = wrap_key(&key_data, &kek).unwrap();
+
+        // Wrapped output should be 8 bytes longer (IV prepended)
+        assert_eq!(wrapped.len(), key_data.len() + 8);
+
+        // Unwrap and verify roundtrip
+        let unwrapped = unwrap_key(&wrapped, &kek).unwrap();
+        assert_eq!(unwrapped.as_slice(), &key_data);
+    }
+
+    /// Test that ciphertext with valid length (≥16) but not a multiple of 8 bytes
+    /// returns InvalidCiphertextLength error.
+    #[test]
+    fn test_unwrap_invalid_ciphertext_length() {
+        let kek = SecretBox::new(Box::new(hex!(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        )));
+        // 17 bytes: valid minimum length (≥16) but not a multiple of 8
+        let invalid_ciphertext = hex!("00112233445566778899AABBCCDDEEFF00");
+
+        let result = unwrap_key(&invalid_ciphertext, &kek);
+        assert!(
+            matches!(result, Err(UnwrapError::InvalidCiphertextLength)),
+            "Expected InvalidCiphertextLength error, got {:?}",
+            result
+        );
+
+        // Also test 18, 19, ... up to 23 bytes (all invalid lengths between 16 and 24)
+        for len in 17..24 {
+            let ciphertext: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let result = unwrap_key(&ciphertext, &kek);
+            assert!(
+                matches!(result, Err(UnwrapError::InvalidCiphertextLength)),
+                "Expected InvalidCiphertextLength for {} bytes, got {:?}",
+                len,
+                result
+            );
+        }
+    }
+
     #[bench]
     fn bench_wrap_256_key_with_256_kek(b: &mut Bencher) {
         let kek = SecretBox::new(Box::new(hex!(

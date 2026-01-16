@@ -56,6 +56,7 @@ dashmap = { version = "6", optional = true }
 futures = { version = "0.3", optional = true }
 moka = { version = "0.12.12", features = ["sync"] }
 bumpalo = "3.19.1"
+rayon = "1.11.0"
 
 [dev-dependencies]
 assert_fs = "1"
@@ -70,6 +71,8 @@ rand_chacha = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util", "time"] }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 wycheproof = "0.6"
+# TODO: Switch to published crate once available (timing-oracle = "0.1")
+timing-oracle = { path = "../../../timing-oracle/crates/timing-oracle" }
 
 [[bench]]
 name = "directory_operations"
@@ -89,6 +92,10 @@ harness = false
 
 [[bench]]
 name = "timing_leaks"
+harness = false
+
+[[bench]]
+name = "timing_oracle_tests"
 harness = false
 
 [[bench]]
